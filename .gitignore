@@ -1,0 +1,40 @@
+# --- Dependencies ---
+node_modules/
+.pnp
+.pnp.js
+
+# --- Build Outputs ---
+# Only ignore these if you use a build step (TypeScript, Babel, etc.)
+dist/
+lib/
+build/
+*.tsbuildinfo
+*.tgz
+
+# --- Environment & Secrets ---
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.npmrc
+
+# --- Logs ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# --- Testing ---
+coverage/
+.nyc_output
+
+# --- IDEs & System Files ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- OS & Misc ---
+*.swp
+*.bak

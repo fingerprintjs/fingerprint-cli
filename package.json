@@ -1,0 +1,20 @@
+{
+  "name": "fingerprint",
+  "version": "0.0.2",
+  "description": "Fingerprint.com CLI welcome package",
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": {
+    "fingerprint": "./fingerprint.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "fingerprint.js",
+    "README.md"
+  ],
+  "dependencies": {
+    "open": "^10.1.0"
+  }
+}
