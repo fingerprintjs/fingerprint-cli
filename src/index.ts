@@ -6,9 +6,18 @@ import { workspaceList, workspaceStart, workspaceUse } from './commands/workspac
 const program = new Command()
 program.name('fingerprint').description('Fingerprint CLI dashboard companion')
 
-program.command('signup').option('--api-url <url>').action(async (opts) => signup(opts.apiUrl))
+program
+  .command('signup')
+  .option('--api-url <url>')
+  .option('--name <name>')
+  .option('--email <email>')
+  .action(async (opts) => signup({ apiUrl: opts.apiUrl, name: opts.name, email: opts.email }))
 program.command('signup-confirm').argument('<linkOrIntent>').argument('[code]').action(signupConfirm)
-program.command('login').option('--api-url <url>').action(async (opts) => login(opts.apiUrl))
+program
+  .command('login')
+  .option('--api-url <url>')
+  .option('--email <email>')
+  .action(async (opts) => login({ apiUrl: opts.apiUrl, email: opts.email }))
 program.command('logout').action(logout)
 program.command('whoami').action(whoami)
 

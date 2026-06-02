@@ -1,4 +1,5 @@
-import { input, select } from '@inquirer/prompts'
+import { select } from '@inquirer/prompts'
+import { text } from '../utils/prompt.js'
 import { ApiClient } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
 import { getAuthState, updateAuthState } from '../auth/tokenStore.js'
@@ -29,8 +30,8 @@ export async function workspaceUse(id?: string) {
 export async function workspaceStart() {
   const auth = requireAuth()
   const client = new ApiClient(auth.apiUrl)
-  const name = await input({ message: 'Workspace name' })
-  const domain = await input({ message: 'Primary domain (optional)' })
+  const name = await text('Workspace name')
+  const domain = await text('Primary domain (optional)')
   const regionCode = await select({ message: 'Server region', choices: REGION_CHOICES, default: 'use1' })
   const result = await client.request<any>(endpoints.subscriptionStart, {
     method: 'POST',
@@ -45,4 +46,9 @@ export async function workspaceStart() {
   }, true)
   updateAuthState({ currentSubscriptionId: result.id })
   console.log(`Workspace created: ${result.id}`)
+
+  // Creating a subscription moves onboarding to "send events"; skip it to finish onboarding,
+  // mirroring what the dashboard does after workspace creation.
+  await client.request(endpoints.onboardingSkip, { method: 'POST' }, true).catch(() => {})
+  console.log('Onboarding complete.')
 }

@@ -7,5 +7,6 @@ export const endpoints = {
   currentUserGet: '/users/me',
   subscriptions: '/subscriptions',
   subscriptionStart: '/subscriptions/start',
+  onboardingSkip: '/onboarding/skip',
   ssoAuth: '/sso/auth',
 }

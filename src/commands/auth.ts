@@ -1,4 +1,5 @@
-import { input, password } from '@inquirer/prompts'
+import { password } from '@inquirer/prompts'
+import { text } from '../utils/prompt.js'
 import open from 'open'
 import { ApiClient } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
@@ -6,10 +7,10 @@ import { AuthState, saveAuthState, clearAuthState, getAuthState } from '../auth/
 import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
 
-export async function signup(apiUrl?: string) {
-  const name = await input({ message: 'Name' })
-  const email = await input({ message: 'Email' })
-  const cfg = resolveConfig(apiUrl)
+export async function signup(opts: { apiUrl?: string; name?: string; email?: string } = {}) {
+  const name = opts.name ?? (await text('Name'))
+  const email = opts.email ?? (await text('Email'))
+  const cfg = resolveConfig(opts.apiUrl)
   const client = new ApiClient(cfg.apiUrl)
 
   // Match the dashboard: a password must score at least "Good" (strengthLevel >= 1) before we submit.
@@ -33,7 +34,7 @@ export async function signup(apiUrl?: string) {
   try {
     const data = await client.request<any>(endpoints.signupIntentCreate, {
       method: 'POST',
-      body: JSON.stringify({ name, email, password: pass, utmInfo: {} }),
+      body: JSON.stringify({ name, email, password: pass, utmInfo: {}, signupSource: 'cli' }),
     })
 
     saveAuthState({
@@ -55,7 +56,7 @@ export async function signup(apiUrl?: string) {
 // Wait for the user to paste the confirmation link, then confirm. Re-prompts on a bad/expired link.
 async function promptAndConfirmEmail(auth: AuthState) {
   for (;;) {
-    const link = await input({ message: 'Paste the confirmation link from your email (blank to confirm later)' })
+    const link = await text('Paste the confirmation link from your email (blank to confirm later)')
     if (!link.trim()) {
       console.log('Confirm later with: fingerprint signup-confirm "<link from email>"')
       return
@@ -108,10 +109,10 @@ export async function signupConfirm(linkOrIntent: string, code?: string) {
   await runOnboarding()
 }
 
-export async function login(apiUrl?: string) {
-  const email = await input({ message: 'Email' })
+export async function login(opts: { apiUrl?: string; email?: string } = {}) {
+  const email = opts.email ?? (await text('Email'))
   const pass = await password({ message: 'Password' })
-  const cfg = resolveConfig(apiUrl)
+  const cfg = resolveConfig(opts.apiUrl)
   const client = new ApiClient(cfg.apiUrl)
 
   try {

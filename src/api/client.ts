@@ -13,7 +13,12 @@ export class ApiClient {
   }
 
   async request<T>(path: string, init: RequestInit = {}, auth = false): Promise<T> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      // Lets the backend identify requests originating from this CLI.
+      'User-Agent': 'fingerprint-cli/0.0.2',
+      'X-Fingerprint-Client': 'cli',
+    }
     if (auth && this.state?.accessToken) headers.Authorization = `Bearer ${this.state.accessToken}`
 
     const res = await fetch(new URL(path, this.apiUrl), { ...init, headers })
