@@ -6,6 +6,7 @@ import { endpoints } from '../api/endpoints.js'
 import { AuthState, saveAuthState, clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
+import { credentialsStep } from './keys.js'
 
 export async function signup(opts: { apiUrl?: string; name?: string; email?: string } = {}) {
   const name = opts.name ?? (await text('Name'))
@@ -76,6 +77,8 @@ async function promptAndConfirmEmail(auth: AuthState) {
 async function runOnboarding() {
   console.log('\nNext: set up your first workspace.')
   await workspaceStart()
+  console.log('\nNext: generate API keys.')
+  await credentialsStep()
 }
 
 // The confirmation email links to /signup/confirm/<signupIntent>?confirmationCode=<code>.

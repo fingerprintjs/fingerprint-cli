@@ -27,3 +27,4 @@ If signup is blocked in production due to visitor ID checks, the CLI opens dashb
 
 - `fingerprint signup|signup-confirm|login|logout|whoami`
 - `fingerprint workspace ls|start|use`
+- `fingerprint keys` — generate API keys and write them to `.env`
