@@ -21,6 +21,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.162",
     "@inquirer/prompts": "^8.0.1",
     "chalk": "^5.6.2",
     "commander": "^14.0.1",
