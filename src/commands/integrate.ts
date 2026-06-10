@@ -1,35 +1,36 @@
-import { confirm } from '@inquirer/prompts'
 import { resolve } from 'node:path'
 import { analyzeRepo, formatAnalysis } from '../wizard/detect.js'
-import { runAgent } from '../wizard/runner.js'
+import { log } from '../wizard/log.js'
+import { provisionForRepo } from '../wizard/provision.js'
+import { applyIntegration } from '../wizard/runner.js'
 import { saveState } from '../wizard/session.js'
-import { skillsForMatch } from '../wizard/skills.js'
+import { requireAuth } from '../utils/session.js'
 
-export async function integrateCommand(opts: { path?: string; analyze?: boolean } = {}) {
+export async function integrateCommand(opts: { path?: string; analyze?: boolean; yes?: boolean } = {}) {
   const root = resolve(opts.path ?? process.cwd())
 
   const analysis = analyzeRepo(root)
+  const willApply = Boolean(analysis.skillId) && !opts.analyze
+
+  // Applying provisions real workspace keys and edits files, so it needs an authenticated user
+  // with an active workspace. Gate before any output or side effects. (`--analyze` is a read-only
+  // report and stays available to logged-out users.)
+  if (willApply) {
+    const auth = requireAuth()
+    if (!auth.currentSubscriptionId) {
+      throw new Error('No active workspace. Run: fingerprint login (or: fingerprint workspace use <id>)')
+    }
+  }
+
   console.log(formatAnalysis(analysis))
   saveState(root, { phase: 'analyzed', completedSteps: ['analyze'], skillsApplied: [] })
 
-  if (!analysis.skillId) {
-    console.log('\nNothing to apply yet for this stack.')
-    return
-  }
-  if (opts.analyze) return
+  if (!willApply) return
 
-  const proceed = await confirm({
-    message: `Apply the Fingerprint integration to ${root}? (edits files)`,
-    default: true,
-  })
-  if (!proceed) return
+  // Step: set up env vars (provision keys + region into each app's env file).
+  log.step('Set up environment variables')
+  await provisionForRepo(root)
 
-  const ok = await runAgent(analysis)
-  if (ok) {
-    saveState(root, {
-      phase: 'applied',
-      completedSteps: ['analyze', 'apply'],
-      skillsApplied: skillsForMatch(analysis.skillId),
-    })
-  }
+  // Step: ask to apply, then run the agent.
+  await applyIntegration(root, { yes: opts.yes })
 }

@@ -1,12 +1,13 @@
-import { password } from '@inquirer/prompts'
+import { password, select } from '@inquirer/prompts'
 import { text } from '../utils/prompt.js'
 import open from 'open'
 import { ApiClient } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
-import { AuthState, saveAuthState, clearAuthState, getAuthState } from '../auth/tokenStore.js'
+import { AuthState, saveAuthState, clearAuthState, getAuthState, updateAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
 import { credentialsStep } from './keys.js'
+import { integrateCommand } from './integrate.js'
 
 export async function signup(opts: { apiUrl?: string; name?: string; email?: string } = {}) {
   const name = opts.name ?? (await text('Name'))
@@ -139,6 +140,34 @@ export async function login(opts: { apiUrl?: string; email?: string } = {}) {
     region: cfg.region,
   })
   console.log('Logged in successfully.')
+  const hasWorkspace = await selectActiveWorkspace(new ApiClient(cfg.apiUrl))
+
+  // Continue into integration for the repo in the current directory, the same way CLI signup
+  // does. `integrate` no-ops with a message if this dir isn't a supported stack.
+  if (hasWorkspace) {
+    console.log('\nNext: integrate Fingerprint into the current project.')
+    await integrateCommand()
+  }
+}
+
+// After authenticating, set the active workspace so `keys`/`integrate` are ready to run.
+// Returns true if a workspace is now active.
+async function selectActiveWorkspace(client: ApiClient): Promise<boolean> {
+  const subs = await client.request<any[]>(endpoints.subscriptions, { method: 'GET' }, true)
+  if (subs.length === 0) {
+    console.log('No workspaces yet. Create one with: fingerprint workspace start')
+    return false
+  }
+  let id = subs[0].id
+  if (subs.length > 1) {
+    id = await select({
+      message: 'Select active workspace',
+      choices: subs.map((s) => ({ name: `${s.name ?? 'workspace'} (${s.id})`, value: s.id })),
+    })
+  }
+  updateAuthState({ currentSubscriptionId: id })
+  console.log(`Active workspace: ${subs.find((s) => s.id === id)?.name ?? id}`)
+  return true
 }
 
 export async function logout() {

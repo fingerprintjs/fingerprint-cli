@@ -35,7 +35,8 @@ program
   .description('Analyze the current repo and apply the Fingerprint integration')
   .option('--path <dir>', 'repo to analyze (default: current directory)')
   .option('--analyze', 'only analyze; do not apply the integration')
-  .action((opts) => integrateCommand({ path: opts.path, analyze: opts.analyze }))
+  .option('--yes', 'skip the confirmation prompt')
+  .action((opts) => integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes }))
 
 program.parseAsync().catch((err) => {
   console.error(err.message)

@@ -1,12 +1,36 @@
+import { confirm } from '@inquirer/prompts'
+import { execFileSync } from 'node:child_process'
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { RepoAnalysis } from './detect.js'
+import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
+import { saveState } from './session.js'
 import { installSkills, skillMeta, SkillMeta, skillsForMatch } from './skills.js'
 
-// Tools the agent may use. No Bash for now: the agent edits code; the CLI reports the
-// package installs to run (auto-install via Bash + sandbox is a follow-up).
+// Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
+// itself (deterministic, no shell handed to the model).
 const ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
+
+// Offer to apply the integration for the repo at `root` (after env has been provisioned),
+// then run the agent. Shared by `integrate`, `keys`, and the onboarding chain so the flow
+// is continuous: detect → set up env → "integrate this repo?" → apply.
+export async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<void> {
+  const analysis = analyzeRepo(root)
+  if (!analysis.skillId) {
+    log.info('No Fingerprint integration is available for this stack yet.')
+    return
+  }
+  const proceed =
+    opts.yes ||
+    (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skillId})? (edits files)`, default: true }))
+  if (!proceed) return
+
+  log.step('Apply integration')
+  const ok = await runAgent(analysis)
+  if (ok) {
+    saveState(root, { phase: 'applied', completedSteps: ['analyze', 'apply'], skillsApplied: skillsForMatch(analysis.skillId) })
+  }
+}
 
 export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
   if (!analysis.skillId) throw new Error('No matching skill to apply.')
@@ -30,7 +54,7 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
       permissionMode: 'acceptEdits',
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
-      skills: 'all',
+      skills: ids, // load only the skills we installed, not any others already in the repo
       allowedTools: ALLOWED_TOOLS,
     },
   })
@@ -41,7 +65,7 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
     if (status !== undefined) ok = status
   }
 
-  if (ok) reportInstalls(metas)
+  if (ok) installPackages(analysis, metas)
   return ok
 }
 
@@ -56,7 +80,8 @@ const SYSTEM_PROMPT = [
   '- Make minimal, focused changes; match the existing code style.',
   '- The secret key is server-side only; never reference it in frontend code.',
   '- Do NOT read or print .env. Reference keys by env-var name only.',
-  '- Do not run install commands; the CLI handles package installs after you finish.',
+  '- Only edit code. Do not install packages or run shell commands, and do not tell the user to',
+  '  install anything — the CLI installs the required packages automatically after you finish.',
   '- When done, briefly summarize the files you changed.',
 ].join('\n')
 
@@ -67,8 +92,11 @@ function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
     'Integrate Fingerprint into this repository.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
     'Apply the frontend identification skill to the frontend app and the backend verification',
-    'skill to the backend app. The .env already defines FINGERPRINT_PUBLIC_API_KEY and',
-    'FINGERPRINT_SECRET_API_KEY. Protect the login flow as the first sensitive action.',
+    'skill to the backend app. The per-app .env files are already provisioned with the keys',
+    "(frontend: the bundler-prefixed public key; backend: FINGERPRINT_SECRET_API_KEY).",
+    "Protect the app's primary sensitive action (signup if present, else login): collect the",
+    'identification on the client, send the event_id, and on the server verify it and block bots',
+    'before completing the action.',
     `Skills to apply (read each from .claude/skills/<id>/SKILL.md): ${ids.join(', ')}.`,
   ].join('\n')
 }
@@ -102,9 +130,38 @@ function summarizeToolInput(_name: string, input: any): string {
   return ''
 }
 
-function reportInstalls(skills: SkillMeta[]): void {
-  const pkgs = [...new Set(skills.flatMap((s) => s.packages))]
-  if (pkgs.length === 0) return
-  log.step('Install the Fingerprint packages in the relevant app(s):')
-  log.info(`npm install ${pkgs.join(' ')}`)
+// Install each skill's packages into the app that needs them, using that app's package
+// manager. Deterministic and host-side — the agent never gets a shell.
+function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): void {
+  const appForRole: Record<string, DetectedApp | undefined> = {
+    frontend: analysis.frontend,
+    backend: analysis.backend,
+    fullstack: analysis.frontend ?? analysis.backend,
+  }
+  for (const skill of skills) {
+    if (skill.packages.length === 0) continue
+    const app = appForRole[skill.role] ?? analysis.frontend ?? analysis.backend
+    if (!app) continue
+    const [bin, sub] = installCommand(app.packageManager)
+    log.step(`Installing ${skill.packages.join(', ')} in ${app.rel} (${bin})`)
+    try {
+      execFileSync(bin, [sub, ...skill.packages], { cwd: app.dir, stdio: 'inherit' })
+      log.success(`Installed in ${app.rel}`)
+    } catch {
+      log.warn(`Install failed in ${app.rel} — run manually: ${bin} ${sub} ${skill.packages.join(' ')}`)
+    }
+  }
+}
+
+function installCommand(pm?: string): [string, string] {
+  switch (pm) {
+    case 'pnpm':
+      return ['pnpm', 'add']
+    case 'yarn':
+      return ['yarn', 'add']
+    case 'bun':
+      return ['bun', 'add']
+    default:
+      return ['npm', 'install']
+  }
 }
