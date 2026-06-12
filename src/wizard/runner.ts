@@ -4,8 +4,8 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
-import { saveState } from './session.js'
 import { installSkills, skillMeta, SkillMeta, skillsForMatch } from './skills.js'
+import { autoYes } from '../utils/ci.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model).
@@ -22,14 +22,12 @@ export async function applyIntegration(root: string, opts: { yes?: boolean } = {
   }
   const proceed =
     opts.yes ||
+    autoYes() ||
     (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skillId})? (edits files)`, default: true }))
   if (!proceed) return
 
   log.step('Apply integration')
-  const ok = await runAgent(analysis)
-  if (ok) {
-    saveState(root, { phase: 'applied', completedSteps: ['analyze', 'apply'], skillsApplied: skillsForMatch(analysis.skillId) })
-  }
+  await runAgent(analysis)
 }
 
 export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {

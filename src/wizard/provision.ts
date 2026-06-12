@@ -4,6 +4,7 @@ import { ApiClient } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
 import { requireAuth } from '../utils/session.js'
 import { text } from '../utils/prompt.js'
+import { isCi } from '../utils/ci.js'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { log } from './log.js'
 
@@ -130,7 +131,7 @@ export async function provisionForRepo(root: string): Promise<DetectedApp[]> {
   // Frontend present but nothing to hold the secret → ask where the backend is.
   const hasFrontendKey = apps.some((a) => conventionFor(a).publicVar)
   const hasSecretHolder = apps.some((a) => conventionFor(a).secretVar)
-  if (hasFrontendKey && !hasSecretHolder) {
+  if (hasFrontendKey && !hasSecretHolder && !isCi()) {
     const p = await text('No backend found in this repo. Path to your backend project (blank to skip)')
     if (p.trim()) {
       const be = relevantApps(analyzeRepo(resolve(p.trim()))).find((a) => conventionFor(a).secretVar)

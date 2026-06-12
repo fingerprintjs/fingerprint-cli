@@ -3,7 +3,6 @@ import { analyzeRepo, formatAnalysis } from '../wizard/detect.js'
 import { log } from '../wizard/log.js'
 import { provisionForRepo } from '../wizard/provision.js'
 import { applyIntegration } from '../wizard/runner.js'
-import { saveState } from '../wizard/session.js'
 import { requireAuth } from '../utils/session.js'
 
 export async function integrateCommand(opts: { path?: string; analyze?: boolean; yes?: boolean } = {}) {
@@ -23,7 +22,6 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
   }
 
   console.log(formatAnalysis(analysis))
-  saveState(root, { phase: 'analyzed', completedSteps: ['analyze'], skillsApplied: [] })
 
   if (!willApply) return
 
