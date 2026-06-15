@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 export interface SkillMeta {
   id: string
@@ -8,9 +9,38 @@ export interface SkillMeta {
   packages: string[]
 }
 
-// Skills live in their own repo, not the CLI. Override with FINGERPRINT_SKILLS_DIR.
+// Skills live in their own public repo and are cloned into a local cache on first use, so a
+// downloaded CLI works without any local checkout. Override the source with FINGERPRINT_SKILLS_REPO,
+// or point at a local checkout with FINGERPRINT_SKILLS_DIR (for developing skills).
+const SKILLS_REPO = process.env.FINGERPRINT_SKILLS_REPO ?? 'https://github.com/sedyldz/fingerprint-skills'
+const skillsCache = join(homedir(), '.config', 'fingerprint', 'skills')
+let ensured = false
+
 function skillsDir(): string {
-  return process.env.FINGERPRINT_SKILLS_DIR ?? join(homedir(), 'Dev', 'fingerprint-skills')
+  if (process.env.FINGERPRINT_SKILLS_DIR) return process.env.FINGERPRINT_SKILLS_DIR
+  if (!ensured) {
+    ensureSkillsRepo()
+    ensured = true
+  }
+  return skillsCache
+}
+
+// Clone the skills repo into the cache on first use; best-effort refresh if it's already there.
+function ensureSkillsRepo(): void {
+  try {
+    if (existsSync(join(skillsCache, '.git'))) {
+      try {
+        execFileSync('git', ['-C', skillsCache, 'pull', '--ff-only', '--quiet'], { stdio: 'ignore' })
+      } catch {
+        // Offline or diverged — fall back to the cached copy as-is.
+      }
+      return
+    }
+    mkdirSync(dirname(skillsCache), { recursive: true })
+    execFileSync('git', ['clone', '--depth', '1', '--quiet', SKILLS_REPO, skillsCache], { stdio: 'ignore' })
+  } catch (e) {
+    throw new Error(`Could not fetch skills from ${SKILLS_REPO} (needs git + network): ${(e as Error).message}`)
+  }
 }
 
 // A detected stack maps to the concrete skills to apply.
