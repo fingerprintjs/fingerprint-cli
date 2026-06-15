@@ -16,10 +16,30 @@ const ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
 // is continuous: detect → set up env → "integrate this repo?" → apply.
 export async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<void> {
   const analysis = analyzeRepo(root)
+
+  // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
+  // best-effort, docs-researched integration instead of giving up.
   if (!analysis.skillId) {
-    log.info('No Fingerprint integration is available for this stack yet.')
+    if (!analysis.frontend && !analysis.backend) {
+      log.info('No Fingerprint integration is available for this stack yet.')
+      return
+    }
+    const stack = [analysis.frontend?.framework, analysis.backend?.framework].filter(Boolean).join(' + ')
+    log.warn(`No curated skill for this stack (${stack}).`)
+    const proceed =
+      opts.yes ||
+      autoYes() ||
+      (await confirm({
+        message: 'Attempt an experimental, docs-based integration? (researches Fingerprint docs, then edits files)',
+        default: true,
+      }))
+    if (!proceed) return
+
+    log.step('Researching Fingerprint docs and applying integration')
+    await runAgentFromDocs(analysis)
     return
   }
+
   const proceed =
     opts.yes ||
     autoYes() ||
@@ -96,6 +116,70 @@ function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
     'identification on the client, send the event_id, and on the server verify it and block bots',
     'before completing the action.',
     `Skills to apply (read each from .claude/skills/<id>/SKILL.md): ${ids.join(', ')}.`,
+  ].join('\n')
+}
+
+// Fallback for stacks with no curated skill: the agent researches Fingerprint's docs and
+// integrates based on the detected frameworks. Web tools are enabled so it can read the docs.
+// No deterministic package install (we have no skill metadata) — it edits the manifest and
+// reports the install command instead.
+export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean> {
+  const llm = resolveLlmConfig()
+  const response = query({
+    prompt: buildDocsTaskPrompt(analysis),
+    options: {
+      model: llm.model,
+      env: llm.env,
+      cwd: analysis.root,
+      permissionMode: 'acceptEdits',
+      systemPrompt: DOCS_SYSTEM_PROMPT,
+      allowedTools: [...ALLOWED_TOOLS, 'WebFetch', 'WebSearch'],
+    },
+  })
+
+  let ok = false
+  for await (const msg of response as AsyncIterable<any>) {
+    const status = handleMessage(msg)
+    if (status !== undefined) ok = status
+  }
+  if (ok) log.warn('Experimental integration applied from docs — review the changes and install any dependencies it listed.')
+  return ok
+}
+
+const DOCS_SYSTEM_PROMPT = [
+  'You are the Fingerprint integration wizard. No curated skill exists for this stack, so research',
+  "Fingerprint's official documentation and integrate based on what you find.",
+  '',
+  '- Start at https://docs.fingerprint.com/llms.txt and follow the relevant links; prefer v4 docs over v3.',
+  '- Use WebFetch/WebSearch to read the docs for the detected frontend and backend frameworks and find',
+  '  the correct SDK/package and usage for each. If web access is unavailable, use your own knowledge',
+  "  of Fingerprint's v4 SDKs.",
+  '',
+  'Rules:',
+  '- Make minimal, focused changes; match the existing code style.',
+  '- The secret key is server-side only; never reference it in frontend code.',
+  '- Do NOT read or print .env. Reference keys by env-var name only (client: a bundler-prefixed public',
+  '  key, e.g. VITE_/NEXT_PUBLIC_FINGERPRINT_PUBLIC_API_KEY; server: FINGERPRINT_SECRET_API_KEY).',
+  '- You MAY add required dependencies to the package manifest (package.json / requirements.txt), but',
+  '  do NOT run shell commands. List the exact install command(s) for the user at the end.',
+  "- Protect the app's primary sensitive action (signup if present, else login): identify on the client,",
+  '  send the event/request id, verify it server-side and block bots before completing the action.',
+  '- When done, summarize the files you changed and the packages to install.',
+].join('\n')
+
+function buildDocsTaskPrompt(analysis: RepoAnalysis): string {
+  const fe = analysis.frontend
+    ? `frontend: ${analysis.frontend.framework} (${analysis.frontend.language}) at ./${analysis.frontend.rel}`
+    : null
+  const be = analysis.backend
+    ? `backend: ${analysis.backend.framework} (${analysis.backend.language}) at ./${analysis.backend.rel}`
+    : null
+  return [
+    'Integrate Fingerprint device intelligence into this repository by researching the docs.',
+    `Detected ${[fe, be].filter(Boolean).join('; ')}.`,
+    'Find the right Fingerprint SDK for each part from the docs, wire up client identification and',
+    'server-side verification, and protect the primary sensitive action. The env files may already',
+    'contain the public/secret keys under the standard variable names — use those names.',
   ].join('\n')
 }
 

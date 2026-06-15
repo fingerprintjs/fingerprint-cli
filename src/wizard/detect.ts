@@ -185,7 +185,9 @@ export function formatAnalysis(a: RepoAnalysis): string {
   lines.push(
     a.skillId
       ? `Matched integration skill: ${a.skillId}`
-      : 'No integration skill matches yet (milestone 1 targets React + Node/Express).'
+      : a.frontend || a.backend
+        ? 'No curated skill for this stack — a docs-based integration can be attempted (experimental).'
+        : 'No supported app detected — nothing to integrate.'
   )
   return lines.join('\n')
 }
