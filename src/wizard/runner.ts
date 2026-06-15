@@ -4,7 +4,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
-import { installSkills, skillMeta, SkillMeta, skillsForMatch } from './skills.js'
+import { installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes } from '../utils/ci.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
@@ -19,7 +19,7 @@ export async function applyIntegration(root: string, opts: { yes?: boolean } = {
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
   // best-effort, docs-researched integration instead of giving up.
-  if (!analysis.skillId) {
+  if (!analysis.skills.length) {
     if (!analysis.frontend && !analysis.backend) {
       log.info('No Fingerprint integration is available for this stack yet.')
       return
@@ -43,7 +43,7 @@ export async function applyIntegration(root: string, opts: { yes?: boolean } = {
   const proceed =
     opts.yes ||
     autoYes() ||
-    (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skillId})? (edits files)`, default: true }))
+    (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skills.join(' + ')})? (edits files)`, default: true }))
   if (!proceed) return
 
   log.step('Apply integration')
@@ -51,10 +51,10 @@ export async function applyIntegration(root: string, opts: { yes?: boolean } = {
 }
 
 export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
-  if (!analysis.skillId) throw new Error('No matching skill to apply.')
+  if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = resolveLlmConfig()
-  const ids = skillsForMatch(analysis.skillId)
+  const ids = analysis.skills
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
   // rather than us stuffing their full text into the prompt every turn.
@@ -109,12 +109,11 @@ function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
   return [
     'Integrate Fingerprint into this repository.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
-    'Apply the frontend identification skill to the frontend app and the backend verification',
-    'skill to the backend app. The per-app .env files are already provisioned with the keys',
-    "(frontend: the bundler-prefixed public key; backend: FINGERPRINT_SECRET_API_KEY).",
-    "Protect the app's primary sensitive action (signup if present, else login): collect the",
-    'identification on the client, send the event_id, and on the server verify it and block bots',
-    'before completing the action.',
+    'Read and follow each named skill from .claude/skills/<id>/SKILL.md and apply it to the',
+    'matching part of the app. The per-app .env files are already provisioned with the keys',
+    '(frontend: the bundler-prefixed public key; backend: FINGERPRINT_SECRET_API_KEY).',
+    "Protect the app's primary sensitive action (signup if present, else login): identify on the",
+    'client, send the event_id, and verify it server-side, blocking bots before completing.',
     `Skills to apply (read each from .claude/skills/<id>/SKILL.md): ${ids.join(', ')}.`,
   ].join('\n')
 }
@@ -243,6 +242,10 @@ function installCommand(pm?: string): [string, string] {
       return ['yarn', 'add']
     case 'bun':
       return ['bun', 'add']
+    case 'poetry':
+      return ['poetry', 'add']
+    case 'pip':
+      return ['pip', 'install']
     default:
       return ['npm', 'install']
   }

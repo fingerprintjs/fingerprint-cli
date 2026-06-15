@@ -9,9 +9,9 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
   const root = resolve(opts.path ?? process.cwd())
 
   const analysis = analyzeRepo(root)
-  // Apply when a curated skill matches, or — as a fallback — whenever we detected a frontend/backend
+  // Apply when curated skills match, or — as a fallback — whenever we detected a frontend/backend
   // stack at all (the docs-based integration handles stacks without a skill).
-  const willApply = Boolean(analysis.skillId || analysis.frontend || analysis.backend) && !opts.analyze
+  const willApply = Boolean(analysis.skills.length || analysis.frontend || analysis.backend) && !opts.analyze
 
   // Applying provisions real workspace keys and edits files, so it needs an authenticated user
   // with an active workspace. Gate before any output or side effects. (`--analyze` is a read-only

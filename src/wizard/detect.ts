@@ -18,7 +18,7 @@ export interface RepoAnalysis {
   apps: DetectedApp[]
   frontend?: DetectedApp
   backend?: DetectedApp
-  skillId?: string // resolved integration skill, if one matches
+  skills: string[] // resolved curated skill ids to apply ([] = none, use the docs fallback)
 }
 
 const FRONTEND_FRAMEWORKS: Record<string, string> = {
@@ -136,12 +136,38 @@ function findApps(root: string): DetectedApp[] {
   return apps
 }
 
-function resolveSkill(frontend?: DetectedApp, backend?: DetectedApp): string | undefined {
-  const fw = frontend?.framework
-  const bw = backend?.framework
-  // Milestone 1 target: React frontend + Node/Express backend.
-  if (fw === 'react' && bw === 'express') return 'react-node-express'
-  return undefined
+// Detected framework → curated skill id (folder in the skills repo).
+const FRONTEND_SKILLS: Record<string, string> = {
+  react: 'fingerprint-react',
+  vue: 'fingerprint-vue',
+  angular: 'fingerprint-angular',
+  svelte: 'fingerprint-svelte',
+}
+const BACKEND_SKILLS: Record<string, string> = {
+  express: 'fingerprint-node',
+  fastify: 'fingerprint-node',
+  koa: 'fingerprint-node',
+  nest: 'fingerprint-node',
+  hapi: 'fingerprint-node',
+  fastapi: 'fingerprint-python',
+  django: 'fingerprint-python',
+  flask: 'fingerprint-python',
+}
+// Frameworks whose single skill covers both client and server (no separate backend skill needed).
+const FULLSTACK_SKILLS: Record<string, string> = {
+  next: 'fingerprint-nextjs',
+}
+
+// Resolve the curated skill ids for the detected stack. Returns [] when nothing matches
+// (the wizard then falls back to a docs-based integration).
+function resolveSkills(frontend?: DetectedApp, backend?: DetectedApp): string[] {
+  const feFw = frontend?.framework
+  if (feFw && FULLSTACK_SKILLS[feFw]) return [FULLSTACK_SKILLS[feFw]]
+
+  const ids: string[] = []
+  if (feFw && FRONTEND_SKILLS[feFw]) ids.push(FRONTEND_SKILLS[feFw])
+  if (backend?.framework && BACKEND_SKILLS[backend.framework]) ids.push(BACKEND_SKILLS[backend.framework])
+  return ids
 }
 
 export function analyzeRepo(root: string = process.cwd()): RepoAnalysis {
@@ -161,7 +187,7 @@ export function analyzeRepo(root: string = process.cwd()): RepoAnalysis {
     apps,
     frontend,
     backend,
-    skillId: resolveSkill(frontend, backend),
+    skills: resolveSkills(frontend, backend),
   }
 }
 
@@ -183,8 +209,8 @@ export function formatAnalysis(a: RepoAnalysis): string {
   lines.push(`Backend:  ${a.backend ? `${a.backend.framework} (${a.backend.rel})` : 'not found'}`)
   lines.push('')
   lines.push(
-    a.skillId
-      ? `Matched integration skill: ${a.skillId}`
+    a.skills.length
+      ? `Matched skills: ${a.skills.join(' + ')}`
       : a.frontend || a.backend
         ? 'No curated skill for this stack — a docs-based integration can be attempted (experimental).'
         : 'No supported app detected — nothing to integrate.'

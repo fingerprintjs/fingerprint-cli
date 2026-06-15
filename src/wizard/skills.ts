@@ -43,12 +43,6 @@ function ensureSkillsRepo(): void {
   }
 }
 
-// A detected stack maps to the concrete skills to apply.
-export function skillsForMatch(skillId: string): string[] {
-  if (skillId === 'react-node-express') return ['fingerprint-react', 'fingerprint-node']
-  return [skillId]
-}
-
 export function skillMeta(id: string): SkillMeta {
   const meta = JSON.parse(readFileSync(join(skillsDir(), id, 'skill.json'), 'utf8'))
   return { id, role: meta.role, packages: meta.packages ?? [] }
