@@ -1,15 +1,44 @@
 import { confirm } from '@inquirer/prompts'
 import { execFileSync } from 'node:child_process'
-import { query } from '@anthropic-ai/claude-agent-sdk'
+import { query, type CanUseTool } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes } from '../utils/ci.js'
+import { isVerbose } from '../utils/verbose.js'
+import { isInteractive } from '../utils/interactive.js'
+import { debugLog } from '../utils/log-file.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
-// itself (deterministic, no shell handed to the model).
-const ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
+// itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
+// mutating ones (Edit/Write) are gated separately so --interactive can prompt before each one.
+const READONLY_TOOLS = ['Read', 'Glob', 'Grep']
+const EDIT_TOOLS = ['Edit', 'Write']
+
+// In interactive mode, prompt before each file edit; deny anything that isn't a known edit tool
+// (read-only tools are auto-allowed via allowedTools and never reach here, so a hit means something
+// unexpected like Bash). Returns an SDK PermissionResult.
+const askBeforeEdit: CanUseTool = async (toolName, input) => {
+  if (toolName === 'Edit' || toolName === 'Write') {
+    const file = (input.file_path ?? input.path) as string | undefined
+    const verb = toolName === 'Write' ? 'create/overwrite' : 'edit'
+    const ok = await confirm({ message: `Allow the wizard to ${verb} ${file ?? 'a file'}?`, default: true })
+    return ok ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'User declined this edit.' }
+  }
+  return { behavior: 'deny', message: `Tool ${toolName} is not permitted by the wizard.` }
+}
+
+// Permission-related query options. Auto mode (default): edits + reads run without prompting.
+// Interactive mode: reads/web stay auto-allowed, but Edit/Write route through askBeforeEdit.
+// `extraReadonly` adds read-only tools that should also run without prompting (e.g. WebFetch).
+function permissionOptions(extraReadonly: string[] = []) {
+  const readonly = [...READONLY_TOOLS, ...extraReadonly]
+  if (!isInteractive()) {
+    return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS] }
+  }
+  return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit }
+}
 
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent. Shared by `integrate`, `keys`, and the onboarding chain so the flow
@@ -69,11 +98,10 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
       model: llm.model,
       env: llm.env,
       cwd: analysis.root,
-      permissionMode: 'acceptEdits',
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      allowedTools: ALLOWED_TOOLS,
+      ...permissionOptions(),
     },
   })
 
@@ -83,7 +111,7 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
     if (status !== undefined) ok = status
   }
 
-  if (ok) installPackages(analysis, metas)
+  if (ok) await installPackages(analysis, metas)
   return ok
 }
 
@@ -100,6 +128,9 @@ const SYSTEM_PROMPT = [
   '- Do NOT read or print .env. Reference keys by env-var name only.',
   '- Only edit code. Do not install packages or run shell commands, and do not tell the user to',
   '  install anything — the CLI installs the required packages automatically after you finish.',
+  '- Do NOT add dependencies or pin version numbers in package.json / requirements.txt. The CLI',
+  '  installs the correct published versions itself; just write the app code that imports them.',
+  '  ("v4" in a skill refers to the Fingerprint platform, not an npm package major version.)',
   '- When done, briefly summarize the files you changed.',
 ].join('\n')
 
@@ -130,9 +161,8 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean>
       model: llm.model,
       env: llm.env,
       cwd: analysis.root,
-      permissionMode: 'acceptEdits',
       systemPrompt: DOCS_SYSTEM_PROMPT,
-      allowedTools: [...ALLOWED_TOOLS, 'WebFetch', 'WebSearch'],
+      ...permissionOptions(['WebFetch', 'WebSearch']),
     },
   })
 
@@ -161,6 +191,8 @@ const DOCS_SYSTEM_PROMPT = [
   '  key, e.g. VITE_/NEXT_PUBLIC_FINGERPRINT_PUBLIC_API_KEY; server: FINGERPRINT_SECRET_API_KEY).',
   '- You MAY add required dependencies to the package manifest (package.json / requirements.txt), but',
   '  do NOT run shell commands. List the exact install command(s) for the user at the end.',
+  '- Do NOT guess version numbers. Use "latest" (or leave the range open) unless the docs state a',
+  '  specific version — "v4" refers to the Fingerprint platform, not an npm package major version.',
   "- Protect the app's primary sensitive action (signup if present, else login): identify on the client,",
   '  send the event/request id, verify it server-side and block bots before completing the action.',
   '- When done, summarize the files you changed and the packages to install.',
@@ -187,7 +219,13 @@ function handleMessage(msg: any): boolean | undefined {
   if (msg.type === 'assistant') {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'text' && block.text?.trim()) log.info(block.text.trim())
-      else if (block.type === 'tool_use') log.tool(block.name, summarizeToolInput(block.name, block.input))
+      // Per-step tool calls (Read/Glob/Edit/...) are noisy; only stream them to the console with
+      // --verbose, but always tee them to the debug log so failed runs still leave a trail.
+      else if (block.type === 'tool_use') {
+        const detail = summarizeToolInput(block.name, block.input)
+        if (isVerbose()) log.tool(block.name, detail)
+        else debugLog(`tool  ${block.name}${detail ? ` ${detail}` : ''}`)
+      }
     }
     return undefined
   }
@@ -213,7 +251,7 @@ function summarizeToolInput(_name: string, input: any): string {
 
 // Install each skill's packages into the app that needs them, using that app's package
 // manager. Deterministic and host-side — the agent never gets a shell.
-function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): void {
+async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Promise<void> {
   const appForRole: Record<string, DetectedApp | undefined> = {
     frontend: analysis.frontend,
     backend: analysis.backend,
@@ -224,14 +262,33 @@ function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): void {
     const app = appForRole[skill.role] ?? analysis.frontend ?? analysis.backend
     if (!app) continue
     const [bin, sub] = installCommand(app.packageManager)
-    log.step(`Installing ${skill.packages.join(', ')} in ${app.rel} (${bin})`)
+    // The CLI owns dependency versions. For npm-family managers, pin unversioned packages to
+    // @latest so the install ignores any (possibly wrong) range the agent wrote into package.json
+    // and rewrites it to the real published version. pip/poetry don't use @latest syntax and
+    // install latest by name anyway, so leave their packages untouched.
+    const jsPm = !['pip', 'poetry'].includes(app.packageManager ?? '')
+    const pkgs = jsPm ? skill.packages.map(pinLatest) : skill.packages
+    if (isInteractive()) {
+      const ok = await confirm({ message: `Install ${pkgs.join(', ')} in ${app.rel}? (${bin} ${sub})`, default: true })
+      if (!ok) {
+        log.warn(`Skipped — install manually: ${bin} ${sub} ${pkgs.join(' ')} (in ${app.rel})`)
+        continue
+      }
+    }
+    log.step(`Installing ${pkgs.join(', ')} in ${app.rel} (${bin})`)
     try {
-      execFileSync(bin, [sub, ...skill.packages], { cwd: app.dir, stdio: 'inherit' })
+      execFileSync(bin, [sub, ...pkgs], { cwd: app.dir, stdio: 'inherit' })
       log.success(`Installed in ${app.rel}`)
     } catch {
-      log.warn(`Install failed in ${app.rel} — run manually: ${bin} ${sub} ${skill.packages.join(' ')}`)
+      log.warn(`Install failed in ${app.rel} — run manually: ${bin} ${sub} ${pkgs.join(' ')}`)
     }
   }
+}
+
+// Append @latest to a package spec that has no version. Scoped names start with '@', so a real
+// version specifier is an '@' anywhere after the first character (e.g. '@fingerprint/react@^4').
+function pinLatest(pkg: string): string {
+  return pkg.lastIndexOf('@') > 0 ? pkg : `${pkg}@latest`
 }
 
 function installCommand(pm?: string): [string, string] {

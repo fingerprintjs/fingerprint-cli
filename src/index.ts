@@ -8,6 +8,8 @@ import { integrateCommand } from './commands/integrate.js'
 import { getAuthState, setSessionOverride } from './auth/tokenStore.js'
 import { resolveConfig } from './config/config.js'
 import { setCiContext, isCi } from './utils/ci.js'
+import { setVerbose } from './utils/verbose.js'
+import { setInteractive } from './utils/interactive.js'
 
 const program = new Command()
 program.name('fingerprint').description('Fingerprint CLI dashboard companion')
@@ -19,13 +21,18 @@ program
   .option('--subscription <id>', 'workspace (subscription) id to use')
   .option('--api-url <url>')
   .option('-y, --yes', 'skip confirmation prompts')
+  .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
+  .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
 
 // Seed the CI/headless session from global flags before any command runs. With --api-key we
 // build an in-memory auth state (never written to disk) so api/integrate work without a login.
 program.hook('preAction', () => {
-  const opts = program.opts<{ ci?: boolean; apiKey?: string; subscription?: string; apiUrl?: string; yes?: boolean }>()
+  const opts = program.opts<{ ci?: boolean; apiKey?: string; subscription?: string; apiUrl?: string; yes?: boolean; verbose?: boolean; interactive?: boolean }>()
   const ci = Boolean(opts.ci) || process.env.CI === 'true'
   setCiContext({ ci, yes: Boolean(opts.yes) || ci })
+  setVerbose(Boolean(opts.verbose))
+  // Per-step prompting needs a human; never enable it in CI/headless runs.
+  setInteractive(Boolean(opts.interactive) && !ci)
 
   const apiKey = opts.apiKey ?? process.env.FINGERPRINT_API_KEY
   if (apiKey) {
@@ -67,7 +74,13 @@ program
   .option('--path <dir>', 'repo to analyze (default: current directory)')
   .option('--analyze', 'only analyze; do not apply the integration')
   .option('--yes', 'skip the confirmation prompt')
-  .action((opts) => integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes }))
+  .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
+  .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
+  .action((opts) => {
+    if (opts.verbose) setVerbose(true)
+    if (opts.interactive && !isCi()) setInteractive(true)
+    return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes })
+  })
 
 // Default command: `fingerprint` with no subcommand. Route by where the user is so the whole
 // onboarding is one command (signup → workspace → keys → integrate, resuming from any point).
