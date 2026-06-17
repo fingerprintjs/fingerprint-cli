@@ -29,8 +29,15 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
 
   // Step: set up env vars (provision keys + region into each app's env file).
   log.step('Set up environment variables')
-  await provisionForRepo(root)
+  const { externalBackends } = await provisionForRepo(root)
 
-  // Step: ask to apply, then run the agent.
+  // Step: ask to apply, then run the agent against this repo.
   await applyIntegration(root, { yes: opts.yes })
+
+  // A backend in a separate repo (e.g. a standalone API) isn't visible to the repo-scoped pass
+  // above — provisioning only wrote its .env. Integrate each one with its own agent run.
+  for (const be of externalBackends) {
+    log.step(`Integrate backend at ${be.dir}`)
+    await applyIntegration(be.dir, { yes: opts.yes })
+  }
 }

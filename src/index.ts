@@ -23,6 +23,7 @@ program
   .option('-y, --yes', 'skip confirmation prompts')
   .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
   .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
+  .option('--web', 'sign in through the browser instead of typing a password')
 
 // Seed the CI/headless session from global flags before any command runs. With --api-key we
 // build an in-memory auth state (never written to disk) so api/integrate work without a login.
@@ -57,7 +58,8 @@ program
   .command('login')
   .option('--api-url <url>')
   .option('--email <email>')
-  .action(async (opts) => login({ apiUrl: opts.apiUrl, email: opts.email }))
+  .option('--web', 'sign in through the browser instead of typing a password')
+  .action(async (opts) => login({ apiUrl: opts.apiUrl, email: opts.email, web: opts.web }))
 program.command('logout').action(logout)
 program.command('whoami').action(whoami)
 
@@ -87,16 +89,26 @@ program
 async function defaultCommand() {
   const auth = getAuthState()
 
+  // `fingerprint --web`: go straight to browser sign-in. login({web}) runs the loopback flow and
+  // then continues the onboarding chain (workspace → keys → integrate) on its own.
+  if (program.opts<{ web?: boolean }>().web) {
+    if (isCi()) throw new Error('--web needs a browser; use --api-key for CI runs.')
+    await login({ web: true })
+    return
+  }
+
   if (!auth?.accessToken) {
     if (isCi()) throw new Error('Not authenticated. Pass --api-key (and --subscription) for CI runs.')
     const choice = await select({
       message: 'Welcome to Fingerprint. What would you like to do?',
       choices: [
-        { name: 'Sign up — create a new account', value: 'signup' },
-        { name: 'Log in — existing account', value: 'login' },
+        { name: 'Continue in browser — sign up or log in', value: 'browser' },
+        { name: 'Sign up with email/password', value: 'signup' },
+        { name: 'Log in with email/password', value: 'login' },
       ],
     })
-    if (choice === 'signup') await signup()
+    if (choice === 'browser') await login({ web: true })
+    else if (choice === 'signup') await signup()
     else await login()
     return
   }

@@ -25,27 +25,61 @@ function skillsDir(): string {
   return skillsCache
 }
 
+// Cap each git call so a hung network/auth prompt can't block the wizard indefinitely.
+const GIT_TIMEOUT_MS = 30_000
+
 // Clone the skills repo into the cache on first use; best-effort refresh if it's already there.
 function ensureSkillsRepo(): void {
   try {
     if (existsSync(join(skillsCache, '.git'))) {
       try {
-        execFileSync('git', ['-C', skillsCache, 'pull', '--ff-only', '--quiet'], { stdio: 'ignore' })
+        execFileSync('git', ['-C', skillsCache, 'pull', '--ff-only', '--quiet'], { stdio: 'ignore', timeout: GIT_TIMEOUT_MS })
       } catch {
-        // Offline or diverged — fall back to the cached copy as-is.
+        // Offline, diverged, or timed out — fall back to the cached copy as-is.
       }
       return
     }
     mkdirSync(dirname(skillsCache), { recursive: true })
-    execFileSync('git', ['clone', '--depth', '1', '--quiet', SKILLS_REPO, skillsCache], { stdio: 'ignore' })
+    execFileSync('git', ['clone', '--depth', '1', '--quiet', SKILLS_REPO, skillsCache], { stdio: 'ignore', timeout: GIT_TIMEOUT_MS })
   } catch (e) {
-    throw new Error(`Could not fetch skills from ${SKILLS_REPO} (needs git + network): ${(e as Error).message}`)
+    throw new Error(
+      `Could not fetch skills from ${SKILLS_REPO} (needs git + network). ` +
+        `If you're offline, set FINGERPRINT_SKILLS_DIR to a local checkout. Cause: ${(e as Error).message}`
+    )
   }
 }
 
 export function skillMeta(id: string): SkillMeta {
   const meta = JSON.parse(readFileSync(join(skillsDir(), id, 'skill.json'), 'utf8'))
   return { id, role: meta.role, packages: meta.packages ?? [] }
+}
+
+// The skills repo is an external supply chain, and its `packages` are handed to a host-side
+// `npm`/`pip install` — where a postinstall script runs arbitrary code. So never install an
+// arbitrary name from a skill: allow only Fingerprint's own scoped packages plus a fixed set of
+// known peer deps the skills legitimately need.
+const ALLOWED_PACKAGES = new Set([
+  'dotenv', // Node backends
+  'python-dotenv', // Python backends
+  'fingerprint-server-sdk', // Fingerprint Python server SDK (unscoped)
+])
+
+// Strip a version/tag suffix to get the bare package name. Scoped names start with '@', so a real
+// version specifier is an '@' after position 0 (e.g. '@fingerprint/react@^4' -> '@fingerprint/react').
+function packageName(spec: string): string {
+  const at = spec.lastIndexOf('@')
+  return at > 0 ? spec.slice(0, at) : spec
+}
+
+// Throw if a skill asks to install something outside the allowlist. Called at the install chokepoint
+// so a compromised/overridden skills repo can't trigger an arbitrary-package install (RCE via postinstall).
+export function assertAllowedPackage(spec: string): void {
+  const name = packageName(spec)
+  if (name.startsWith('@fingerprint/') || ALLOWED_PACKAGES.has(name)) return
+  throw new Error(
+    `Refusing to install untrusted package "${spec}" from a skill. ` +
+      `Only @fingerprint/* and known peers (${[...ALLOWED_PACKAGES].join(', ')}) are allowed.`
+  )
 }
 
 // Install skills into the target repo's .claude/skills/ so the agent loads them on demand

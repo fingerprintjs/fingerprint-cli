@@ -4,6 +4,7 @@ import open from 'open'
 import { ApiClient } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
 import { AuthState, saveAuthState, clearAuthState, getAuthState, updateAuthState } from '../auth/tokenStore.js'
+import { loginWithBrowser } from '../auth/browserLogin.js'
 import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
 import { credentialsStep } from './keys.js'
@@ -15,12 +16,15 @@ export async function signup(opts: { apiUrl?: string; name?: string; email?: str
   const cfg = resolveConfig(opts.apiUrl)
   const client = new ApiClient(cfg.apiUrl)
 
-  // Match the dashboard: a password must score at least "Good" (strengthLevel >= 1) before we submit.
+  // Match the dashboard's password rules (mgmt-api checkPasswordStrength): to pass it must contain
+  // an uppercase letter, a lowercase letter, a number, and be longer than 8 characters. Surface the
+  // criteria up front so users aren't guessing, then let the API be the source of truth below.
+  console.log('Password must be 9+ characters and include an uppercase letter, a lowercase letter, and a number.')
   let pass = ''
   for (;;) {
-    pass = await password({ message: 'Password' })
-    if (pass.length < 8) {
-      console.log('Password is not strong enough: must be at least 8 characters.')
+    pass = await password({ message: 'Password (9+ chars, upper + lower + number)' })
+    if (pass.length < 9) {
+      console.log('Password is not strong enough: must be more than 8 characters.')
       continue
     }
     const strength = await client
@@ -88,7 +92,10 @@ async function confirmEmail(auth: AuthState, linkOrIntent: string, code?: string
   let signupIntent = linkOrIntent
   let confirmationCode = code
   if (linkOrIntent.includes('/signup/confirm/')) {
-    const url = new URL(linkOrIntent)
+    // We only read pathname + query, so the base host is irrelevant — it works the same for any
+    // dashboard (prod dashboard.fingerprint.com, staging dashboard.fpjs.sh, etc.). The placeholder
+    // base just lets new URL() accept a pasted path-only link ("/signup/confirm/...") without throwing.
+    const url = new URL(linkOrIntent, 'http://placeholder.invalid')
     const match = url.pathname.match(/\/signup\/confirm\/([^/]+)/)
     if (match) signupIntent = decodeURIComponent(match[1])
     confirmationCode = url.searchParams.get('confirmationCode') ?? confirmationCode
@@ -113,17 +120,28 @@ export async function signupConfirm(linkOrIntent: string, code?: string) {
   await runOnboarding()
 }
 
-export async function login(opts: { apiUrl?: string; email?: string } = {}) {
+export async function login(opts: { apiUrl?: string; email?: string; web?: boolean } = {}) {
+  const cfg = resolveConfig(opts.apiUrl)
+
+  // Browser login: hand off to the dashboard (handles login AND signup, plus SSO/Google/GitHub) and
+  // catch the minted session on a loopback server. No password is typed into the terminal.
+  if (opts.web) {
+    const result = await loginWithBrowser({ apiUrl: opts.apiUrl })
+    console.log(result.isSignup ? 'Account created and signed in.' : 'Logged in successfully.')
+    await continueAfterLogin(cfg.apiUrl)
+    return
+  }
+
   const email = opts.email ?? (await text('Email'))
   const pass = await password({ message: 'Password' })
-  const cfg = resolveConfig(opts.apiUrl)
   const client = new ApiClient(cfg.apiUrl)
 
   try {
     const sso = await client.request<any>(endpoints.ssoAuth, { method: 'POST', body: JSON.stringify({ email }) })
     if (sso?.sso?.isEnabled) {
-      console.log('SSO is enabled for this domain. Opening dashboard login...')
-      await open('https://dashboard.fingerprint.com/login')
+      console.log('SSO is enabled for this domain. Opening browser login...')
+      await loginWithBrowser({ apiUrl: opts.apiUrl })
+      await continueAfterLogin(cfg.apiUrl)
       return
     }
   } catch {}
@@ -140,10 +158,14 @@ export async function login(opts: { apiUrl?: string; email?: string } = {}) {
     region: cfg.region,
   })
   console.log('Logged in successfully.')
-  const hasWorkspace = await selectActiveWorkspace(new ApiClient(cfg.apiUrl))
+  await continueAfterLogin(cfg.apiUrl)
+}
 
-  // Continue into integration for the repo in the current directory, the same way CLI signup
-  // does. `integrate` no-ops with a message if this dir isn't a supported stack.
+// After any login path, select the active workspace and continue into integration for the repo in
+// the current directory (the same chain CLI signup uses). `integrate` no-ops with a message if this
+// dir isn't a supported stack.
+async function continueAfterLogin(apiUrl: string) {
+  const hasWorkspace = await selectActiveWorkspace(new ApiClient(apiUrl))
   if (hasWorkspace) {
     console.log('\nNext: integrate Fingerprint into the current project.')
     await integrateCommand()

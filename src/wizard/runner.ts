@@ -1,10 +1,12 @@
+import chalk from 'chalk'
 import { confirm } from '@inquirer/prompts'
 import { execFileSync } from 'node:child_process'
-import { query, type CanUseTool } from '@anthropic-ai/claude-agent-sdk'
+import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
-import { installSkills, skillMeta, SkillMeta } from './skills.js'
+import { Spinner, activityFor } from './spinner.js'
+import { assertAllowedPackage, installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
@@ -29,15 +31,44 @@ const askBeforeEdit: CanUseTool = async (toolName, input) => {
   return { behavior: 'deny', message: `Tool ${toolName} is not permitted by the wizard.` }
 }
 
+// A .env file in the repo holds the freshly provisioned secret key (see provision.ts). The agent
+// legitimately needs Read/Grep for the integration, so we can't drop those tools — instead a
+// PreToolUse hook denies them specifically on .env files. Unlike the system-prompt instruction (a
+// soft control) or canUseTool (which `acceptEdits` bypasses for auto-allowed read tools), a
+// PreToolUse deny is a hard rule that fires in every permission mode, keeping the secret out of the
+// LLM transcript and the gateway.
+const ENV_FILE = /(^|[/\\])\.env(\.[^/\\]*)?$/
+
+const denyEnvReads: HookCallbackMatcher = {
+  hooks: [
+    async (input) => {
+      if (input.hook_event_name !== 'PreToolUse') return {}
+      if (input.tool_name !== 'Read' && input.tool_name !== 'Grep') return {}
+      const i = (input.tool_input ?? {}) as { file_path?: string; path?: string }
+      const target = i.file_path ?? i.path ?? ''
+      if (!ENV_FILE.test(target)) return {}
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'Reading .env is not allowed — reference keys by env-var name only.',
+        },
+      }
+    },
+  ],
+}
+
 // Permission-related query options. Auto mode (default): edits + reads run without prompting.
 // Interactive mode: reads/web stay auto-allowed, but Edit/Write route through askBeforeEdit.
 // `extraReadonly` adds read-only tools that should also run without prompting (e.g. WebFetch).
+// Both modes carry the .env deny hook so a secret in .env never reaches the model.
 function permissionOptions(extraReadonly: string[] = []) {
   const readonly = [...READONLY_TOOLS, ...extraReadonly]
+  const hooks = { PreToolUse: [denyEnvReads] }
   if (!isInteractive()) {
-    return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS] }
+    return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
   }
-  return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit }
+  return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
 }
 
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
@@ -105,13 +136,27 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
     },
   })
 
-  let ok = false
-  for await (const msg of response as AsyncIterable<any>) {
-    const status = handleMessage(msg)
-    if (status !== undefined) ok = status
-  }
+  const ok = await consume(response, 'Setting up the integration')
 
   if (ok) await installPackages(analysis, metas)
+  return ok
+}
+
+// Drive the agent's message stream to completion. In default mode this shows a live spinner with
+// the current high-level activity (the per-step tool calls are hidden); verbose mode and non-TTY
+// (CI) contexts skip the spinner and rely on the streamed/teed log lines instead.
+async function consume(response: unknown, initialMessage: string): Promise<boolean> {
+  const spinner = !isVerbose() && process.stdout.isTTY ? new Spinner() : null
+  spinner?.start(initialMessage)
+  let ok = false
+  try {
+    for await (const msg of response as AsyncIterable<any>) {
+      const status = handleMessage(msg, spinner)
+      if (status !== undefined) ok = status
+    }
+  } finally {
+    spinner?.stop()
+  }
   return ok
 }
 
@@ -166,11 +211,7 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean>
     },
   })
 
-  let ok = false
-  for await (const msg of response as AsyncIterable<any>) {
-    const status = handleMessage(msg)
-    if (status !== undefined) ok = status
-  }
+  const ok = await consume(response, 'Researching docs and applying the integration')
   if (ok) log.warn('Experimental integration applied from docs — review the changes and install any dependencies it listed.')
   return ok
 }
@@ -214,22 +255,34 @@ function buildDocsTaskPrompt(analysis: RepoAnalysis): string {
   ].join('\n')
 }
 
-// Returns true/false on a final result message, undefined otherwise.
-function handleMessage(msg: any): boolean | undefined {
+// Returns true/false on a final result message, undefined otherwise. When a spinner is active
+// (default mode), the agent's narration prints above the live line and tool calls just update the
+// high-level activity message; otherwise behavior is unchanged.
+function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
   if (msg.type === 'assistant') {
     for (const block of msg.message?.content ?? []) {
-      if (block.type === 'text' && block.text?.trim()) log.info(block.text.trim())
+      if (block.type === 'text' && block.text?.trim()) {
+        const text = block.text.trim()
+        if (spinner) (spinner.print(`${chalk.dim('│')} ${text}`), debugLog(`info  ${text}`))
+        else log.info(text)
+      }
       // Per-step tool calls (Read/Glob/Edit/...) are noisy; only stream them to the console with
-      // --verbose, but always tee them to the debug log so failed runs still leave a trail.
+      // --verbose. Otherwise update the spinner's high-level activity, and always tee the call to
+      // the debug log so failed runs still leave a trail.
       else if (block.type === 'tool_use') {
         const detail = summarizeToolInput(block.name, block.input)
         if (isVerbose()) log.tool(block.name, detail)
-        else debugLog(`tool  ${block.name}${detail ? ` ${detail}` : ''}`)
+        else {
+          const activity = activityFor(block.name)
+          if (activity) spinner?.setMessage(activity)
+          debugLog(`tool  ${block.name}${detail ? ` ${detail}` : ''}`)
+        }
       }
     }
     return undefined
   }
   if (msg.type === 'result') {
+    spinner?.stop() // clear the live line before printing the final status
     // A result can carry subtype:'success' yet is_error:true (e.g. an API 429) — check both.
     if (msg.is_error || (msg.subtype && msg.subtype !== 'success')) {
       log.error(`Agent did not complete: ${msg.result ?? msg.subtype ?? 'unknown error'}`)
@@ -259,6 +312,7 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
   }
   for (const skill of skills) {
     if (skill.packages.length === 0) continue
+    skill.packages.forEach(assertAllowedPackage)
     const app = appForRole[skill.role] ?? analysis.frontend ?? analysis.backend
     if (!app) continue
     const [bin, sub] = installCommand(app.packageManager)

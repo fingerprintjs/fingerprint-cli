@@ -31,8 +31,11 @@ fingerprint integrate  # analyze the current repo and apply the integration
 > + network). Point at a different source with `FINGERPRINT_SKILLS_REPO`, or at a local checkout
 > with `FINGERPRINT_SKILLS_DIR` while developing skills.
 >
-> Currently only a **React frontend + Node/Express backend** is supported; other stacks report
-> "No integration skill matches yet."
+> Curated skills cover **React, Vue, Angular, Svelte, and Next.js** frontends and **Node** (Express,
+> Fastify, Koa, NestJS, Hapi) and **Python** (FastAPI, Django, Flask) backends. For any other detected
+> stack the wizard falls back to an experimental, docs-based integration that researches the
+> Fingerprint docs before editing files. If nothing is detected, it reports that no integration is
+> available yet.
 
 ## Quick start (once published)
 
@@ -73,6 +76,28 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 - `fingerprint keys` — generate API keys and write them to `.env`
 - `fingerprint integrate` — analyze the current repo and apply the Fingerprint integration
 
+## Browser login (scaffolded — not wired yet)
+
+The first version ships the **full CLI auth experience** (email/password signup + login). A
+browser-based login is scaffolded but **intentionally inert** until the backend pieces exist:
+
+- `src/auth/browserLogin.ts` — loopback (`127.0.0.1`) callback server, opens the dashboard login
+  page, validates `state`, saves the returned session. Mirrors the MCP auth flow.
+- Surfaced via `fingerprint login --web` and the "Continue in browser" menu entry.
+- `config.ts` resolves a `dashboardUrl` (env `FINGERPRINT_DASHBOARD_URL`, default `dashboard.fpjs.sh`
+  to pair with the staging `mgmtapi.fpjs.sh` default).
+
+It does **not** work end-to-end yet because two backend pieces are still TODO:
+
+1. **mgmt-api** — `POST /cli-auth/accept` (authenticated; `req.auth` → `makeLoginResponse(user)` →
+   `{ accessToken, refreshToken, userId }`). Sibling of the existing `sso/mcp-auth-accept`.
+2. **dashboard** — a `/cli-auth` page (twin of `McpAuthPage.tsx`, route under `_authenticated`)
+   that reads `port` + `state`, calls the endpoint above, then redirects the browser to
+   `http://127.0.0.1:<port>/callback?state=…&access_token=…&refresh_token=…&user_id=…`.
+
+The full contract and rationale are in the wizard-direction memory. Until those land, use the
+email/password flow.
+
 ## Global flags
 
 - `--ci` — non-interactive mode
@@ -89,6 +114,7 @@ project), useful for debugging a failed integration.
 ## Environment variables
 
 - `FINGERPRINT_API_URL` (default: `https://mgmtapi.fpjs.sh`)
+- `FINGERPRINT_DASHBOARD_URL` (default: `https://dashboard.fpjs.sh`) — must pair with `FINGERPRINT_API_URL`'s environment; only used by the scaffolded browser login
 - `FINGERPRINT_REGION` (`us|eu|ap`, default: `us`)
 - `FINGERPRINT_API_KEY` / `FINGERPRINT_SUBSCRIPTION_ID` — CI credentials
 - `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/sedyldz/fingerprint-skills`)
