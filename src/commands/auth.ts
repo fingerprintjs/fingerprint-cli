@@ -7,7 +7,6 @@ import { AuthState, saveAuthState, clearAuthState, getAuthState, updateAuthState
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
-import { credentialsStep } from './keys.js'
 import { integrateCommand } from './integrate.js'
 
 export async function signup(opts: { apiUrl?: string; name?: string; email?: string } = {}) {
@@ -54,7 +53,7 @@ export async function signup(opts: { apiUrl?: string; name?: string; email?: str
     await promptAndConfirmEmail(getAuthState()!)
   } catch (e) {
     console.log(`Signup blocked (${(e as Error).message}). Opening dashboard signup...`)
-    await open('https://dashboard.fingerprint.com/signup')
+    await open(`${cfg.dashboardUrl}/signup`)
     console.log('Complete signup in browser, then run: fingerprint login')
   }
 }
@@ -78,12 +77,13 @@ async function promptAndConfirmEmail(auth: AuthState) {
   }
 }
 
-// After email is confirmed, continue into onboarding: create the first workspace and pick a region.
+// After email is confirmed, continue into onboarding: create the first workspace, then integrate
+// Fingerprint into the repo in the current directory (provisions keys + applies the integration).
 async function runOnboarding() {
   console.log('\nNext: set up your first workspace.')
   await workspaceStart()
-  console.log('\nNext: generate API keys.')
-  await credentialsStep()
+  console.log('\nNext: integrate Fingerprint into your project.')
+  await integrateCommand()
 }
 
 // The confirmation email links to /signup/confirm/<signupIntent>?confirmationCode=<code>.

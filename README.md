@@ -18,7 +18,7 @@ npm link            # makes the `fingerprint` command available globally
 Then, from your project's root directory:
 
 ```bash
-fingerprint            # figures out where you are: signup/login → workspace → keys → integrate
+fingerprint            # figures out where you are: signup/login → workspace → integrate
 # or step through it:
 fingerprint signup     # (or: fingerprint login)
 fingerprint integrate  # analyze the current repo and apply the integration
@@ -45,7 +45,7 @@ A single command — it figures out where you are and takes you to the next step
 npx fingerprint
 ```
 
-- Not signed in? It walks you through signup (or login) → workspace → API keys → integration.
+- Not signed in? It walks you through signup (or login) → workspace → integration (which provisions the API keys for you).
 - Signed in with a workspace? It integrates Fingerprint into the repo in the current directory.
 
 Run it from your project's root directory.
@@ -73,7 +73,7 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 
 - `fingerprint signup|login|logout|whoami`
 - `fingerprint workspace ls|start|use`
-- `fingerprint keys` — generate API keys and write them to `.env`
+- `fingerprint keys [public|secret]` — generate/fetch an API key for the active workspace and print it (prompts for the type if omitted). `integrate` is what writes keys into your `.env`.
 - `fingerprint integrate` — analyze the current repo and apply the Fingerprint integration
 
 ## Browser login (scaffolded — not wired yet)

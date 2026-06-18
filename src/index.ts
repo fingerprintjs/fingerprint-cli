@@ -3,7 +3,7 @@ import { Command } from 'commander'
 import { select } from '@inquirer/prompts'
 import { signup, signupConfirm, login, logout, whoami } from './commands/auth.js'
 import { workspaceList, workspaceStart, workspaceUse } from './commands/workspace.js'
-import { credentialsStep } from './commands/keys.js'
+import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
 import { getAuthState, setSessionOverride } from './auth/tokenStore.js'
 import { resolveConfig } from './config/config.js'
@@ -68,7 +68,11 @@ workspace.command('ls').action(workspaceList)
 workspace.command('start').action(workspaceStart)
 workspace.command('use').argument('[id]').action(workspaceUse)
 
-program.command('keys').description('Generate API keys and write them to .env').action(credentialsStep)
+program
+  .command('keys')
+  .description('Generate an API key for the active workspace and print it')
+  .argument('[type]', 'key type: public | secret (prompts if omitted)')
+  .action((type) => keysCommand(type))
 
 program
   .command('integrate')
@@ -116,11 +120,9 @@ async function defaultCommand() {
   if (!auth.currentSubscriptionId) {
     if (isCi()) throw new Error('No active workspace. Pass --subscription <id> for CI runs.')
     await workspaceStart()
-    await credentialsStep()
-    return
   }
 
-  // Logged in with an active workspace → integrate the repo in the current directory.
+  // Workspace is active → integrate the repo in the current directory (provisions keys + applies).
   await integrateCommand()
 }
 

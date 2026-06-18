@@ -1,8 +1,6 @@
 import { resolve } from 'node:path'
 import { analyzeRepo, formatAnalysis } from '../wizard/detect.js'
-import { log } from '../wizard/log.js'
-import { provisionForRepo } from '../wizard/provision.js'
-import { applyIntegration } from '../wizard/runner.js'
+import { integrateProject } from '../wizard/runner.js'
 import { requireAuth } from '../utils/session.js'
 
 export async function integrateCommand(opts: { path?: string; analyze?: boolean; yes?: boolean } = {}) {
@@ -27,17 +25,7 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
 
   if (!willApply) return
 
-  // Step: set up env vars (provision keys + region into each app's env file).
-  log.step('Set up environment variables')
-  const { externalBackends } = await provisionForRepo(root)
-
-  // Step: ask to apply, then run the agent against this repo.
-  await applyIntegration(root, { yes: opts.yes })
-
-  // A backend in a separate repo (e.g. a standalone API) isn't visible to the repo-scoped pass
-  // above — provisioning only wrote its .env. Integrate each one with its own agent run.
-  for (const be of externalBackends) {
-    log.step(`Integrate backend at ${be.dir}`)
-    await applyIntegration(be.dir, { yes: opts.yes })
-  }
+  // Provision keys + apply the integration for this repo, then offer to set up other projects
+  // (a separate frontend/backend, or any other repo) based on what this one covers.
+  await integrateProject(root, { yes: opts.yes })
 }

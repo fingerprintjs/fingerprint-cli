@@ -6,6 +6,11 @@ export const DEFAULT_API_URL = process.env.FINGERPRINT_API_URL ?? 'https://mgmta
 // staging apiUrl above; override with FINGERPRINT_DASHBOARD_URL when pointing apiUrl elsewhere.
 export const DEFAULT_DASHBOARD_URL = process.env.FINGERPRINT_DASHBOARD_URL ?? 'https://dashboard.fpjs.sh'
 
+// Hosted Fingerprint LLM gateway (Cloudflare Worker) the agent SDK is pointed at, so end users
+// never need an Anthropic key. Override with FINGERPRINT_GATEWAY_URL for local gateway dev.
+export const DEFAULT_GATEWAY_URL =
+  process.env.FINGERPRINT_GATEWAY_URL ?? 'https://fingerprint-llm-gateway.sedanur-yildiz.workers.dev'
+
 export type Region = 'us' | 'eu' | 'ap'
 
 export interface RuntimeConfig {

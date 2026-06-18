@@ -1,10 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { ApiClient } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
+import { fetchPublicKey, createSecretKey } from '../api/keys.js'
 import { requireAuth } from '../utils/session.js'
-import { text } from '../utils/prompt.js'
-import { isCi } from '../utils/ci.js'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { log } from './log.js'
 
@@ -79,32 +78,6 @@ function relevantApps(a: RepoAnalysis): DetectedApp[] {
   return a.apps.filter((x) => x.role === 'frontend' || x.role === 'backend' || x.role === 'fullstack')
 }
 
-// Resolve a user-typed backend path to an existing directory. Frontend and backend are usually
-// siblings, so a bare name (e.g. "api") is tried both inside the repo and one level up before
-// giving up. Absolute paths are used as-is. Returns the resolved dir, or undefined if none exists.
-function resolveBackendDir(root: string, input: string): string | undefined {
-  const candidates = isAbsolute(input)
-    ? [input]
-    : [resolve(root, input), resolve(root, '..', input)]
-  return candidates.find((c) => existsSync(c))
-}
-
-// Public (browser) keys are readable from the API any time.
-async function fetchPublicKey(client: ApiClient, subscriptionId: string): Promise<string | undefined> {
-  const tokens = await client.request<any[]>(endpoints.tokens(subscriptionId), { method: 'GET' }, true)
-  return tokens.find((t) => t.type === 'browser')?.token
-}
-
-// Secret (api) key values are only returned at creation, so we can't re-read an existing one —
-// each create counts against the workspace key limit. Only call this when we don't already have one.
-async function createSecretKey(client: ApiClient, subscriptionId: string): Promise<string> {
-  const created = await client.request<any>(endpoints.tokens(subscriptionId), {
-    method: 'POST',
-    body: JSON.stringify({ type: 'api', name: 'CLI Secret Key' }),
-  }, true)
-  return created.token
-}
-
 // Read a var's value from an env file, if present and non-empty.
 function readEnvVar(file: string, key: string): string | undefined {
   if (!existsSync(file)) return undefined
@@ -174,12 +147,9 @@ function ensureGitignored(root: string, files: string[]): { added: string[]; ext
 }
 
 // What provisioning discovered for the downstream integration step. `needsDotenv` is the set of
-// backends that must load .env at runtime; `externalBackends` are backends found via the
-// "where is your backend?" prompt — they live outside `root`, so the repo-scoped integration pass
-// won't see them and each needs its own agent run.
+// backends that must load .env at runtime.
 export interface ProvisionResult {
   needsDotenv: DetectedApp[]
-  externalBackends: DetectedApp[]
 }
 
 // Provision real workspace keys into the right per-app .env files, host-side (never via the
@@ -189,26 +159,7 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   if (!auth.currentSubscriptionId) throw new Error('No active workspace. Run: fingerprint workspace use <id>')
   const client = new ApiClient(auth.apiUrl)
 
-  let apps = relevantApps(analyzeRepo(root))
-  const externalBackends: DetectedApp[] = []
-
-  // Frontend present but nothing to hold the secret → ask where the backend is.
-  const hasFrontendKey = apps.some((a) => conventionFor(a).publicVar)
-  const hasSecretHolder = apps.some((a) => conventionFor(a).secretVar)
-  if (hasFrontendKey && !hasSecretHolder && !isCi()) {
-    const p = await text('No backend found in this repo. Path to your backend project, e.g. ../api (blank to skip)')
-    if (p.trim()) {
-      const dir = resolveBackendDir(root, p.trim())
-      if (!dir) log.warn(`No directory found at "${p.trim()}" — skipping the secret key.`)
-      else {
-        const be = relevantApps(analyzeRepo(dir)).find((a) => conventionFor(a).secretVar)
-        if (be) {
-          apps = [...apps, be]
-          externalBackends.push(be)
-        } else log.warn(`No backend framework detected at ${dir} — skipping the secret key.`)
-      }
-    }
-  }
+  const apps = relevantApps(analyzeRepo(root))
 
   const publicApps = apps.filter((a) => conventionFor(a).publicVar)
   const secretApps = apps.filter((a) => conventionFor(a).secretVar)
@@ -258,5 +209,5 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   if (added.length) log.success(`Added to .gitignore: ${added.join(', ')}`)
   for (const file of external) log.warn(`${file} is outside this repo — add it to that project's .gitignore manually.`)
 
-  return { needsDotenv, externalBackends }
+  return { needsDotenv }
 }

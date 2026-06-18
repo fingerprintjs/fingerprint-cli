@@ -1,13 +1,17 @@
 import chalk from 'chalk'
 import { confirm } from '@inquirer/prompts'
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
+import { analyzeRepo, formatAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
+import { provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { Spinner, activityFor } from './spinner.js'
 import { assertAllowedPackage, installSkills, skillMeta, SkillMeta } from './skills.js'
-import { autoYes } from '../utils/ci.js'
+import { autoYes, isCi } from '../utils/ci.js'
+import { text } from '../utils/prompt.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
@@ -71,10 +75,110 @@ function permissionOptions(extraReadonly: string[] = []) {
   return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
 }
 
+// Whichever side of an integration a repo covers. A fullstack framework (e.g. Next.js) and a
+// monorepo with both apps cover both; a standalone frontend or backend covers one.
+type IntegrationRole = 'frontend' | 'backend'
+
+function coverageOf(a: RepoAnalysis): IntegrationRole[] {
+  const fullstack = a.apps.some((x) => x.role === 'fullstack')
+  const roles: IntegrationRole[] = []
+  if (fullstack || a.frontend) roles.push('frontend')
+  if (fullstack || a.backend) roles.push('backend')
+  return roles
+}
+
+// Resolve a user-typed project path to an existing directory. Frontend/backend repos are usually
+// siblings, so a relative name is tried both under `base` and one level up; absolute paths are
+// used as-is. Returns the resolved dir, or undefined if none exists.
+function resolveProjectDir(base: string, input: string): string | undefined {
+  const candidates = isAbsolute(input) ? [input] : [resolve(base, input), resolve(base, '..', input)]
+  return candidates.find((c) => existsSync(c))
+}
+
+// Top-level integration flow for a single command invocation: provision env keys + apply the
+// integration for `root`, then — based on what `root` covers — explain what's still missing and
+// offer to set Fingerprint up in other projects too (a separate frontend/backend, or any other
+// repo). Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at;
+// it never assumes a particular layout.
+export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<void> {
+  await provisionAndApply(root, opts)
+  await offerOtherProjects(root, opts)
+}
+
+// Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
+// secret never reaches the agent; see provision.ts.)
+async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<void> {
+  log.step('Set up environment variables')
+  const { needsDotenv } = await provisionForRepo(root)
+  if (needsDotenv.length) {
+    log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
+  }
+  await applyIntegration(root, opts)
+}
+
+// After integrating `root`, Fingerprint only delivers value once BOTH sides exist: the frontend
+// identifies visitors and sends an event, and the backend verifies it server-side before trusting
+// the action. So guide the user toward whatever side is still missing, and keep offering to set up
+// other repos until they decline. Skipped in CI / with --yes (no human to point at the next repo).
+async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promise<void> {
+  if (isCi() || opts.yes) return
+
+  const covered = new Set<IntegrationRole>(coverageOf(analyzeRepo(root)))
+
+  for (;;) {
+    const hasFrontend = covered.has('frontend')
+    const hasBackend = covered.has('backend')
+
+    let message: string
+    let example: string
+    let suggest = true
+    if (hasFrontend && !hasBackend) {
+      log.info(
+        'Your frontend can now identify visitors — but Fingerprint only stops fraud once a backend\n' +
+          'verifies those events server-side. Want to set it up in your backend too?'
+      )
+      message = 'Point me to your backend project?'
+      example = '../api'
+    } else if (hasBackend && !hasFrontend) {
+      log.info(
+        'Your backend can now verify Fingerprint events — but it needs a frontend to identify\n' +
+          'visitors and send the event data. Want to set it up in your frontend too?'
+      )
+      message = 'Point me to your frontend project?'
+      example = '../web'
+    } else {
+      message = 'Set up Fingerprint in another project too?'
+      example = '../other-app'
+      suggest = false // both sides covered — don't nudge, just offer
+    }
+
+    const proceed = await confirm({ message, default: suggest })
+    if (!proceed) return
+
+    const input = await text(`Path to the project (e.g. ${example}) — blank to skip`)
+    if (!input.trim()) return
+    const dir = resolveProjectDir(root, input.trim())
+    if (!dir) {
+      log.warn(`No directory found at "${input.trim()}".`)
+      continue
+    }
+
+    const target = analyzeRepo(dir)
+    console.log(formatAnalysis(target))
+    if (!target.skills.length && !target.frontend && !target.backend) {
+      log.warn('No supported app detected there — skipping.')
+      continue
+    }
+
+    await provisionAndApply(dir, opts)
+    for (const role of coverageOf(target)) covered.add(role)
+  }
+}
+
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
-// then run the agent. Shared by `integrate`, `keys`, and the onboarding chain so the flow
-// is continuous: detect → set up env → "integrate this repo?" → apply.
-export async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<void> {
+// then run the agent. Called per-repo by `integrateProject` (the main repo plus any follow-up
+// projects) so the flow is continuous: set up env → "integrate this repo?" → apply.
+async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<void> {
   const analysis = analyzeRepo(root)
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a

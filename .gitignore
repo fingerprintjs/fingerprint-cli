@@ -41,3 +41,5 @@ Thumbs.db
 
 # --- Fingerprint wizard state (per-repo runtime artifact, not source) ---
 .fingerprint/
+
+
