@@ -8,7 +8,7 @@ Not published to npm yet, so run it from a clone. The wizard's LLM calls are rou
 hosted Fingerprint gateway (a Cloudflare Worker), so **you do not need an Anthropic API key**.
 
 ```bash
-git clone <repo-url> fingerprint-cli
+git clone https://github.com/fingerprintjs/fingerprint-cli/ fingerprint-cli
 cd fingerprint-cli
 npm install
 npm run build
@@ -26,7 +26,7 @@ fingerprint integrate  # analyze the current repo and apply the integration
 
 > [!NOTE]
 > The `integrate` apply step uses per-stack skills, which are fetched automatically from the public
-> skills repo ([sedyldz/fingerprint-skills](https://github.com/sedyldz/fingerprint-skills)) and
+> skills repo ([fingerprintjs/skills](https://github.com/fingerprintjs/skills)) and
 > cached at `~/.config/fingerprint/skills` on first run — so no manual setup is needed (just `git`
 > + network). Point at a different source with `FINGERPRINT_SKILLS_REPO`, or at a local checkout
 > with `FINGERPRINT_SKILLS_DIR` while developing skills.
@@ -117,6 +117,6 @@ project), useful for debugging a failed integration.
 - `FINGERPRINT_DASHBOARD_URL` (default: `https://dashboard.fpjs.sh`) — must pair with `FINGERPRINT_API_URL`'s environment; only used by the scaffolded browser login
 - `FINGERPRINT_REGION` (`us|eu|ap`, default: `us`)
 - `FINGERPRINT_API_KEY` / `FINGERPRINT_SUBSCRIPTION_ID` — CI credentials
-- `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/sedyldz/fingerprint-skills`)
+- `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/fingerprintjs/skills`)
 - `FINGERPRINT_SKILLS_DIR` — use a local skills checkout instead of fetching (for skill development)
 - `FINGERPRINT_GATEWAY_URL` — override the hosted LLM gateway (for local gateway dev)

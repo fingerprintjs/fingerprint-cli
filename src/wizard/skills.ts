@@ -12,7 +12,7 @@ export interface SkillMeta {
 // Skills live in their own public repo and are cloned into a local cache on first use, so a
 // downloaded CLI works without any local checkout. Override the source with FINGERPRINT_SKILLS_REPO,
 // or point at a local checkout with FINGERPRINT_SKILLS_DIR (for developing skills).
-const SKILLS_REPO = process.env.FINGERPRINT_SKILLS_REPO ?? 'https://github.com/sedyldz/fingerprint-skills'
+const SKILLS_REPO = process.env.FINGERPRINT_SKILLS_REPO ?? 'https://github.com/fingerprintjs/skills'
 const skillsCache = join(homedir(), '.config', 'fingerprint', 'skills')
 let ensured = false
 
