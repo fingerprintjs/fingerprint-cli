@@ -4,7 +4,6 @@ import open from 'open'
 import { ApiClient } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
 import { AuthState, saveAuthState, clearAuthState, getAuthState, updateAuthState } from '../auth/tokenStore.js'
-import { loginWithBrowser } from '../auth/browserLogin.js'
 import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
 import { integrateCommand } from './integrate.js'
@@ -120,17 +119,8 @@ export async function signupConfirm(linkOrIntent: string, code?: string) {
   await runOnboarding()
 }
 
-export async function login(opts: { apiUrl?: string; email?: string; web?: boolean } = {}) {
+export async function login(opts: { apiUrl?: string; email?: string } = {}) {
   const cfg = resolveConfig(opts.apiUrl)
-
-  // Browser login: hand off to the dashboard (handles login AND signup, plus SSO/Google/GitHub) and
-  // catch the minted session on a loopback server. No password is typed into the terminal.
-  if (opts.web) {
-    const result = await loginWithBrowser({ apiUrl: opts.apiUrl })
-    console.log(result.isSignup ? 'Account created and signed in.' : 'Logged in successfully.')
-    await continueAfterLogin(cfg.apiUrl)
-    return
-  }
 
   const email = opts.email ?? (await text('Email'))
   const pass = await password({ message: 'Password' })
@@ -139,12 +129,12 @@ export async function login(opts: { apiUrl?: string; email?: string; web?: boole
   try {
     const sso = await client.request<any>(endpoints.ssoAuth, { method: 'POST', body: JSON.stringify({ email }) })
     if (sso?.sso?.isEnabled) {
-      console.log('SSO is enabled for this domain. Opening browser login...')
-      await loginWithBrowser({ apiUrl: opts.apiUrl })
-      await continueAfterLogin(cfg.apiUrl)
-      return
+      // SSO requires the browser handoff, which isn't available in this version yet.
+      throw new Error('SSO login isn\'t available in this version yet. Use an email/password account for now.')
     }
-  } catch {}
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('SSO login')) throw err
+  }
 
   const data = await client.request<any>(endpoints.login, {
     method: 'POST',

@@ -5,8 +5,7 @@ import { signup, signupConfirm, login, logout, whoami } from './commands/auth.js
 import { workspaceList, workspaceStart, workspaceUse } from './commands/workspace.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
-import { getAuthState, setSessionOverride } from './auth/tokenStore.js'
-import { resolveConfig } from './config/config.js'
+import { getAuthState } from './auth/tokenStore.js'
 import { setCiContext, isCi } from './utils/ci.js'
 import { setVerbose } from './utils/verbose.js'
 import { setInteractive } from './utils/interactive.js'
@@ -17,34 +16,19 @@ program.name('fingerprint').description('Fingerprint CLI dashboard companion')
 // Global flags shared by every command, used for headless/CI runs.
 program
   .option('--ci', 'non-interactive: never prompt; auto-confirm and fail fast on missing input')
-  .option('--api-key <token>', 'authenticate with a management API key instead of an interactive login')
-  .option('--subscription <id>', 'workspace (subscription) id to use')
   .option('--api-url <url>')
   .option('-y, --yes', 'skip confirmation prompts')
   .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
   .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
-  .option('--web', 'sign in through the browser instead of typing a password')
 
-// Seed the CI/headless session from global flags before any command runs. With --api-key we
-// build an in-memory auth state (never written to disk) so api/integrate work without a login.
+// Seed the CI/headless session from global flags before any command runs.
 program.hook('preAction', () => {
-  const opts = program.opts<{ ci?: boolean; apiKey?: string; subscription?: string; apiUrl?: string; yes?: boolean; verbose?: boolean; interactive?: boolean }>()
+  const opts = program.opts<{ ci?: boolean; apiUrl?: string; yes?: boolean; verbose?: boolean; interactive?: boolean }>()
   const ci = Boolean(opts.ci) || process.env.CI === 'true'
   setCiContext({ ci, yes: Boolean(opts.yes) || ci })
   setVerbose(Boolean(opts.verbose))
   // Per-step prompting needs a human; never enable it in CI/headless runs.
   setInteractive(Boolean(opts.interactive) && !ci)
-
-  const apiKey = opts.apiKey ?? process.env.FINGERPRINT_API_KEY
-  if (apiKey) {
-    const cfg = resolveConfig(opts.apiUrl)
-    setSessionOverride({
-      accessToken: apiKey,
-      currentSubscriptionId: opts.subscription ?? process.env.FINGERPRINT_SUBSCRIPTION_ID,
-      apiUrl: cfg.apiUrl,
-      region: cfg.region,
-    })
-  }
 })
 
 program
@@ -58,8 +42,7 @@ program
   .command('login')
   .option('--api-url <url>')
   .option('--email <email>')
-  .option('--web', 'sign in through the browser instead of typing a password')
-  .action(async (opts) => login({ apiUrl: opts.apiUrl, email: opts.email, web: opts.web }))
+  .action(async (opts) => login({ apiUrl: opts.apiUrl, email: opts.email }))
 program.command('logout').action(logout)
 program.command('whoami').action(whoami)
 
@@ -93,32 +76,22 @@ program
 async function defaultCommand() {
   const auth = getAuthState()
 
-  // `fingerprint --web`: go straight to browser sign-in. login({web}) runs the loopback flow and
-  // then continues the onboarding chain (workspace → keys → integrate) on its own.
-  if (program.opts<{ web?: boolean }>().web) {
-    if (isCi()) throw new Error('--web needs a browser; use --api-key for CI runs.')
-    await login({ web: true })
-    return
-  }
-
   if (!auth?.accessToken) {
-    if (isCi()) throw new Error('Not authenticated. Pass --api-key (and --subscription) for CI runs.')
+    if (isCi()) throw new Error('Not authenticated. Run `fingerprint login` first.')
     const choice = await select({
       message: 'Welcome to Fingerprint. What would you like to do?',
       choices: [
-        { name: 'Continue in browser — sign up or log in', value: 'browser' },
         { name: 'Sign up with email/password', value: 'signup' },
         { name: 'Log in with email/password', value: 'login' },
       ],
     })
-    if (choice === 'browser') await login({ web: true })
-    else if (choice === 'signup') await signup()
+    if (choice === 'signup') await signup()
     else await login()
     return
   }
 
   if (!auth.currentSubscriptionId) {
-    if (isCi()) throw new Error('No active workspace. Pass --subscription <id> for CI runs.')
+    if (isCi()) throw new Error('No active workspace. Run `fingerprint workspace use <id>` first.')
     await workspaceStart()
   }
 

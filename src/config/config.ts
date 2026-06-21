@@ -1,29 +1,58 @@
-export const DEFAULT_API_URL = process.env.FINGERPRINT_API_URL ?? 'https://mgmtapi.fpjs.sh'
-
-// The dashboard hosts the browser-login page. It must be the SAME environment as apiUrl, since the
-// tokens it mints are only valid against that environment's mgmt-api (staging: dashboard.fpjs.sh ↔
-// mgmtapi.fpjs.sh; prod: dashboard.fingerprint.com ↔ management-api.fpjs.io). Default pairs with the
-// staging apiUrl above; override with FINGERPRINT_DASHBOARD_URL when pointing apiUrl elsewhere.
-export const DEFAULT_DASHBOARD_URL = process.env.FINGERPRINT_DASHBOARD_URL ?? 'https://dashboard.fpjs.sh'
-
-// Hosted Fingerprint LLM gateway (Cloudflare Worker) the agent SDK is pointed at, so end users
-// never need an Anthropic key. Override with FINGERPRINT_GATEWAY_URL for local gateway dev.
-export const DEFAULT_GATEWAY_URL =
-  process.env.FINGERPRINT_GATEWAY_URL ?? 'https://fingerprint-llm-gateway.sedanur-yildiz.workers.dev'
-
 export type Region = 'us' | 'eu' | 'ap'
+export type Environment = 'production' | 'staging'
+
+interface EnvironmentUrls {
+  // mgmt-api the CLI talks to.
+  apiUrl: string
+  // Dashboard hosting the browser-login page. Tokens it mints are only valid against the SAME
+  // environment's mgmt-api, so these two must always come from the same preset — never mix them.
+  dashboardUrl: string
+  // Hosted Fingerprint LLM gateway (Cloudflare Worker) the agent SDK is pointed at, so end users
+  // never need an Anthropic key.
+  gatewayUrl: string
+}
+
+// Each environment bundles the three URLs that must move together. Defaults to production; set
+// FINGERPRINT_ENV=staging for internal use. Individual FINGERPRINT_*_URL vars still override a
+// single URL.
+const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
+  production: {
+    apiUrl: 'https://mgmtapi.fpjs.io',
+    dashboardUrl: 'https://dashboard.fingerprint.com',
+    gatewayUrl: 'https://llm-gateway.fpjs.sh',
+  },
+  staging: {
+    apiUrl: 'https://mgmtapi.fpjs.sh',
+    dashboardUrl: 'https://dashboard.fpjs.sh',
+    gatewayUrl: 'https://llm-gateway.fpjs.sh',
+  },
+}
+
+const DEFAULT_ENVIRONMENT: Environment = 'production'
+
+function selectEnvironment(): Environment {
+  const name = (process.env.FINGERPRINT_ENV ?? DEFAULT_ENVIRONMENT) as Environment
+  if (!(name in ENVIRONMENTS)) {
+    throw new Error(`Unknown environment "${name}". Use one of: ${Object.keys(ENVIRONMENTS).join(', ')}`)
+  }
+  return name
+}
 
 export interface RuntimeConfig {
   apiUrl: string
   dashboardUrl: string
+  gatewayUrl: string
   region: Region
 }
 
+// Precedence per URL: explicit arg / per-URL env var > selected environment preset.
 export function resolveConfig(apiUrl?: string, region?: string): RuntimeConfig {
+  const env = ENVIRONMENTS[selectEnvironment()]
   const resolvedRegion = (region ?? process.env.FINGERPRINT_REGION ?? 'us') as Region
   return {
-    apiUrl: apiUrl ?? DEFAULT_API_URL,
-    dashboardUrl: DEFAULT_DASHBOARD_URL,
+    apiUrl: apiUrl ?? process.env.FINGERPRINT_API_URL ?? env.apiUrl,
+    dashboardUrl: process.env.FINGERPRINT_DASHBOARD_URL ?? env.dashboardUrl,
+    gatewayUrl: process.env.FINGERPRINT_GATEWAY_URL ?? env.gatewayUrl,
     region: resolvedRegion,
   }
 }

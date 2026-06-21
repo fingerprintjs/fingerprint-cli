@@ -49,8 +49,13 @@ function ensureSkillsRepo(): void {
   }
 }
 
+// Skill folders live under the repo's `skills/` directory (standard Claude Code plugin layout).
+function skillSrc(id: string): string {
+  return join(skillsDir(), 'skills', id)
+}
+
 export function skillMeta(id: string): SkillMeta {
-  const meta = JSON.parse(readFileSync(join(skillsDir(), id, 'skill.json'), 'utf8'))
+  const meta = JSON.parse(readFileSync(join(skillSrc(id), 'skill.json'), 'utf8'))
   return { id, role: meta.role, packages: meta.packages ?? [] }
 }
 
@@ -86,7 +91,7 @@ export function assertAllowedPackage(spec: string): void {
 // (progressive disclosure) instead of us injecting their full text into every prompt.
 export function installSkills(root: string, ids: string[]): void {
   for (const id of ids) {
-    const src = join(skillsDir(), id)
+    const src = skillSrc(id)
     if (!existsSync(join(src, 'SKILL.md'))) throw new Error(`Skill "${id}" not found in ${skillsDir()}`)
     const dest = join(root, '.claude', 'skills', id)
     mkdirSync(dest, { recursive: true })
