@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
 import { select } from '@inquirer/prompts'
-import { signup, signupConfirm, login, logout, whoami } from './commands/auth.js'
+import { signup, signupConfirm, login, logout, whoami, resumeEmailConfirmation } from './commands/auth.js'
 import { workspaceList, workspaceStart, workspaceUse } from './commands/workspace.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
@@ -87,6 +87,15 @@ async function defaultCommand() {
     })
     if (choice === 'signup') await signup()
     else await login()
+    return
+  }
+
+  // Email confirmation must complete before workspace/keys — the mgmt-api rejects those calls for an
+  // unconfirmed account ("no permission"). Resume at confirmation rather than skipping ahead.
+  if (auth.pendingEmailConfirmation) {
+    if (isCi()) throw new Error('Email not confirmed. Confirm with `fingerprint signup-confirm "<link from email>"` first.')
+    console.log("Your email isn't confirmed yet — finish that before setting up a workspace.")
+    await resumeEmailConfirmation()
     return
   }
 

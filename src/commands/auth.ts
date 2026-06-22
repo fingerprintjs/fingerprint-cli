@@ -8,7 +8,7 @@ import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
 import { integrateCommand } from './integrate.js'
 
-export async function signup(opts: { apiUrl?: string; name?: string; email?: string } = {}) {
+export async function signup(opts: { apiUrl?: string; name?: string; email?: string; chain?: boolean } = {}) {
   const name = opts.name ?? (await text('Name'))
   const email = opts.email ?? (await text('Email'))
   const cfg = resolveConfig(opts.apiUrl)
@@ -35,44 +35,87 @@ export async function signup(opts: { apiUrl?: string; name?: string; email?: str
     console.log(strength.feedback ? `Password is not strong enough: ${strength.feedback}` : 'Password is not strong enough.')
   }
 
+  // Only the signup request itself falls back to the browser. Confirmation + onboarding run after
+  // and must surface their own errors — don't wrap them here or an integrate failure looks like a
+  // blocked signup.
+  let data: any
   try {
-    const data = await client.request<any>(endpoints.signupIntentCreate, {
+    data = await client.request<any>(endpoints.signupIntentCreate, {
       method: 'POST',
       body: JSON.stringify({ name, email, password: pass, utmInfo: {}, signupSource: 'cli' }),
     })
-
-    saveAuthState({
-      accessToken: data.accessToken,
-      refreshToken: data.refreshToken,
-      userId: data.context?.id,
-      apiUrl: cfg.apiUrl,
-      region: cfg.region,
-    })
-    console.log('Signup succeeded. Check your email for the confirmation link.')
-    await promptAndConfirmEmail(getAuthState()!)
   } catch (e) {
     console.log(`Signup blocked (${(e as Error).message}). Opening dashboard signup...`)
     await open(`${cfg.dashboardUrl}/signup`)
     console.log('Complete signup in browser, then run: fingerprint login')
+    return
   }
+
+  saveAuthState({
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken,
+    userId: data.context?.id,
+    apiUrl: cfg.apiUrl,
+    region: cfg.region,
+    pendingEmailConfirmation: true,
+  })
+  console.log('Signup succeeded. Check your email for the confirmation link.')
+  await promptAndConfirmEmail(getAuthState()!, opts.chain)
 }
 
-// Wait for the user to paste the confirmation link, then confirm. Re-prompts on a bad/expired link.
-async function promptAndConfirmEmail(auth: AuthState) {
+// Confirm the email so onboarding can continue. The user can either paste the link from the email,
+// or — if they clicked it in the browser — pick "I already confirmed" and we verify against the API.
+async function promptAndConfirmEmail(auth: AuthState, chain?: boolean) {
   for (;;) {
-    const link = await text('Paste the confirmation link from your email (blank to confirm later)')
-    if (!link.trim()) {
+    const how = await select({
+      message: 'Confirm your email to continue',
+      choices: [
+        { name: 'Paste the confirmation link from your email', value: 'paste' },
+        { name: 'I already confirmed it in my browser', value: 'check' },
+        { name: 'Confirm later', value: 'later' },
+      ],
+    })
+
+    if (how === 'later') {
       console.log('Confirm later with: fingerprint signup-confirm "<link from email>"')
       return
     }
+
+    if (how === 'check') {
+      if (!(await accountIsConfirmed(auth))) {
+        console.log("Your email still looks unconfirmed. Click the link in your email, then try again.")
+        continue
+      }
+      updateAuthState({ pendingEmailConfirmation: false })
+      console.log('Email confirmed.')
+      if (chain !== false) await runOnboarding()
+      return
+    }
+
+    const link = await text('Paste the confirmation link from your email')
+    if (!link.trim()) continue
     try {
       await confirmEmail(auth, link.trim())
     } catch (e) {
-      console.log(`${(e as Error).message} — paste the link again, or leave blank to stop.`)
+      console.log(`${(e as Error).message} — try again, or choose "Confirm later" to stop.`)
       continue
     }
-    await runOnboarding()
+    if (chain !== false) await runOnboarding()
     return
+  }
+}
+
+// Ask the mgmt-api whether the signed-in account's email is confirmed, rather than trusting local
+// state — so a confirmation done in the browser is picked up. `emailConfirmedAt` is set once the
+// email is confirmed; until then the workspace stays "restricted" and key creation is denied. (Note:
+// the user's `status` is "active" even while unconfirmed, so it is NOT the signal to use here.)
+async function accountIsConfirmed(auth: AuthState): Promise<boolean> {
+  const client = new ApiClient(auth.apiUrl)
+  try {
+    const user = await client.request<{ emailConfirmedAt?: string | null }>(endpoints.currentUserGet, { method: 'GET' }, true)
+    return Boolean(user?.emailConfirmedAt)
+  } catch {
+    return false
   }
 }
 
@@ -108,8 +151,17 @@ async function confirmEmail(auth: AuthState, linkOrIntent: string, code?: string
     method: 'POST',
     body: JSON.stringify({ signupIntent, confirmationCode }),
   })
-  saveAuthState({ ...auth, accessToken: data.accessToken, refreshToken: data.refreshToken })
+  saveAuthState({ ...auth, accessToken: data.accessToken, refreshToken: data.refreshToken, pendingEmailConfirmation: false })
   console.log('Email confirmed.')
+}
+
+// Resume an interrupted signup: the account exists locally but its email is still unconfirmed.
+// Re-prompt for the confirmation link, then continue onboarding. Used by the default command when
+// the user quits after signup and restarts before confirming.
+export async function resumeEmailConfirmation() {
+  const auth = getAuthState()
+  if (!auth?.accessToken) throw new Error('Please run fingerprint signup first')
+  await promptAndConfirmEmail(auth)
 }
 
 export async function signupConfirm(linkOrIntent: string, code?: string) {
@@ -119,9 +171,16 @@ export async function signupConfirm(linkOrIntent: string, code?: string) {
   await runOnboarding()
 }
 
-export async function login(opts: { apiUrl?: string; email?: string } = {}) {
+// `chain: false` authenticates only — skips the workspace+integrate onboarding chain. The launcher
+// uses it so logging in to (say) generate a key doesn't drag the user into a full integration.
+export async function login(opts: { apiUrl?: string; email?: string; chain?: boolean } = {}) {
   const cfg = resolveConfig(opts.apiUrl)
+  await authenticate(opts)
+  if (opts.chain !== false) await continueAfterLogin(cfg.apiUrl)
+}
 
+async function authenticate(opts: { apiUrl?: string; email?: string } = {}) {
+  const cfg = resolveConfig(opts.apiUrl)
   const email = opts.email ?? (await text('Email'))
   const pass = await password({ message: 'Password' })
   const client = new ApiClient(cfg.apiUrl)
@@ -148,7 +207,6 @@ export async function login(opts: { apiUrl?: string; email?: string } = {}) {
     region: cfg.region,
   })
   console.log('Logged in successfully.')
-  await continueAfterLogin(cfg.apiUrl)
 }
 
 // After any login path, select the active workspace and continue into integration for the repo in
@@ -180,6 +238,31 @@ async function selectActiveWorkspace(client: ApiClient): Promise<boolean> {
   updateAuthState({ currentSubscriptionId: id })
   console.log(`Active workspace: ${subs.find((s) => s.id === id)?.name ?? id}`)
   return true
+}
+
+// Launcher helper: make sure we're authenticated before running a menu action, without the
+// onboarding chain. Offers login or signup if needed.
+export async function ensureAuth(): Promise<void> {
+  if (getAuthState()?.accessToken) return
+  const how = await select({
+    message: 'You need to sign in first.',
+    choices: [
+      { name: 'Log in', value: 'login' },
+      { name: 'Sign up', value: 'signup' },
+    ],
+  })
+  if (how === 'signup') await signup({ chain: false })
+  else await login({ chain: false })
+  if (!getAuthState()?.accessToken) throw new Error('Authentication required.')
+}
+
+// Launcher helper: make sure an active workspace is selected (picking or creating one if not).
+export async function ensureWorkspace(): Promise<void> {
+  const auth = getAuthState()
+  if (!auth?.accessToken) throw new Error('Not logged in')
+  if (auth.currentSubscriptionId) return
+  const has = await selectActiveWorkspace(new ApiClient(auth.apiUrl))
+  if (!has) await workspaceStart()
 }
 
 export async function logout() {

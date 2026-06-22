@@ -19,12 +19,12 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   production: {
     apiUrl: 'https://mgmtapi.fpjs.io',
     dashboardUrl: 'https://dashboard.fingerprint.com',
-    gatewayUrl: 'https://llm-gateway.fpjs.sh',
+    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
   },
   staging: {
     apiUrl: 'https://mgmtapi.fpjs.sh',
     dashboardUrl: 'https://dashboard.fpjs.sh',
-    gatewayUrl: 'https://llm-gateway.fpjs.sh',
+    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
   },
 }
 

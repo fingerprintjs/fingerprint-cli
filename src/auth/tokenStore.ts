@@ -7,6 +7,7 @@ export interface AuthState {
   refreshToken?: string
   userId?: string
   currentSubscriptionId?: string
+  pendingEmailConfirmation?: boolean
   apiUrl: string
   region: string
 }
