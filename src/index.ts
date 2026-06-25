@@ -36,13 +36,19 @@ program
   .option('--api-url <url>')
   .option('--name <name>')
   .option('--email <email>')
-  .action(async (opts) => signup({ apiUrl: opts.apiUrl, name: opts.name, email: opts.email }))
+  .action(async (opts) => {
+    const globalOpts = program.opts<{ apiUrl?: string }>()
+    return signup({ apiUrl: opts.apiUrl ?? globalOpts.apiUrl, name: opts.name, email: opts.email })
+  })
 program.command('signup-confirm').argument('<linkOrIntent>').argument('[code]').action(signupConfirm)
 program
   .command('login')
   .option('--api-url <url>')
   .option('--email <email>')
-  .action(async (opts) => login({ apiUrl: opts.apiUrl, email: opts.email }))
+  .action(async (opts) => {
+    const globalOpts = program.opts<{ apiUrl?: string }>()
+    return login({ apiUrl: opts.apiUrl ?? globalOpts.apiUrl, email: opts.email })
+  })
 program.command('logout').action(logout)
 program.command('whoami').action(whoami)
 

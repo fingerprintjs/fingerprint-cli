@@ -7,6 +7,7 @@ import { AuthState, saveAuthState, clearAuthState, getAuthState, updateAuthState
 import { resolveConfig } from '../config/config.js'
 import { workspaceStart } from './workspace.js'
 import { integrateCommand } from './integrate.js'
+import { isVerbose } from '../utils/verbose.js'
 
 export async function signup(opts: { apiUrl?: string; name?: string; email?: string; chain?: boolean } = {}) {
   const name = opts.name ?? (await text('Name'))
@@ -45,6 +46,10 @@ export async function signup(opts: { apiUrl?: string; name?: string; email?: str
       body: JSON.stringify({ name, email, password: pass, utmInfo: {}, signupSource: 'cli' }),
     })
   } catch (e) {
+    if (isVerbose()) {
+      console.error('CLI signup request failed:', e)
+      console.error('CLI signup request failure cause:', (e as Error & { cause?: unknown }).cause)
+    }
     console.log(`Signup blocked (${(e as Error).message}). Opening dashboard signup...`)
     await open(`${cfg.dashboardUrl}/signup`)
     console.log('Complete signup in browser, then run: fingerprint login')
