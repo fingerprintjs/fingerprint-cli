@@ -1,7 +1,7 @@
 import { password, select } from '@inquirer/prompts'
 import { text } from '../utils/prompt.js'
 import open from 'open'
-import { ApiClient } from '../api/client.js'
+import { ApiClient, ApiError } from '../api/client.js'
 import { endpoints } from '../api/endpoints.js'
 import { AuthState, saveAuthState, clearAuthState, getAuthState, updateAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
@@ -11,7 +11,7 @@ import { isVerbose } from '../utils/verbose.js'
 
 export async function signup(opts: { name?: string; email?: string; chain?: boolean } = {}) {
   const name = opts.name ?? (await text('Name'))
-  const email = opts.email ?? (await text('Email'))
+  let email = opts.email ?? (await text('Email'))
   const cfg = resolveConfig()
   const client = new ApiClient(cfg.apiUrl)
 
@@ -19,41 +19,47 @@ export async function signup(opts: { name?: string; email?: string; chain?: bool
   // an uppercase letter, a lowercase letter, a number, and be longer than 8 characters. Surface the
   // criteria up front so users aren't guessing, then let the API be the source of truth below.
   console.log('Password must be 9+ characters and include an uppercase letter, a lowercase letter, and a number.')
-  let pass = ''
-  for (;;) {
-    pass = await password({ message: 'Password (9+ chars, upper + lower + number)' })
-    if (pass.length < 9) {
-      console.log('Password is not strong enough: must be more than 8 characters.')
-      continue
-    }
-    const strength = await client
-      .request<{ strengthLevel: number; feedback?: string }>(endpoints.passwordStrength, {
-        method: 'POST',
-        body: JSON.stringify({ password: pass }),
-      })
-      .catch(() => null)
-    if (!strength || strength.strengthLevel >= 1) break
-    console.log(strength.feedback ? `Password is not strong enough: ${strength.feedback}` : 'Password is not strong enough.')
-  }
+  let pass = await promptForStrongPassword(client)
 
   // Only the signup request itself falls back to the browser. Confirmation + onboarding run after
   // and must surface their own errors — don't wrap them here or an integrate failure looks like a
   // blocked signup.
   let data: any
-  try {
-    data = await client.request<any>(endpoints.signupIntentCreate, {
-      method: 'POST',
-      body: JSON.stringify({ name, email, password: pass, utmInfo: {}, signupSource: 'cli' }),
-    })
-  } catch (e) {
-    if (isVerbose()) {
-      console.error('CLI signup request failed:', e)
-      console.error('CLI signup request failure cause:', (e as Error & { cause?: unknown }).cause)
+  for (;;) {
+    try {
+      data = await client.request<any>(endpoints.signupIntentCreate, {
+        method: 'POST',
+        body: JSON.stringify({ name, email, password: pass, utmInfo: {}, signupSource: 'cli' }),
+      })
+      break
+    } catch (e) {
+      if (isVerbose()) {
+        console.error('CLI signup request failed:', e)
+        console.error('CLI signup request failure cause:', (e as Error & { cause?: unknown }).cause)
+      }
+
+      if (e instanceof ApiError && e.param === 'email') {
+        console.log(`Signup failed: ${e.message}`)
+        email = await text('Email')
+        continue
+      }
+
+      if (e instanceof ApiError && e.param === 'password') {
+        console.log(`Signup failed: ${e.message}`)
+        pass = await promptForStrongPassword(client)
+        continue
+      }
+
+      if (isExpectedSignupValidationError(e)) {
+        console.log(`Signup failed: ${(e as Error).message}`)
+        return
+      }
+
+      console.log(`Signup blocked (${(e as Error).message}). Opening dashboard signup...`)
+      await open(`${cfg.dashboardUrl}/signup`)
+      console.log('Complete signup in browser, then run: fingerprint login')
+      return
     }
-    console.log(`Signup blocked (${(e as Error).message}). Opening dashboard signup...`)
-    await open(`${cfg.dashboardUrl}/signup`)
-    console.log('Complete signup in browser, then run: fingerprint login')
-    return
   }
 
   saveAuthState({
@@ -66,6 +72,28 @@ export async function signup(opts: { name?: string; email?: string; chain?: bool
   })
   console.log('Signup succeeded. Check your email for the confirmation link.')
   await promptAndConfirmEmail(getAuthState()!, opts.chain)
+}
+
+async function promptForStrongPassword(client: ApiClient): Promise<string> {
+  for (;;) {
+    const pass = await password({ message: 'Password (9+ chars, upper + lower + number)' })
+    if (pass.length < 9) {
+      console.log('Password is not strong enough: must be more than 8 characters.')
+      continue
+    }
+    const strength = await client
+      .request<{ strengthLevel: number; feedback?: string }>(endpoints.passwordStrength, {
+        method: 'POST',
+        body: JSON.stringify({ password: pass }),
+      })
+      .catch(() => null)
+    if (!strength || strength.strengthLevel >= 1) return pass
+    console.log(strength.feedback ? `Password is not strong enough: ${strength.feedback}` : 'Password is not strong enough.')
+  }
+}
+
+function isExpectedSignupValidationError(error: unknown): boolean {
+  return error instanceof ApiError && error.status !== undefined && error.status >= 400 && error.status < 500
 }
 
 // Confirm the email so onboarding can continue. The user can either paste the link from the email,

@@ -1,7 +1,29 @@
 import { AuthState, getAuthState, saveAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 
-interface Envelope<T> { ok: boolean; data: T; error?: { code?: string; message?: string; param?: string } }
+interface ApiErrorDetails {
+  code?: string
+  message?: string
+  param?: string
+}
+
+interface Envelope<T> {
+  ok: boolean
+  data: T
+  error?: ApiErrorDetails
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string,
+    public readonly param?: string
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
 
 export class ApiClient {
   private state: AuthState | null
@@ -33,12 +55,14 @@ export class ApiClient {
     const json = (await res.json().catch(() => ({}))) as Envelope<T> | T
     if (!res.ok) {
       const e = (json as Envelope<T>)?.error
-      throw new Error(e?.message ?? 'Request failed')
+      throw new ApiError(e?.message ?? 'Request failed', res.status, e?.code, e?.param)
     }
 
     if (typeof json === 'object' && json !== null && 'ok' in json) {
       const env = json as Envelope<T>
-      if (env.ok === false) throw new Error(env.error?.message ?? 'Request failed')
+      if (env.ok === false) {
+        throw new ApiError(env.error?.message ?? 'Request failed', undefined, env.error?.code, env.error?.param)
+      }
       return env.data
     }
 
