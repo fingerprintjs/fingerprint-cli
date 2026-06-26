@@ -16,14 +16,13 @@ program.name('fingerprint').description('Fingerprint CLI dashboard companion')
 // Global flags shared by every command, used for headless/CI runs.
 program
   .option('--ci', 'non-interactive: never prompt; auto-confirm and fail fast on missing input')
-  .option('--api-url <url>')
   .option('-y, --yes', 'skip confirmation prompts')
   .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
   .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
 
 // Seed the CI/headless session from global flags before any command runs.
 program.hook('preAction', () => {
-  const opts = program.opts<{ ci?: boolean; apiUrl?: string; yes?: boolean; verbose?: boolean; interactive?: boolean }>()
+  const opts = program.opts<{ ci?: boolean; yes?: boolean; verbose?: boolean; interactive?: boolean }>()
   const ci = Boolean(opts.ci) || process.env.CI === 'true'
   setCiContext({ ci, yes: Boolean(opts.yes) || ci })
   setVerbose(Boolean(opts.verbose))
@@ -33,22 +32,14 @@ program.hook('preAction', () => {
 
 program
   .command('signup')
-  .option('--api-url <url>')
   .option('--name <name>')
   .option('--email <email>')
-  .action(async (opts) => {
-    const globalOpts = program.opts<{ apiUrl?: string }>()
-    return signup({ apiUrl: opts.apiUrl ?? globalOpts.apiUrl, name: opts.name, email: opts.email })
-  })
+  .action(async (opts) => signup({ name: opts.name, email: opts.email }))
 program.command('signup-confirm').argument('<linkOrIntent>').argument('[code]').action(signupConfirm)
 program
   .command('login')
-  .option('--api-url <url>')
   .option('--email <email>')
-  .action(async (opts) => {
-    const globalOpts = program.opts<{ apiUrl?: string }>()
-    return login({ apiUrl: opts.apiUrl ?? globalOpts.apiUrl, email: opts.email })
-  })
+  .action(async (opts) => login({ email: opts.email }))
 program.command('logout').action(logout)
 program.command('whoami').action(whoami)
 

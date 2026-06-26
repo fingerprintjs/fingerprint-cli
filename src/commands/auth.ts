@@ -9,10 +9,10 @@ import { workspaceStart } from './workspace.js'
 import { integrateCommand } from './integrate.js'
 import { isVerbose } from '../utils/verbose.js'
 
-export async function signup(opts: { apiUrl?: string; name?: string; email?: string; chain?: boolean } = {}) {
+export async function signup(opts: { name?: string; email?: string; chain?: boolean } = {}) {
   const name = opts.name ?? (await text('Name'))
   const email = opts.email ?? (await text('Email'))
-  const cfg = resolveConfig(opts.apiUrl)
+  const cfg = resolveConfig()
   const client = new ApiClient(cfg.apiUrl)
 
   // Match the dashboard's password rules (mgmt-api checkPasswordStrength): to pass it must contain
@@ -178,14 +178,14 @@ export async function signupConfirm(linkOrIntent: string, code?: string) {
 
 // `chain: false` authenticates only — skips the workspace+integrate onboarding chain. The launcher
 // uses it so logging in to (say) generate a key doesn't drag the user into a full integration.
-export async function login(opts: { apiUrl?: string; email?: string; chain?: boolean } = {}) {
-  const cfg = resolveConfig(opts.apiUrl)
+export async function login(opts: { email?: string; chain?: boolean } = {}) {
+  const cfg = resolveConfig()
   await authenticate(opts)
   if (opts.chain !== false) await continueAfterLogin(cfg.apiUrl)
 }
 
-async function authenticate(opts: { apiUrl?: string; email?: string } = {}) {
-  const cfg = resolveConfig(opts.apiUrl)
+async function authenticate(opts: { email?: string } = {}) {
+  const cfg = resolveConfig()
   const email = opts.email ?? (await text('Email'))
   const pass = await password({ message: 'Password' })
   const client = new ApiClient(cfg.apiUrl)

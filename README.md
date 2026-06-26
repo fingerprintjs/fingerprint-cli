@@ -103,7 +103,6 @@ email/password flow.
 - `--ci` — non-interactive mode
 - `--api-key <token>` — authenticate with a management API key
 - `--subscription <id>` — workspace (subscription) id to use
-- `--api-url <url>` — override the management API base URL
 - `-y, --yes` — skip confirmation prompts
 
 ## Logs
@@ -113,8 +112,7 @@ project), useful for debugging a failed integration.
 
 ## Environment variables
 
-- `FINGERPRINT_API_URL` (default: `https://mgmtapi.fpjs.sh`)
-- `FINGERPRINT_DASHBOARD_URL` (default: `https://dashboard.fpjs.sh`) — must pair with `FINGERPRINT_API_URL`'s environment; only used by the scaffolded browser login
+- `FINGERPRINT_ENV` (`production|staging`, default: `production`) — use `staging` for internal testing
 - `FINGERPRINT_REGION` (`us|eu|ap`, default: `us`)
 - `FINGERPRINT_API_KEY` / `FINGERPRINT_SUBSCRIPTION_ID` — CI credentials
 - `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/fingerprintjs/skills`)
