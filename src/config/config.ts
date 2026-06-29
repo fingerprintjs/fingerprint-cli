@@ -17,7 +17,7 @@ interface EnvironmentUrls {
 // single URL.
 const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   production: {
-    apiUrl: 'https://mgmtapi.fpjs.io',
+    apiUrl: 'https://api.fpjs.pro',
     dashboardUrl: 'https://dashboard.fingerprint.com',
     gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
   },
