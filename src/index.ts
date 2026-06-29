@@ -105,6 +105,13 @@ async function defaultCommand() {
   await integrateCommand()
 }
 
+// Named alias for the default flow, so it can be invoked explicitly — e.g.
+// `npx fingerprintjs/fingerprint-cli#<branch> setup`.
+program
+  .command('setup')
+  .description('Run the full Fingerprint onboarding: signup → workspace → keys → integrate')
+  .action(defaultCommand)
+
 program.action(defaultCommand)
 
 program.parseAsync().catch((err) => {

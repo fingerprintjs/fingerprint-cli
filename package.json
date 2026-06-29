@@ -5,7 +5,8 @@
   "license": "UNLICENSED",
   "type": "module",
   "bin": {
-    "fingerprint": "./dist/index.js"
+    "fingerprint": "./dist/index.js",
+    "setup": "./dist/index.js"
   },
   "engines": {
     "node": ">=20.12.0"
