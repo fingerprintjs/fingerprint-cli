@@ -1,0 +1,4 @@
+# Supply-chain hardening: refuse to install any dependency version (direct or transitive) until it
+# has been published for at least this many minutes. A freshly published malicious version is
+# usually caught and unpublished within hours, so a cooldown sharply cuts the window of exposure.
+minimumReleaseAge: 4320 # 3 days

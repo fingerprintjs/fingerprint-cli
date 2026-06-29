@@ -1,4 +1,3 @@
-import chalk from 'chalk'
 import { confirm } from '@inquirer/prompts'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -8,6 +7,7 @@ import { analyzeRepo, formatAnalysis, DetectedApp, RepoAnalysis } from './detect
 import { provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
+import { color } from '../utils/color.js'
 import { Spinner, activityFor } from './spinner.js'
 import { assertAllowedPackage, installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes, isCi } from '../utils/ci.js'
@@ -367,7 +367,7 @@ function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'text' && block.text?.trim()) {
         const text = block.text.trim()
-        if (spinner) (spinner.print(`${chalk.dim('│')} ${text}`), debugLog(`info  ${text}`))
+        if (spinner) (spinner.print(`${color.dim('│')} ${text}`), debugLog(`info  ${text}`))
         else log.info(text)
       }
       // Per-step tool calls (Read/Glob/Edit/...) are noisy; only stream them to the console with

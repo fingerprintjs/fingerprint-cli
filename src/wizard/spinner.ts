@@ -1,4 +1,4 @@
-import chalk from 'chalk'
+import { color } from '../utils/color.js'
 
 // A dependency-free single-line spinner for the long agent pass. In default (non-verbose) mode the
 // per-step tool calls are hidden, so a few minutes of work can read as "stuck". This keeps a live
@@ -71,11 +71,11 @@ export class Spinner {
     const head = `${FRAMES[this.frame]} ${this.message}`
     const cols = process.stdout.columns || 80
     const room = cols - head.length - 2
-    let line = `${chalk.cyan(FRAMES[this.frame])} ${this.message}`
+    let line = `${color.cyan(FRAMES[this.frame])} ${this.message}`
     if (room > 12) {
       const raw = `  ${TIPS[this.tip]}`
       const tip = raw.length > room ? raw.slice(0, room - 1) + '…' : raw
-      line += chalk.dim(tip)
+      line += color.dim(tip)
     }
     process.stdout.write(`\r\x1b[K${line}`)
   }
