@@ -54,18 +54,16 @@ If signup is blocked in production due to visitor ID checks, the CLI opens dashb
 
 ## CI / non-interactive
 
-Pass `--ci` to never prompt (confirmations auto-proceed; missing input fails fast), and `--api-key`
-to authenticate without an interactive login:
+Pass the global `--ci` flag (it's a top-level option, so it goes **before** the subcommand) to
+never prompt — confirmations auto-proceed and missing input fails fast. `--ci` is implied when
+`CI=true`.
 
 ```bash
-npx fingerprint integrate --ci \
-  --api-key "$FINGERPRINT_API_KEY" \
-  --subscription "$FINGERPRINT_SUBSCRIPTION_ID"
+npx fingerprint --ci integrate
 ```
 
-The API key is held in memory only — it is never written to disk. `--api-key` /
-`--subscription` also read `FINGERPRINT_API_KEY` / `FINGERPRINT_SUBSCRIPTION_ID`, and `--ci` is
-implied when `CI=true`.
+CI runs rely on the auth state saved by a prior `fingerprint login`. Key-based headless auth
+(`--api-key` / `--subscription`) is not implemented yet.
 
 ## Commands
 
@@ -83,7 +81,8 @@ browser-based login is scaffolded but **intentionally inert** until the backend 
 
 - `src/auth/browserLogin.ts` — loopback (`127.0.0.1`) callback server, opens the dashboard login
   page, validates `state`, saves the returned session. Mirrors the MCP auth flow.
-- Surfaced via `fingerprint login --web` and the "Continue in browser" menu entry.
+- Not yet surfaced in the CLI — no `fingerprint login --web` flag or "Continue in browser" menu
+  entry exists yet; the scaffolding is unreachable until the backend pieces below land.
 - `config.ts` resolves a `dashboardUrl` (env `FINGERPRINT_DASHBOARD_URL`, default `dashboard.fpjs.sh`
   to pair with the staging `mgmtapi.fpjs.sh` default).
 
@@ -100,10 +99,10 @@ email/password flow.
 
 ## Global flags
 
-- `--ci` — non-interactive mode
-- `--api-key <token>` — authenticate with a management API key
-- `--subscription <id>` — workspace (subscription) id to use
+- `--ci` — non-interactive mode (implied when `CI=true`)
 - `-y, --yes` — skip confirmation prompts
+- `--verbose` — show the agent's individual steps (file reads, edits, tool calls)
+- `--interactive` — ask before each file edit and package install
 
 ## Logs
 
@@ -114,7 +113,6 @@ project), useful for debugging a failed integration.
 
 - `FINGERPRINT_ENV` (`production|staging`, default: `production`) — use `staging` for internal testing
 - `FINGERPRINT_REGION` (`us|eu|ap`, default: `us`)
-- `FINGERPRINT_API_KEY` / `FINGERPRINT_SUBSCRIPTION_ID` — CI credentials
 - `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/fingerprintjs/skills`)
 - `FINGERPRINT_SKILLS_DIR` — use a local skills checkout instead of fetching (for skill development)
 - `FINGERPRINT_GATEWAY_URL` — override the hosted LLM gateway (for local gateway dev)

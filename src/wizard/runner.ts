@@ -121,7 +121,7 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 // the action. So guide the user toward whatever side is still missing, and keep offering to set up
 // other repos until they decline. Skipped in CI / with --yes (no human to point at the next repo).
 async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promise<void> {
-  if (isCi() || opts.yes) return
+  if (isCi() || opts.yes || autoYes()) return
 
   const covered = new Set<IntegrationRole>(coverageOf(analyzeRepo(root)))
 

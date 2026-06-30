@@ -140,7 +140,7 @@ function ensureGitignored(root: string, files: string[]): { added: string[]; ext
 
   if (added.length) {
     const body = (raw && !raw.endsWith('\n') ? raw + '\n' : raw) +
-      `# Added by fingerprint CLI — these files contain API keys\n${added.join('\n')}\n`
+      `# Added by fingerprint CLI — these files contain API keys\n${added.map((p) => `/${p}`).join('\n')}\n`
     writeFileSync(gitignore, body)
   }
   return { added, external }
