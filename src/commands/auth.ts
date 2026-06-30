@@ -201,7 +201,8 @@ async function runOnboarding() {
 
 // The confirmation email links to /signup/confirm/<signupIntent>?confirmationCode=<code>.
 // Accept either the full pasted link, or <signupIntent> <code> as two parts.
-async function confirmEmail(auth: AuthState, linkOrIntent: string, code?: string) {
+async function confirmEmail(auth: AuthState | null, linkOrIntent: string, code?: string) {
+  const cfg = resolveConfig()
   let signupIntent = linkOrIntent
   let confirmationCode = code
   if (linkOrIntent.includes('/signup/confirm/')) {
@@ -217,12 +218,29 @@ async function confirmEmail(auth: AuthState, linkOrIntent: string, code?: string
     throw new Error('Missing confirmation code. Paste the full link from your email, or pass <signupIntent> <code>.')
   }
 
-  const client = new ApiClient(auth.apiUrl)
+  const client = new ApiClient(auth?.apiUrl ?? cfg.apiUrl)
   const data = await client.request<any>(endpoints.signupIntentConfirm, {
     method: 'POST',
     body: JSON.stringify({ signupIntent, confirmationCode }),
   })
-  saveAuthState({ ...auth, accessToken: data.accessToken, refreshToken: data.refreshToken, pendingEmailConfirmation: false })
+  const nextAuth: AuthState = auth
+    ? {
+        ...auth,
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        userId: data.context?.id ?? auth.userId,
+        pendingEmailConfirmation: false,
+      }
+    : {
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        userId: data.context?.id,
+        pendingEmailConfirmation: false,
+        apiUrl: cfg.apiUrl,
+        region: cfg.region,
+      }
+
+  saveAuthState(nextAuth)
   console.log('Email confirmed.')
 }
 
@@ -271,7 +289,6 @@ export async function signupConfirm(linkOrIntent: string, code?: string) {
     return
   }
 
-  if (!auth?.accessToken) throw new Error('Please run fingerprint signup or login first')
   await confirmEmail(auth, input, code)
   await runOnboarding()
 }
