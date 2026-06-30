@@ -96,10 +96,10 @@ function isExpectedSignupValidationError(error: unknown): boolean {
   return error instanceof ApiError && error.status !== undefined && error.status >= 400 && error.status < 500
 }
 
-// Confirm the email so onboarding can continue. The code pasted into the terminal is the primary
-// path (the CLI is already authenticated, so we confirm via the authenticated /signup/confirm-code
-// endpoint). Pasting the full link is kept as a fallback, and "I already confirmed" verifies against
-// the API for users who clicked the link in a browser.
+// Confirm the email so onboarding can continue. The CLI email is code-only, so the primary path is
+// the authenticated /signup/confirm-code endpoint. Full-link confirmation remains available through
+// `fingerprint signup-confirm <link>` for legacy emails or manual recovery, but is not part of the
+// normal CLI prompt.
 async function promptAndConfirmEmail(auth: AuthState, chain?: boolean) {
   for (;;) {
     const how = await select({
@@ -107,8 +107,6 @@ async function promptAndConfirmEmail(auth: AuthState, chain?: boolean) {
       choices: [
         { name: 'Enter the 6-digit code from your email', value: 'code' },
         { name: 'Send me a new code', value: 'resend' },
-        { name: 'I already confirmed it in my browser', value: 'check' },
-        { name: 'Paste the confirmation link instead', value: 'paste' },
         { name: 'Confirm later', value: 'later' },
       ],
     })
@@ -126,17 +124,6 @@ async function promptAndConfirmEmail(auth: AuthState, chain?: boolean) {
         console.log(`Couldn't send a new code: ${(e as Error).message}`)
       }
       continue
-    }
-
-    if (how === 'check') {
-      if (!(await accountIsConfirmed(auth))) {
-        console.log('Your email still looks unconfirmed. Confirm it from your email, then try again.')
-        continue
-      }
-      updateAuthState({ pendingEmailConfirmation: false })
-      console.log('Email confirmed.')
-      if (chain !== false) await runOnboarding()
-      return
     }
 
     if (how === 'code') {
@@ -158,36 +145,11 @@ async function promptAndConfirmEmail(auth: AuthState, chain?: boolean) {
       if (chain !== false) await runOnboarding()
       return
     }
-
-    const link = await text('Paste the confirmation link from your email')
-    if (!link.trim()) continue
-    try {
-      await confirmEmail(auth, link.trim())
-    } catch (e) {
-      console.log(`${(e as Error).message} — try again, or choose "Confirm later" to stop.`)
-      continue
-    }
-    if (chain !== false) await runOnboarding()
-    return
   }
 }
 
 function isSixDigitCode(value: string): boolean {
   return /^\d{6}$/.test(value)
-}
-
-// Ask the mgmt-api whether the signed-in account's email is confirmed, rather than trusting local
-// state — so a confirmation done in the browser is picked up. `emailConfirmedAt` is set once the
-// email is confirmed; until then the workspace stays "restricted" and key creation is denied. (Note:
-// the user's `status` is "active" even while unconfirmed, so it is NOT the signal to use here.)
-async function accountIsConfirmed(auth: AuthState): Promise<boolean> {
-  const client = new ApiClient(auth.apiUrl)
-  try {
-    const user = await client.request<{ emailConfirmedAt?: string | null }>(endpoints.currentUserGet, { method: 'GET' }, true)
-    return Boolean(user?.emailConfirmedAt)
-  } catch {
-    return false
-  }
 }
 
 // After email is confirmed, continue into onboarding: create the first workspace, then integrate

@@ -38,9 +38,9 @@ export class ApiClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       // Lets the backend identify requests originating from this CLI.
-      'User-Agent': 'fingerprint-cli/0.0.2',
-      // @TODO: Add signature based verification for the client
       'X-Fingerprint-Client': 'cli',
+      'X-Fingerprint-Client-Version': '0.0.2',
+      // @TODO: Add signature based verification for the client
     }
     if (auth && this.state?.accessToken) headers.Authorization = `Bearer ${this.state.accessToken}`
 
