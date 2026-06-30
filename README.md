@@ -52,19 +52,6 @@ Run it from your project's root directory.
 
 If signup is blocked in production due to visitor ID checks, the CLI opens dashboard signup and then you can run `npx fingerprint` again to log in.
 
-## CI / non-interactive
-
-Pass the global `--ci` flag (it's a top-level option, so it goes **before** the subcommand) to
-never prompt — confirmations auto-proceed and missing input fails fast. `--ci` is implied when
-`CI=true`.
-
-```bash
-npx fingerprint --ci integrate
-```
-
-CI runs rely on the auth state saved by a prior `fingerprint login`. Key-based headless auth
-(`--api-key` / `--subscription`) is not implemented yet.
-
 ## Commands
 
 You rarely need these directly — `npx fingerprint` routes to the right one — but they're available:
@@ -99,7 +86,6 @@ email/password flow.
 
 ## Global flags
 
-- `--ci` — non-interactive mode (implied when `CI=true`)
 - `-y, --yes` — skip confirmation prompts
 - `--verbose` — show the agent's individual steps (file reads, edits, tool calls)
 - `--interactive` — ask before each file edit and package install
