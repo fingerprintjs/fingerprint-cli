@@ -1,15 +1,104 @@
-# Welcome to Fingerprint.com
+# Fingerprint CLI
 
-## Other available packages
+CLI version of core Fingerprint dashboard onboarding workflows.
 
-`@fingerprint/agent`
-Fingerprint JavaScript agent
+## Run it now (from source)
 
-`@fingerprint/react`
-Fingerprint React SDK
+Not published to npm yet, so run it from a clone. The wizard's LLM calls are routed through a
+hosted Fingerprint gateway (a Cloudflare Worker), so **you do not need an Anthropic API key**.
 
-`@fingerprint/node-sdk`
-Node.js Fingerprint Server API client
+```bash
+git clone https://github.com/fingerprintjs/fingerprint-cli/ fingerprint-cli
+cd fingerprint-cli
+npm install
+npm run build
+npm link            # makes the `fingerprint` command available globally
+```
 
-`@fingerprint/vue`
-Fingerprint Vue SDK
+Then, from your project's root directory:
+
+```bash
+fingerprint            # figures out where you are: signup/login → workspace → integrate
+# or step through it:
+fingerprint signup     # (or: fingerprint login)
+fingerprint integrate  # analyze the current repo and apply the integration
+```
+
+> [!NOTE]
+> The `integrate` apply step uses per-stack skills, which are fetched automatically from the public
+> skills repo ([fingerprintjs/skills](https://github.com/fingerprintjs/skills)) and
+> cached at `~/.config/fingerprint/skills` on first run — so no manual setup is needed (just `git`
+> + network). Point at a different source with `FINGERPRINT_SKILLS_REPO`, or at a local checkout
+> with `FINGERPRINT_SKILLS_DIR` while developing skills.
+>
+> Curated skills cover **React, Vue, Angular, Svelte, and Next.js** frontends and **Node** (Express,
+> Fastify, Koa, NestJS, Hapi) and **Python** (FastAPI, Django, Flask) backends. For any other detected
+> stack the wizard falls back to an experimental, docs-based integration that researches the
+> Fingerprint docs before editing files. If nothing is detected, it reports that no integration is
+> available yet.
+
+## Quick start (once published)
+
+A single command — it figures out where you are and takes you to the next step:
+
+```bash
+npx fingerprint
+```
+
+- Not signed in? It walks you through signup (or login) → workspace → integration (which provisions the API keys for you).
+- Signed in with a workspace? It integrates Fingerprint into the repo in the current directory.
+
+Run it from your project's root directory.
+
+If signup is blocked in production due to visitor ID checks, the CLI opens dashboard signup and then you can run `npx fingerprint` again to log in.
+
+## Commands
+
+You rarely need these directly — `npx fingerprint` routes to the right one — but they're available:
+
+- `fingerprint signup|login|logout|whoami`
+- `fingerprint workspace ls|start|use`
+- `fingerprint keys [public|secret]` — generate/fetch an API key for the active workspace and print it (prompts for the type if omitted). `integrate` is what writes keys into your `.env`.
+- `fingerprint integrate` — analyze the current repo and apply the Fingerprint integration
+
+## Browser login (scaffolded — not wired yet)
+
+The first version ships the **full CLI auth experience** (email/password signup + login). A
+browser-based login is scaffolded but **intentionally inert** until the backend pieces exist:
+
+- `src/auth/browserLogin.ts` — loopback (`127.0.0.1`) callback server, opens the dashboard login
+  page, validates `state`, saves the returned session. Mirrors the MCP auth flow.
+- Not yet surfaced in the CLI — no `fingerprint login --web` flag or "Continue in browser" menu
+  entry exists yet; the scaffolding is unreachable until the backend pieces below land.
+- `config.ts` resolves a `dashboardUrl` (env `FINGERPRINT_DASHBOARD_URL`, default `dashboard.fpjs.sh`
+  to pair with the staging `mgmtapi.fpjs.sh` default).
+
+It does **not** work end-to-end yet because two backend pieces are still TODO:
+
+1. **mgmt-api** — `POST /cli-auth/accept` (authenticated; `req.auth` → `makeLoginResponse(user)` →
+   `{ accessToken, refreshToken, userId }`). Sibling of the existing `sso/mcp-auth-accept`.
+2. **dashboard** — a `/cli-auth` page (twin of `McpAuthPage.tsx`, route under `_authenticated`)
+   that reads `port` + `state`, calls the endpoint above, then redirects the browser to
+   `http://127.0.0.1:<port>/callback?state=…&access_token=…&refresh_token=…&user_id=…`.
+
+The full contract and rationale are in the wizard-direction memory. Until those land, use the
+email/password flow.
+
+## Global flags
+
+- `-y, --yes` — skip confirmation prompts
+- `--verbose` — show the agent's individual steps (file reads, edits, tool calls)
+- `--interactive` — ask before each file edit and package install
+
+## Logs
+
+A verbose run log is written to your OS temp dir at `fingerprint-wizard.log` (never inside your
+project), useful for debugging a failed integration.
+
+## Environment variables
+
+- `FINGERPRINT_ENV` (`production|staging`, default: `production`) — use `staging` for internal testing
+- `FINGERPRINT_REGION` (`us|eu|ap`, default: `us`)
+- `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/fingerprintjs/skills`)
+- `FINGERPRINT_SKILLS_DIR` — use a local skills checkout instead of fetching (for skill development)
+- `FINGERPRINT_GATEWAY_URL` — override the hosted LLM gateway (for local gateway dev)

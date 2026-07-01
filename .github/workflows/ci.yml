@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Use the pnpm version pinned in package.json's "packageManager" field.
+      - run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # --frozen-lockfile fails if pnpm-lock.yaml is out of date, so CI catches lockfile drift.
+      - run: pnpm install --frozen-lockfile
+
+      # Builds (tsc) then runs the node:test suite (smoke + e2e against the fake mgmt-api/gateway).
+      - run: pnpm test

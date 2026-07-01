@@ -38,3 +38,8 @@ Thumbs.db
 # --- OS & Misc ---
 *.swp
 *.bak
+
+# --- Fingerprint wizard state (per-repo runtime artifact, not source) ---
+.fingerprint/
+
+
