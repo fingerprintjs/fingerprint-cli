@@ -1,6 +1,8 @@
 export const endpoints = {
   signupIntentCreate: '/signup',
   signupIntentConfirm: '/signup/confirm',
+  signupConfirmCode: '/signup/confirm-code',
+  signupConfirmResend: '/signup/confirm/resend',
   passwordStrength: '/signup/password_strength',
   login: '/login',
   logout: '/logout',

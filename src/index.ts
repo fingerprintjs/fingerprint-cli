@@ -35,7 +35,7 @@ program
   .option('--name <name>')
   .option('--email <email>')
   .action(async (opts) => signup({ name: opts.name, email: opts.email }))
-program.command('signup-confirm').argument('<linkOrIntent>').argument('[code]').action(signupConfirm)
+program.command('signup-confirm').argument('<codeOrLink>').argument('[code]').action(signupConfirm)
 program
   .command('login')
   .option('--email <email>')
@@ -90,7 +90,7 @@ async function defaultCommand() {
   // Email confirmation must complete before workspace/keys — the mgmt-api rejects those calls for an
   // unconfirmed account ("no permission"). Resume at confirmation rather than skipping ahead.
   if (auth.pendingEmailConfirmation) {
-    if (isCi()) throw new Error('Email not confirmed. Confirm with `fingerprint signup-confirm "<link from email>"` first.')
+    if (isCi()) throw new Error('Email not confirmed. Confirm with `fingerprint signup-confirm <code>` first.')
     console.log("Your email isn't confirmed yet — finish that before setting up a workspace.")
     await resumeEmailConfirmation()
     return

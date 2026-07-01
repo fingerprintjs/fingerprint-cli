@@ -70,7 +70,7 @@ export async function signup(opts: { name?: string; email?: string; chain?: bool
     region: cfg.region,
     pendingEmailConfirmation: true,
   })
-  console.log('Signup succeeded. Check your email for the confirmation link.')
+  console.log(`We sent a 6-digit verification code to ${email}.`)
   await promptAndConfirmEmail(getAuthState()!, opts.chain)
 }
 
@@ -96,60 +96,60 @@ function isExpectedSignupValidationError(error: unknown): boolean {
   return error instanceof ApiError && error.status !== undefined && error.status >= 400 && error.status < 500
 }
 
-// Confirm the email so onboarding can continue. The user can either paste the link from the email,
-// or — if they clicked it in the browser — pick "I already confirmed" and we verify against the API.
+// Confirm the email so onboarding can continue. The CLI email is code-only, so the primary path is
+// the authenticated /signup/confirm-code endpoint. Full-link confirmation remains available through
+// `fingerprint signup-confirm <link>` for legacy emails or manual recovery, but is not part of the
+// normal CLI prompt.
 async function promptAndConfirmEmail(auth: AuthState, chain?: boolean) {
   for (;;) {
     const how = await select({
       message: 'Confirm your email to continue',
       choices: [
-        { name: 'Paste the confirmation link from your email', value: 'paste' },
-        { name: 'I already confirmed it in my browser', value: 'check' },
+        { name: 'Enter the 6-digit code from your email', value: 'code' },
+        { name: 'Send me a new code', value: 'resend' },
         { name: 'Confirm later', value: 'later' },
       ],
     })
 
     if (how === 'later') {
-      console.log('Confirm later with: fingerprint signup-confirm "<link from email>"')
+      console.log('Confirm later with: fingerprint signup-confirm <code>')
       return
     }
 
-    if (how === 'check') {
-      if (!(await accountIsConfirmed(auth))) {
-        console.log("Your email still looks unconfirmed. Click the link in your email, then try again.")
+    if (how === 'resend') {
+      try {
+        await resendConfirmationCode(auth)
+        console.log('Sent a new code. Check your email, then enter it here.')
+      } catch (e) {
+        console.log(`Couldn't send a new code: ${(e as Error).message}`)
+      }
+      continue
+    }
+
+    if (how === 'code') {
+      const code = (await text('Enter the 6-digit code from your email')).trim()
+      if (!isSixDigitCode(code)) {
+        console.log("That doesn't look like a 6-digit code. Try again, or choose another option.")
         continue
       }
-      updateAuthState({ pendingEmailConfirmation: false })
-      console.log('Email confirmed.')
+      try {
+        await confirmWithCode(auth, code)
+      } catch (e) {
+        const message = (e as Error).message
+        console.log(`${message} — try again, or choose "Confirm later" to stop.`)
+        if (/expired|request a new confirmation code/i.test(message)) {
+          console.log('Tip: choose "Send me a new code" to get a fresh one.')
+        }
+        continue
+      }
       if (chain !== false) await runOnboarding()
       return
     }
-
-    const link = await text('Paste the confirmation link from your email')
-    if (!link.trim()) continue
-    try {
-      await confirmEmail(auth, link.trim())
-    } catch (e) {
-      console.log(`${(e as Error).message} — try again, or choose "Confirm later" to stop.`)
-      continue
-    }
-    if (chain !== false) await runOnboarding()
-    return
   }
 }
 
-// Ask the mgmt-api whether the signed-in account's email is confirmed, rather than trusting local
-// state — so a confirmation done in the browser is picked up. `emailConfirmedAt` is set once the
-// email is confirmed; until then the workspace stays "restricted" and key creation is denied. (Note:
-// the user's `status` is "active" even while unconfirmed, so it is NOT the signal to use here.)
-async function accountIsConfirmed(auth: AuthState): Promise<boolean> {
-  const client = new ApiClient(auth.apiUrl)
-  try {
-    const user = await client.request<{ emailConfirmedAt?: string | null }>(endpoints.currentUserGet, { method: 'GET' }, true)
-    return Boolean(user?.emailConfirmedAt)
-  } catch {
-    return false
-  }
+function isSixDigitCode(value: string): boolean {
+  return /^\d{6}$/.test(value)
 }
 
 // After email is confirmed, continue into onboarding: create the first workspace, then integrate
@@ -163,7 +163,8 @@ async function runOnboarding() {
 
 // The confirmation email links to /signup/confirm/<signupIntent>?confirmationCode=<code>.
 // Accept either the full pasted link, or <signupIntent> <code> as two parts.
-async function confirmEmail(auth: AuthState, linkOrIntent: string, code?: string) {
+async function confirmEmail(auth: AuthState | null, linkOrIntent: string, code?: string) {
+  const cfg = resolveConfig()
   let signupIntent = linkOrIntent
   let confirmationCode = code
   if (linkOrIntent.includes('/signup/confirm/')) {
@@ -179,17 +180,54 @@ async function confirmEmail(auth: AuthState, linkOrIntent: string, code?: string
     throw new Error('Missing confirmation code. Paste the full link from your email, or pass <signupIntent> <code>.')
   }
 
-  const client = new ApiClient(auth.apiUrl)
+  const client = new ApiClient(auth?.apiUrl ?? cfg.apiUrl)
   const data = await client.request<any>(endpoints.signupIntentConfirm, {
     method: 'POST',
     body: JSON.stringify({ signupIntent, confirmationCode }),
   })
+  const nextAuth: AuthState = auth
+    ? {
+        ...auth,
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        userId: data.context?.id ?? auth.userId,
+        pendingEmailConfirmation: false,
+      }
+    : {
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        userId: data.context?.id,
+        pendingEmailConfirmation: false,
+        apiUrl: cfg.apiUrl,
+        region: cfg.region,
+      }
+
+  saveAuthState(nextAuth)
+  console.log('Email confirmed.')
+}
+
+// Ask the backend to email a fresh confirmation code. Authenticated, so it targets the signed-in
+// account; the backend reuses the CLI (code-only) template because the signup originated from the CLI.
+async function resendConfirmationCode(auth: AuthState) {
+  const client = new ApiClient(auth.apiUrl)
+  await client.request(endpoints.signupConfirmResend, { method: 'POST' }, true)
+}
+
+// Code-first confirmation. The CLI is already authenticated after signup, so we send only the code
+// and the backend derives the email from the session (no signupIntent leaves the client).
+async function confirmWithCode(auth: AuthState, confirmationCode: string) {
+  const client = new ApiClient(auth.apiUrl)
+  const data = await client.request<any>(
+    endpoints.signupConfirmCode,
+    { method: 'POST', body: JSON.stringify({ confirmationCode }) },
+    true
+  )
   saveAuthState({ ...auth, accessToken: data.accessToken, refreshToken: data.refreshToken, pendingEmailConfirmation: false })
   console.log('Email confirmed.')
 }
 
 // Resume an interrupted signup: the account exists locally but its email is still unconfirmed.
-// Re-prompt for the confirmation link, then continue onboarding. Used by the default command when
+// Re-prompt for the confirmation code, then continue onboarding. Used by the default command when
 // the user quits after signup and restarts before confirming.
 export async function resumeEmailConfirmation() {
   const auth = getAuthState()
@@ -197,10 +235,23 @@ export async function resumeEmailConfirmation() {
   await promptAndConfirmEmail(auth)
 }
 
+// `fingerprint signup-confirm <codeOrLink> [code]`:
+//   - a bare 6-digit code uses the authenticated code-first path (the common case after CLI signup)
+//   - anything else (a pasted link, or "<signupIntent> <code>") uses the link fallback
 export async function signupConfirm(linkOrIntent: string, code?: string) {
   const auth = getAuthState()
-  if (!auth?.accessToken) throw new Error('Please run fingerprint signup or login first')
-  await confirmEmail(auth, linkOrIntent, code)
+  const input = linkOrIntent.trim()
+
+  if (!code && isSixDigitCode(input)) {
+    if (!auth?.accessToken) {
+      throw new Error('Run `fingerprint signup` first, or paste the full confirmation link from your email.')
+    }
+    await confirmWithCode(auth, input)
+    await runOnboarding()
+    return
+  }
+
+  await confirmEmail(auth, input, code)
   await runOnboarding()
 }
 
