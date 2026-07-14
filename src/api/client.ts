@@ -1,4 +1,3 @@
-import { AuthState, getAuthState, saveAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 
 interface ApiErrorDetails {
@@ -25,31 +24,24 @@ export class ApiError extends Error {
   }
 }
 
+// Minimal client for the private mgmt-api. The CLI holds no dashboard session, so this is only used
+// for the one unauthenticated call in the browser-login flow: polling for the minted workspace
+// Management API key (GET /sso/cli-auth-poll?hash=<hash>). All other work goes through ManagementClient.
 export class ApiClient {
-  private state: AuthState | null
   private apiUrl: string
 
   constructor(apiUrl?: string) {
-    this.state = getAuthState()
-    this.apiUrl = apiUrl ?? this.state?.apiUrl ?? resolveConfig().apiUrl
+    this.apiUrl = apiUrl ?? resolveConfig().apiUrl
   }
 
-  async request<T>(path: string, init: RequestInit = {}, auth = false): Promise<T> {
+  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      // Lets the backend identify requests originating from this CLI.
       'User-Agent': 'fingerprint-cli/0.0.2',
-      // @TODO: Add signature based verification for the client
       'X-Fingerprint-Client': 'cli',
     }
-    if (auth && this.state?.accessToken) headers.Authorization = `Bearer ${this.state.accessToken}`
 
     const res = await fetch(new URL(path, this.apiUrl), { ...init, headers })
-    if (res.status === 401 && auth && this.state?.refreshToken) {
-      await this.refresh()
-      return this.request(path, init, auth)
-    }
-
     if (res.status === 204) return null as T
 
     const json = (await res.json().catch(() => ({}))) as Envelope<T> | T
@@ -67,15 +59,5 @@ export class ApiClient {
     }
 
     return json as T
-  }
-
-  private async refresh() {
-    if (!this.state?.refreshToken) return
-    const data = await this.request<{ accessToken: string; refreshToken?: string }>('/refresh_token/exchange', {
-      method: 'POST',
-      body: JSON.stringify({ refreshToken: this.state.refreshToken }),
-    })
-    this.state = { ...this.state, ...data }
-    saveAuthState(this.state)
   }
 }

@@ -11,14 +11,11 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
   // stack at all (the docs-based integration handles stacks without a skill).
   const willApply = Boolean(analysis.skills.length || analysis.frontend || analysis.backend) && !opts.analyze
 
-  // Applying provisions real workspace keys and edits files, so it needs an authenticated user
-  // with an active workspace. Gate before any output or side effects. (`--analyze` is a read-only
+  // Applying provisions real workspace keys and edits files, so it needs an authenticated user (the
+  // workspace is fixed at login). Gate before any output or side effects. (`--analyze` is a read-only
   // report and stays available to logged-out users.)
   if (willApply) {
-    const auth = requireAuth()
-    if (!auth.currentSubscriptionId) {
-      throw new Error('No active workspace. Run: fingerprint login (or: fingerprint workspace use <id>)')
-    }
+    requireAuth()
   }
 
   console.log(formatAnalysis(analysis))

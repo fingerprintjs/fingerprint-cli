@@ -2,15 +2,15 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { startMgmtApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, runCli } from './helpers/harness.js'
+import { startManagementApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, runCli } from './helpers/harness.js'
 
 // The full `integrate` flow as a user runs it: provision real keys into per-app .env from the
-// (fake) mgmt-api, then run the agent against a (fake) LLM gateway that drives one Write. Exercises
-// the genuine path end to end — provision -> install skills -> run agent -> apply edit — with no
-// network, no credentials, and no real LLM call.
+// (fake) public Management API, then run the agent against a (fake) LLM gateway that drives one
+// Write. Exercises the genuine path end to end — provision -> install skills -> run agent -> apply
+// edit — with no network, no credentials, and no real LLM call.
 let api
 before(async () => {
-  api = await startMgmtApi()
+  api = await startManagementApi()
 })
 after(async () => {
   await api.close()
@@ -18,7 +18,7 @@ after(async () => {
 
 test('integrate --yes provisions keys and the agent applies the integration edit', async () => {
   const home = makeHome()
-  seedAuth(home, api.url, { currentSubscriptionId: 'sub_1' })
+  seedAuth(home, api.url)
   const repo = makeRepo()
   const skillsDir = makeSkillsDir()
   const target = join(repo, 'web', 'fingerprint.js')

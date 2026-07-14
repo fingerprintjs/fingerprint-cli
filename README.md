@@ -18,9 +18,9 @@ npm link            # makes the `fingerprint` command available globally
 Then, from your project's root directory:
 
 ```bash
-fingerprint            # figures out where you are: signup/login → workspace → integrate
+fingerprint            # figures out where you are: login → integrate
 # or step through it:
-fingerprint signup     # (or: fingerprint login)
+fingerprint login      # sign in through the browser
 fingerprint integrate  # analyze the current repo and apply the integration
 ```
 
@@ -45,44 +45,35 @@ A single command — it figures out where you are and takes you to the next step
 npx fingerprint
 ```
 
-- Not signed in? It walks you through signup (or login) → workspace → integration (which provisions the API keys for you).
-- Signed in with a workspace? It integrates Fingerprint into the repo in the current directory.
+- Not signed in? It opens the browser to sign you in (new users sign up and set up a workspace
+  there), then integrates Fingerprint into the repo in the current directory.
+- Already signed in? It goes straight to integrating the current repo.
 
 Run it from your project's root directory.
 
-If signup is blocked in production due to visitor ID checks, the CLI opens dashboard signup and then you can run `npx fingerprint` again to log in.
+## Signing in
+
+`fingerprint login` opens your browser to the Fingerprint dashboard. Sign in there — **new users sign
+up, pick a server region, and get a workspace** in the same flow — and once you authorize, the CLI
+(which has been waiting) picks up the credential automatically; return to your terminal and close the
+tab. No password is ever typed into the CLI, and there's no local server or port involved, so it works
+over SSH and in containers too.
+
+The CLI stores a **workspace-scoped API key** for the workspace you signed into, at
+`~/.config/fingerprint/auth.json` (mode `0600`). That key is what `keys` and `integrate` use to talk
+to Fingerprint; it can't touch billing or other workspaces. `fingerprint logout` deletes the local
+copy — revoke the key itself from the dashboard's API Keys page if you need to.
+
+To work in a different workspace, run `fingerprint login` again and choose it in the browser.
 
 ## Commands
 
 You rarely need these directly — `npx fingerprint` routes to the right one — but they're available:
 
-- `fingerprint signup|login|logout|whoami`
-- `fingerprint workspace ls|start|use`
-- `fingerprint keys [public|secret]` — generate/fetch an API key for the active workspace and print it (prompts for the type if omitted). `integrate` is what writes keys into your `.env`.
+- `fingerprint login | logout | whoami`
+- `fingerprint keys [public|secret]` — generate/fetch an API key for your workspace and print it
+  (prompts for the type if omitted). `integrate` is what writes keys into your `.env`.
 - `fingerprint integrate` — analyze the current repo and apply the Fingerprint integration
-
-## Browser login (scaffolded — not wired yet)
-
-The first version ships the **full CLI auth experience** (email/password signup + login). A
-browser-based login is scaffolded but **intentionally inert** until the backend pieces exist:
-
-- `src/auth/browserLogin.ts` — loopback (`127.0.0.1`) callback server, opens the dashboard login
-  page, validates `state`, saves the returned session. Mirrors the MCP auth flow.
-- Not yet surfaced in the CLI — no `fingerprint login --web` flag or "Continue in browser" menu
-  entry exists yet; the scaffolding is unreachable until the backend pieces below land.
-- `config.ts` resolves a `dashboardUrl` (env `FINGERPRINT_DASHBOARD_URL`, default `dashboard.fpjs.sh`
-  to pair with the staging `mgmtapi.fpjs.sh` default).
-
-It does **not** work end-to-end yet because two backend pieces are still TODO:
-
-1. **mgmt-api** — `POST /cli-auth/accept` (authenticated; `req.auth` → `makeLoginResponse(user)` →
-   `{ accessToken, refreshToken, userId }`). Sibling of the existing `sso/mcp-auth-accept`.
-2. **dashboard** — a `/cli-auth` page (twin of `McpAuthPage.tsx`, route under `_authenticated`)
-   that reads `port` + `state`, calls the endpoint above, then redirects the browser to
-   `http://127.0.0.1:<port>/callback?state=…&access_token=…&refresh_token=…&user_id=…`.
-
-The full contract and rationale are in the wizard-direction memory. Until those land, use the
-email/password flow.
 
 ## Global flags
 
@@ -98,7 +89,6 @@ project), useful for debugging a failed integration.
 ## Environment variables
 
 - `FINGERPRINT_ENV` (`production|staging`, default: `production`) — use `staging` for internal testing
-- `FINGERPRINT_REGION` (`us|eu|ap`, default: `us`)
 - `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/fingerprintjs/skills`)
 - `FINGERPRINT_SKILLS_DIR` — use a local skills checkout instead of fetching (for skill development)
 - `FINGERPRINT_GATEWAY_URL` — override the hosted LLM gateway (for local gateway dev)

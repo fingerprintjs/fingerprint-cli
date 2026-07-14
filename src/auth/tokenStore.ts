@@ -3,13 +3,15 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export interface AuthState {
-  accessToken: string
-  refreshToken?: string
-  userId?: string
-  currentSubscriptionId?: string
-  pendingEmailConfirmation?: boolean
-  apiUrl: string
+  // Workspace-scoped Management API key (Bearer credential for the public Management API and the LLM
+  // gateway). This is the only credential the CLI stores — no dashboard session / refresh token.
+  managementApiKey: string
+  // The workspace the key is scoped to, and its agent region ('us'|'eu'|'ap') for app env config.
+  workspaceId: string
   region: string
+  // Public Management API base URL for this login's environment (kept so the CLI keeps talking to the
+  // same environment the user logged into).
+  managementApiUrl: string
 }
 
 const configDir = join(homedir(), '.config', 'fingerprint')

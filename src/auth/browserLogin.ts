@@ -1,115 +1,108 @@
-import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
-import { AddressInfo } from 'node:net'
+import { setTimeout as sleep } from 'node:timers/promises'
 import open from 'open'
 import { resolveConfig } from '../config/config.js'
+import { ApiClient, ApiError } from '../api/client.js'
 import { saveAuthState } from './tokenStore.js'
 
-// Browser login mirrors the MCP auth flow: we open the dashboard's login page with a redirect to a
-// dashboard page (/cli-auth) that, once the user is authenticated, sends the freshly-minted session
-// tokens back to a one-shot loopback server we run here. No client secret, no token exchange in the
-// CLI — the dashboard/mgmt-api do that and hand us a normal { accessToken, refreshToken } session.
+// Browser login uses poll delivery (PostHog-style): no local server, no loopback port. The CLI
+// generates a high-entropy `hash`, opens the dashboard's /cli-auth page carrying it, and polls the
+// mgmt-api for the credential. After the user authorizes a workspace in the browser, mgmt-api mints a
+// workspace-scoped Management API key and caches it under the hash; our next poll retrieves it once,
+// over TLS. The key never travels in a browser URL or redirect, and there's no port to bind — so this
+// works over SSH and inside containers, unlike a loopback flow.
 //
 // Contract with the dashboard /cli-auth page:
-//   open:     <dashboardUrl>/login?redirect_to=<urlenc('/cli-auth?port=<port>&state=<state>')>
-//   redirect: http://127.0.0.1:<port>/callback?state=<state>&access_token=<..>&refresh_token=<..>[&user_id=<..>]
-//   on error: http://127.0.0.1:<port>/callback?state=<state>&error=<message>
-// We validate `state` to defend the loopback against unrelated requests.
+//   open: <dashboardUrl>/cli-auth?hash=<hash>&intent=<login|signup>  (an auth-guarded route: it
+//         bounces through the auth page and back, preserving the query, only when there's no active
+//         session; `intent` tells the guard whether to send that user to /login or /signup)
+//   poll: GET <apiUrl>/sso/cli-auth-poll?hash=<hash> → { status: 'pending' } | { status: 'complete', … }
+//
+// We open /cli-auth directly rather than /login?redirect_to=… : when a dashboard session already
+// exists, /login short-circuits and drops redirect_to, so /cli-auth never loads and the poll never
+// completes. Pointing at the destination lets the route guard handle the auth round-trip only when
+// it's actually needed — and `intent` lets it pick the right page (a new user shouldn't land on
+// /login) without the CLI ever opening /login or /signup directly.
 
-const CALLBACK_PATH = '/callback'
+const POLL_PATH = '/sso/cli-auth-poll'
+const POLL_INTERVAL_MS = 2000
 const TIMEOUT_MS = 5 * 60 * 1000
 
 export interface BrowserLoginResult {
-  accessToken: string
-  refreshToken?: string
-  userId?: string
-  isSignup: boolean
+  managementApiKey: string
+  workspaceId: string
+  region: string
 }
 
-export async function loginWithBrowser(opts: { apiUrl?: string } = {}): Promise<BrowserLoginResult> {
-  const cfg = resolveConfig(opts.apiUrl)
-  const state = randomBytes(16).toString('hex')
+interface PollResponse {
+  status: 'pending' | 'complete'
+  managementApiKey?: string
+  workspaceId?: string
+  region?: string
+}
 
-  return new Promise<BrowserLoginResult>((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-      if (url.pathname !== CALLBACK_PATH) {
-        res.writeHead(404).end()
-        return
-      }
+export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {}): Promise<BrowserLoginResult> {
+  const cfg = resolveConfig()
+  // High-entropy lookup id. It travels through the browser URL, so security rests on its entropy plus
+  // the credential being single-use and short-TTL server-side — never on the URL staying secret.
+  const hash = randomBytes(32).toString('base64url')
 
-      const params = url.searchParams
-      const fail = (message: string) => {
-        respond(res, false, message)
-        cleanup()
-        reject(new Error(message))
-      }
+  const intent = opts.intent ?? 'login'
+  const authUrl = `${cfg.dashboardUrl}/cli-auth?hash=${hash}&intent=${intent}`
+  console.log(`\nOpening your browser to ${intent === 'signup' ? 'sign up' : 'sign in'}...`)
+  console.log(`If it doesn't open, visit:\n  ${authUrl}\n`)
+  await open(authUrl).catch(() => {
+    // Browser couldn't be opened automatically; the printed URL is the fallback.
+  })
 
-      if (params.get('state') !== state) return fail('Login failed: state mismatch (possible stale or forged callback).')
-      const error = params.get('error')
-      if (error) return fail(`Login failed: ${error}`)
+  const client = new ApiClient(cfg.apiUrl)
+  const deadline = Date.now() + TIMEOUT_MS
+  console.log('Waiting for you to finish signing in in the browser...')
 
-      const accessToken = params.get('access_token')
-      if (!accessToken) return fail('Login failed: no access token in callback.')
-
-      const result: BrowserLoginResult = {
-        accessToken,
-        refreshToken: params.get('refresh_token') ?? undefined,
-        userId: params.get('user_id') ?? undefined,
-        isSignup: params.get('is_signup') === 'true',
-      }
-
-      saveAuthState({
-        accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
-        userId: result.userId,
-        apiUrl: cfg.apiUrl,
-        region: cfg.region,
-      })
-
-      respond(res, true)
-      cleanup()
-      resolve(result)
-    })
-
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error('Login timed out after 5 minutes. Run `fingerprint login` again.'))
-    }, TIMEOUT_MS)
-    timer.unref()
-
-    const cleanup = () => {
-      clearTimeout(timer)
-      server.close()
+  let consecutiveErrors = 0
+  for (;;) {
+    if (Date.now() > deadline) {
+      throw new Error('Login timed out after 5 minutes. Run `fingerprint login` again.')
     }
 
-    server.on('error', (e) => {
-      cleanup()
-      reject(new Error(`Could not start local login server: ${e.message}`))
-    })
+    let res: PollResponse | null = null
+    try {
+      res = await client.request<PollResponse>(`${POLL_PATH}?hash=${hash}`, { method: 'GET' })
+      consecutiveErrors = 0
+    } catch (e) {
+      // A 404 means the endpoint isn't there — no point polling for five minutes; surface it now.
+      if (e instanceof ApiError && e.status === 404) {
+        throw new Error('Login isn’t available right now. Please try again in a few minutes.')
+      }
+      // No HTTP status means the request never reached the server — almost always no (or blocked)
+      // internet. A single failure might be a blip, so retry a few times in case it recovers; give up
+      // sooner than for server-side errors since a total lack of connectivity rarely fixes itself.
+      const offline = !(e instanceof ApiError)
+      if (offline && ++consecutiveErrors >= 3) {
+        throw new Error('Couldn’t reach Fingerprint — check your internet connection, then run `fingerprint login` again.')
+      }
+      // Server-side hiccup (rate limit, brief 5xx): tolerate a longer run before giving up. Keep the
+      // message plain — internal URLs and raw fetch errors don't help the person logging in.
+      if (!offline && ++consecutiveErrors >= 10) {
+        throw new Error('Login failed. Please run `fingerprint login` again.')
+      }
+    }
 
-    // Bind to an ephemeral port on the loopback interface only.
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address() as AddressInfo
-      const redirectTo = `/cli-auth?port=${port}&state=${state}`
-      const loginUrl = `${cfg.dashboardUrl}/login?redirect_to=${encodeURIComponent(redirectTo)}`
-      console.log('\nOpening your browser to sign in...')
-      console.log(`If it doesn't open, visit:\n  ${loginUrl}\n`)
-      open(loginUrl).catch(() => {
-        // Browser couldn't be opened automatically; the printed URL is the fallback.
+    if (res?.status === 'complete' && res.managementApiKey) {
+      const result: BrowserLoginResult = {
+        managementApiKey: res.managementApiKey,
+        workspaceId: res.workspaceId ?? '',
+        region: res.region ?? '',
+      }
+      saveAuthState({
+        managementApiKey: result.managementApiKey,
+        workspaceId: result.workspaceId,
+        region: result.region,
+        managementApiUrl: cfg.managementApiUrl,
       })
-    })
-  })
-}
+      return result
+    }
 
-// Minimal HTML so the browser tab shows a clear "done, go back to the terminal" message.
-function respond(res: import('node:http').ServerResponse, ok: boolean, message?: string) {
-  const title = ok ? 'Signed in to Fingerprint' : 'Sign-in failed'
-  const body = ok ? 'You can close this tab and return to the terminal.' : (message ?? 'Something went wrong.')
-  res.writeHead(ok ? 200 : 400, { 'content-type': 'text/html' })
-  res.end(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>` +
-      `<body style="font-family:system-ui;max-width:30rem;margin:6rem auto;text-align:center">` +
-      `<h2>${title}</h2><p>${body}</p></body></html>`
-  )
+    await sleep(POLL_INTERVAL_MS)
+  }
 }

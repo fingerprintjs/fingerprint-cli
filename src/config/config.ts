@@ -2,28 +2,34 @@ export type Region = 'us' | 'eu' | 'ap'
 export type Environment = 'production' | 'staging'
 
 interface EnvironmentUrls {
-  // mgmt-api the CLI talks to.
+  // Private mgmt-api. The CLI hits only one endpoint here: GET /sso/cli-auth-poll during browser
+  // login, to poll for the minted Management key. No dashboard session is ever held.
   apiUrl: string
-  // Dashboard hosting the browser-login page. Tokens it mints are only valid against the SAME
-  // environment's mgmt-api, so these two must always come from the same preset — never mix them.
+  // Public Management API the CLI drives with its workspace-scoped Management API key (create/list
+  // API keys + environments). This is where all post-login work happens.
+  managementApiUrl: string
+  // Dashboard hosting the browser-login + /cli-auth page. The Management key it mints is only valid
+  // against the SAME environment, so these URLs must always come from one preset — never mix them.
   dashboardUrl: string
   // Hosted Fingerprint LLM gateway (Cloudflare Worker) the agent SDK is pointed at, so end users
-  // never need an Anthropic key.
+  // never need an Anthropic key. It authenticates callers by the Management API key.
   gatewayUrl: string
 }
 
-// Each environment bundles the three URLs that must move together. Defaults to production; set
+// Each environment bundles the URLs that must move together. Defaults to production; set
 // FINGERPRINT_ENV=staging for internal use. Individual FINGERPRINT_*_URL vars still override a
-// single URL.
+// single value.
 const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   production: {
     apiUrl: 'https://api.fpjs.pro',
+    managementApiUrl: 'https://management-api.fpjs.io',
     dashboardUrl: 'https://dashboard.fingerprint.com',
     gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
   },
   staging: {
-    apiUrl: 'https://mgmtapi.fpjs.sh',
-    dashboardUrl: 'https://dashboard.fpjs.sh',
+    apiUrl: 'http://localhost:3001',
+    managementApiUrl: 'https://public-api-preview-acc05757.fpjs.sh',
+    dashboardUrl: 'http://localhost:3000',
     gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
   },
 }
@@ -40,6 +46,7 @@ function selectEnvironment(): Environment {
 
 export interface RuntimeConfig {
   apiUrl: string
+  managementApiUrl: string
   dashboardUrl: string
   gatewayUrl: string
   region: Region
@@ -51,6 +58,7 @@ export function resolveConfig(apiUrl?: string, region?: string): RuntimeConfig {
   const resolvedRegion = (region ?? process.env.FINGERPRINT_REGION ?? 'us') as Region
   return {
     apiUrl: apiUrl ?? process.env.FINGERPRINT_API_URL ?? env.apiUrl,
+    managementApiUrl: process.env.FINGERPRINT_MANAGEMENT_API_URL ?? env.managementApiUrl,
     dashboardUrl: process.env.FINGERPRINT_DASHBOARD_URL ?? env.dashboardUrl,
     gatewayUrl: process.env.FINGERPRINT_GATEWAY_URL ?? env.gatewayUrl,
     region: resolvedRegion,

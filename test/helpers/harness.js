@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url'
 
 export const CLI = fileURLToPath(new URL('../../dist/index.js', import.meta.url))
 
-// A fake mgmt-api: just enough of the endpoints the real flow hits, returning the {ok,data}
-// envelope ApiClient expects. Lets the e2e drive real CLI commands over real HTTP with no network.
-export function startMgmtApi() {
+// A fake PUBLIC Management API: just the endpoints the post-login flow hits (list/create API keys),
+// returning the `{ data }` envelope the ManagementClient expects. Lets the e2e drive real CLI
+// commands over real HTTP with no network. The CLI authenticates with its Management API key.
+export function startManagementApi() {
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
@@ -17,16 +18,15 @@ export function startMgmtApi() {
       const path = req.url.split('?')[0]
       const ok = (data) => {
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, data }))
+        res.end(JSON.stringify({ data }))
       }
       const route = `${req.method} ${path}`
-      if (route === 'POST /sso/auth') return ok({ sso: { isEnabled: false } })
-      if (route === 'POST /login') return ok({ accessToken: 'acc_1', refreshToken: 'ref_1', context: { id: 'user_1' } })
-      if (route === 'GET /subscriptions') return ok([{ id: 'sub_1', name: 'Test WS', regionCode: 'use1' }])
-      if (route === 'GET /subscriptions/sub_1/tokens') return ok([{ type: 'browser', token: 'pub_123' }])
-      if (route === 'POST /subscriptions/sub_1/tokens') return ok({ type: 'api', token: 'sec_456' })
+      // GET /api-keys?type=public&... → the workspace's public (browser) key.
+      if (route === 'GET /api-keys') return ok([{ id: 'key_pub', type: 'public', status: 'enabled', token: 'pub_123' }])
+      // POST /api-keys → mint a secret key (value only returned here).
+      if (route === 'POST /api-keys') return ok({ id: 'key_sec', type: 'secret', status: 'enabled', token: 'sec_456' })
       res.writeHead(404, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: { message: `no route: ${route}` } }))
+      res.end(JSON.stringify({ error: { message: `no route: ${route}` } }))
     })
   })
   return new Promise((resolve) => {
@@ -42,14 +42,15 @@ export function makeHome() {
   return mkdtempSync(join(tmpdir(), 'fp-home-'))
 }
 
-// Pre-authenticate by writing the auth state the CLI would have saved after login (avoids needing a
-// PTY to drive the interactive password prompt). apiUrl points the CLI at the fake mgmt-api.
-export function seedAuth(home, apiUrl, extra = {}) {
+// Pre-authenticate by writing the auth state the CLI would have saved after browser login (avoids
+// needing to drive the interactive browser flow). `managementApiUrl` points the CLI at the fake
+// Management API above; the workspace + region are fixed at login time.
+export function seedAuth(home, managementApiUrl, extra = {}) {
   const dir = join(home, '.config', 'fingerprint')
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'auth.json'),
-    JSON.stringify({ accessToken: 'acc_1', refreshToken: 'ref_1', apiUrl, region: 'us', ...extra })
+    JSON.stringify({ managementApiKey: 'mgmt_key_1', workspaceId: 'sub_1', region: 'us', managementApiUrl, ...extra })
   )
 }
 
