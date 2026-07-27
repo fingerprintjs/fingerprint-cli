@@ -1,165 +1,188 @@
 # CLI Browser Login — How It Works (Plain English)
 
-This explains how `fingerprint login` signs you in through the browser, what code
-was added across the three repos, and why it can get "stuck."
+This explains how `fingerprint login` (and `fingerprint signup`) sign you in through
+the browser, what the CLI actually does, and why it can get "stuck" or fail with
+`fetch failed`.
+
+> **Note:** an earlier version of this used a poll/`hash` + Redis "locker" design with
+> a dashboard `/cli-auth` page and `mgmt-api` endpoints. That was **fully removed**. The
+> CLI now uses **standard OAuth 2.0** against the MCP auth server. If you find references
+> to `cli-auth-poll`, `cli-auth-accept`, or a `hash`, they're stale — ignore them.
 
 ---
 
 ## 1. The problem it solves
 
-The CLI needs a **Management API key** for your workspace so it can create keys and
+The CLI needs a **workspace-scoped Management API key** so it can create keys and
 environments on your behalf. We don't want you pasting keys by hand. So instead:
 
-> You click "log in", your browser opens, you sign in like normal, and the CLI
+> You run `fingerprint login`, your browser opens, you sign in like normal, and the CLI
 > quietly receives a key for your workspace.
 
-The tricky part: **the browser and the terminal are two separate programs.** The
-terminal can *open* a browser, but it can't *see* what you did in it. They need a
-drop box in the middle to pass the key.
+The tricky part: **the browser and the terminal are two separate programs.** The terminal
+can *open* a browser, but it can't *see* what you did in it. OAuth solves exactly this.
 
 ---
 
-## 2. The idea (a locker analogy)
+## 2. The idea (standard OAuth, like every CLI you've used)
 
-Think of a gym locker:
+This is the same flow as `gh auth login`, `vercel login`, PostHog's CLI, etc.:
 
-1. The **terminal** brings a padlock with a random secret code (`hash`) and opens
-   the browser pointed at a locker room, showing that code.
-2. **You** sign in on the website. The website puts your workspace key **inside the
-   locker** whose number is that code.
-3. The **terminal** keeps trying its code on the locker every 2 seconds. The moment
-   the key is inside, it grabs it — and the locker empties.
+1. The **terminal** opens a tiny local web server on `127.0.0.1` (a "loopback") and
+   generates a one-time secret (**PKCE verifier**) that never leaves your machine.
+2. It opens the browser to the auth server's **authorize** page, handing over only the
+   *hash* of that secret (the **PKCE challenge**) plus a return address (`redirect_uri`
+   pointing back at the loopback).
+3. **You** sign in (or sign up) on the auth server's page and pick/complete a workspace.
+4. The auth server redirects your browser back to the loopback with a one-time **code**.
+5. The terminal swaps that `code` + its secret `verifier` for a **token** — directly,
+   server-to-server. Because the secret never travels through the browser, nothing
+   sensitive is ever exposed in a URL or email.
 
-Nobody ever hands the key through the browser's address bar. The key only lives
-inside the locker (the server), and only the terminal that knows the code can open it.
-
-- **The locker room = the dashboard website** (where you log in).
-- **The lockers = Redis** on the mgmt-api (the temporary mailbox).
-- **The code = `hash`**, a big random string the CLI makes up.
+The token is a JWT that *contains* the workspace's Management API key. The CLI reads it
+out and saves it.
 
 ---
 
 ## 3. The flow, step by step
 
 ```
-  TERMINAL (fingerprint CLI)            BROWSER (dashboard)           SERVER (mgmt-api + Redis)
-  --------------------------            -------------------           -------------------------
-  1. make random `hash`
-  2. open browser ----------------->    /cli-auth?hash=XYZ
-                                        3. you sign in
-                                        4. page auto-authorizes
-                                           your current workspace
-                                        5. POST /sso/cli-auth-accept ->  6. mint workspace mgmt key
-                                           { hash, workspaceId }            store in Redis under `hash`
-                                                                            (auto-expires in 10 min)
-                                        7. shows "You're signed in"
-  8. every 2s: GET /sso/cli-auth-poll?hash=XYZ  ------------------------>  9. is anything under `hash`?
-                                                                            - no  -> { status: pending }
-                                                                            - yes -> { status: complete, key }
-                                                                                     and DELETE it (single use)
-  10. got the key! save it locally
-      and continue setup
+  TERMINAL (fingerprint CLI)                 BROWSER                     AUTH SERVER (mcpauth.fingerprint.com)
+  --------------------------                 -------                     -------------------------------------
+  1. make PKCE verifier (secret, local)
+     + its SHA-256 challenge
+  2. start loopback on 127.0.0.1:8976
+  3. open browser -------------------------> /oauth2/authorize?          (discovered from
+                                             client_id=... &              /.well-known/oauth-authorization-server)
+                                             redirect_uri=127.0.0.1:8976 &
+                                             code_challenge=... &
+                                             state=... [&screen_hint=sign-up]
+                                             4. you sign in / sign up
+                                                + pick/complete workspace
+                                             5. redirect back ---------->  issue one-time `code`
+  6. loopback receives   <------------------ 127.0.0.1:8976/callback?code=...&state=...
+     code (+ checks state matches)
+  7. POST /oauth2/token -----------------------------------------------> exchange code + verifier
+     { code, code_verifier, client_id }                                   for an access token (JWT)
+  8. decode JWT:
+       sub = "serverApiKey-managementApiKey-region"
+       urn:fingerprint:sub_id = workspaceId
+  9. save to ~/.config/fingerprint/auth.json
 ```
 
-That's the whole thing. The terminal just repeats step 8 until the server says
-"complete."
+That's the whole thing. Steps 6–7 are the moment the browser "comes back to the terminal."
 
 ---
 
-## 4. What code was added, per repo
+## 4. What code is involved (and what is NOT)
 
-### Repo A — `fingerprint-cli` (the terminal side)
-
-| File | What it does |
-|------|--------------|
-| `src/auth/browserLogin.ts` | The whole flow above: makes the `hash`, opens the browser, then loops calling the poll endpoint every 2s until it gets the key (or times out after 5 min). Saves the key with `saveAuthState`. |
-| `src/api/client.ts` | A tiny HTTP helper (`ApiClient`) used for the one public call — the poll. It unwraps the server's `{ ok, data }` envelope. |
-| `src/config/config.ts` | Holds the URLs per environment (`apiUrl` = where to poll, `dashboardUrl` = where to open the browser). **These two must belong to the same environment.** |
-| `src/commands/auth.ts` | `login()` — browser-only now. Calls `loginWithBrowser`, then continues setup. |
-| `src/index.ts` | Wires up the `login` command / default flow. |
-
-The key contract lives as a comment at the top of `browserLogin.ts`:
-
-```
-open: <dashboardUrl>/login?redirect_to=<urlenc('/cli-auth?hash=<hash>')>
-poll: GET <apiUrl>/sso/cli-auth-poll?hash=<hash>
-      -> { status: 'pending' } | { status: 'complete', managementApiKey, workspaceId, region }
-```
-
-### Repo B — `mgmt-api` (the server + mailbox)
+### `fingerprint-cli` — the only side with CLI-specific code
 
 | File | What it does |
 |------|--------------|
-| `packages/api/src/sso/services.ts` | The mailbox. `storeCliAuthCredential` puts the key in Redis under the `hash` with a 10-min expiry. `pollCliAuthCredential` uses `getDel` to read it **once** and delete it. |
-| `packages/api/src/sso/handlers.ts` | Two handlers. `handleCliAuthAccept` (called by the browser, logged in) mints the workspace key via `createCliToken` and stores it. `handleCliAuthPoll` (called by the CLI, public) returns `pending` or `complete`. |
-| `packages/api/src/sso/routes.ts` | Registers `POST /sso/cli-auth-accept` and `GET /sso/cli-auth-poll`, both rate-limited. |
-| `packages/api/src/sso/validators.ts` | Shapes of the request/response so bad input is rejected. |
-| `packages/api/src/middleware/auth.ts` | Makes `cli-auth-accept` require a login session (so we know who you are), while `cli-auth-poll` stays public (the CLI has no session — only the secret `hash`). |
-| `packages/common/src/redis/keys.ts` | Adds the `cli_auth_sessions` Redis namespace (the "locker bank"). |
-| `packages/api/src/tokens/service.ts` | `createCliToken` — mints the actual workspace-scoped Management key (and can roll it back if storing fails). |
+| `src/auth/browserLogin.ts` | The whole flow above. Makes the PKCE pair + `state`, discovers the endpoints from the issuer, starts the loopback (`127.0.0.1`, ports `8976–8980` tried in order), opens the browser to `/oauth2/authorize`, waits for the `code`, exchanges it for the token, decodes the workspace key out of the JWT, and calls `saveAuthState`. Login waits 5 min; **signup waits 20 min** (account creation + email confirmation + onboarding all happen in-browser). |
+| `src/auth/tokenStore.ts` | Where the key is stored: `~/.config/fingerprint/auth.json` (perms `0600`). Holds `managementApiKey`, `workspaceId`, `region`, `managementApiUrl`. |
+| `src/config/config.ts` | Per-environment URLs + the OAuth `oauthIssuer` and `oauthClientId`. Overridable via `FINGERPRINT_OAUTH_ISSUER` / `FINGERPRINT_OAUTH_CLIENT_ID` / `FINGERPRINT_ENV`. |
+| `src/commands/auth.ts` | `login()` / `signup()` — both call `loginWithBrowser`, then chain into `integrate`. |
+| `src/index.ts` | Wires up the `login` / `signup` commands. |
 
-### Repo C — `dashboard` (the web page you see)
+### `dashboard` and `mgmt-api` — **no CLI-specific code needed**
 
-| File | What it does |
-|------|--------------|
-| `src/routes/_authenticated/cli-auth.tsx` | The `/cli-auth` route. Reads `hash` from the URL. It's under `_authenticated`, so you must be logged in to reach it (the login page sends you here afterward). |
-| `src/features/cliauth/CliAuthPage.tsx` | The page itself. **No button** — it auto-authorizes your *current* workspace on load, calls accept, then shows "You're signed in to the Fingerprint CLI." New users go through onboarding first, then land back here. |
-| `src/const/api.ts` + `src/hooks/api/auth.ts` | Declares the `cliAuthAccept` endpoint and the `useCliAuthAcceptMutation` hook the page uses. |
+The CLI is "just another OAuth client" of the **already-deployed MCP auth server**. It
+even registers itself via **Dynamic Client Registration** (`POST /oauth2/register`), so
+no one has to hand-register a client. The token it receives is the *existing* MCP token —
+the CLI parses it itself. **So logging in needs zero changes in the dashboard or mgmt-api.**
+
+### The token contract
+
+The access token is a JWT whose:
+- **`sub`** is three dash-separated parts: `serverApiKey-managementApiKey-region`
+  (region may itself contain dashes — keep the remainder after the 2nd dash).
+- **`urn:fingerprint:sub_id`** claim carries the workspace id.
+
+The CLI decodes this without verifying the signature (it came straight from the auth
+server over TLS; downstream services verify it against the JWKS).
 
 ---
 
-## 5. Why it can get "stuck" (and how to fix)
+## 5. Signup is single-step (email confirmation does **not** break it)
 
-"Stuck" almost always means: **the browser dropped the key in one locker bank, but the
-terminal is checking a different locker bank.** Same code — wrong wiring.
+`fingerprint signup` is the same flow with `screen_hint=sign-up`. A brand-new user has to
+confirm their email and complete a first workspace, which takes a few minutes — so the
+loopback stays open for 20 minutes.
 
-The single most common cause, and the one that bit us:
-
-- The **CLI polls** the server at its `apiUrl`.
-- The **dashboard drops the key** at *its* configured API base (`REACT_APP_API_URL`
-  in the dashboard's `.env.local`).
-- If those two point at **different mgmt-api servers**, they have **different Redis**.
-  The dashboard's POST succeeds (browser shows "signed in"), but the CLI polls a Redis
-  that never got the key → it waits forever.
-
-Note: a wrong *path* would 404 and error immediately. A wrong *server* returns a valid
-`{ status: 'pending' }` forever — which is exactly why it hangs instead of failing.
-
-**Fix:** make both sides point at the same mgmt-api.
-
-```bash
-# Point the CLI at the same mgmt-api the dashboard writes to (check dashboard/.env.local)
-FINGERPRINT_API_URL=http://localhost:3001 fingerprint login
-```
-
-**Also important — each login is a fresh locker.** Every time you run `fingerprint
-login`, the CLI makes a **new** `hash`. You must complete the browser step for *that*
-run. Re-running the CLI and then looking at an **old** "You're signed in" tab does
-nothing — that old tab authorized an old hash. Let the CLI open a fresh tab (or use
-the printed URL) and let it auto-authorize again.
-
-### Quick checklist when it hangs
-
-1. Is a mgmt-api actually running at the CLI's `apiUrl`?
-   `curl "http://localhost:3001/sso/cli-auth-poll?hash=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"`
-   → should return `{"ok":true,"data":{"status":"pending"}}`.
-2. Does the **dashboard's** `REACT_APP_API_URL` point at that **same** server?
-   (`.env.local` overrides `.env` — check the one that wins.)
-3. Did you complete the browser step for the **current** run (fresh tab), not an old one?
-4. Under 10 minutes elapsed? The stored key expires after that.
-```
-```
+The confirmation email opens a fresh tab, but the flow is **not** lost: the auth server's
+page (`dashboard/mcp-auth?external_auth_id=…`) carries a **pendingRedirect** through
+signup → email confirmation → workspace completion, and then redirects the browser back
+to the CLI's loopback with the `code`. As long as the loopback is still listening, the CLI
+finishes automatically. (Do **not** "fix" this by splitting signup into two steps — that
+was tried and it *broke* signup, because nothing was listening on the loopback when the
+redirect returned.)
 
 ---
 
-## 6. Why Redis (not a database)?
+## 6. Why it fails with `fetch failed` (and how to fix)
 
-The key is **throwaway data with three needs**, and Redis nails all three in one line each:
+`fetch failed` is a Node `fetch()` throwing before it gets a response — almost always a
+**DNS / reachability** problem, not an auth problem. Two places it happens:
 
-- **Auto-expire** — it should disappear if you never finish (`EX: 600` = 10 min).
-- **Read once** — `getDel` reads and deletes atomically, so a stolen `hash` can't be
-  reused after the CLI picks the key up.
-- **Fast + tiny** — it's a 3-field blob living for seconds. A real DB table would be
-  overkill and need a cleanup job.
+**A) At login — the issuer host can't be reached.**
+`browserLogin.ts` fetches `<oauthIssuer>/.well-known/oauth-authorization-server`. If
+`oauthIssuer` points at a host that doesn't resolve (e.g. a wrong staging guess like
+`mcpauth.fpjs.sh` → `NXDOMAIN`), you get `fetch failed` immediately.
+→ **Fix:** point `oauthIssuer` at a real auth server. Prod is
+`https://mcpauth.fingerprint.com`.
 
-Redis is the natural fit for a short-lived, self-cleaning, read-once mailbox.
+**B) After login, in the wizard — the Management API host can't be reached.**
+The "Set up environment variables" step calls the Management API at
+`auth.managementApiUrl`. If that host doesn't resolve (or is internal-only and you're not
+on the VPN), the call throws `fetch failed` right after `Workspace region: …`.
+→ **Fix:** set `managementApiUrl` to the correct host **and** be on a network that can
+reach it.
+
+### Environment notes
+
+- **Production** works end-to-end from anywhere:
+  - `oauthIssuer` = `https://mcpauth.fingerprint.com`
+  - `managementApiUrl` = `https://management-api.fpjs.io`
+- **Staging** has its own WorkOS AuthKit issuer (`https://scientific-cat-58-staging.authkit.app`)
+  and its own CLI client id. It mints a **staging-scoped** key that authenticates against
+  the staging Management API.
+- The **staging public Management API** is `https://public-mgmtapi.fpjs.sh`, but it
+  resolves to an **internal** load balancer (private `172.x` IPs) — reachable **only on
+  the VPN / from inside the cluster.** From a plain public connection it times out
+  (`fetch failed`). `public-mgmt-api.stage.fpjs.sh` is **not** a real host. So staging
+  login + wizard only work end-to-end while you're on the VPN.
+
+### Quick checklist when it fails
+
+1. `curl <oauthIssuer>/.well-known/oauth-authorization-server` → should return JSON with
+   `authorization_endpoint` + `token_endpoint`. If it can't resolve, your issuer is wrong.
+2. `curl <managementApiUrl>/` → should answer (even a 401/404 is fine — it means the host
+   is reachable). A **timeout** means internal-only host / not on VPN. `NXDOMAIN` means
+   wrong hostname.
+3. Are `oauthIssuer` and `managementApiUrl` from the **same** environment preset? Mixing a
+   prod token with a staging API (or vice-versa) will authenticate-fail even when reachable.
+4. Under the timeout? Login is 5 min, signup is 20 min.
+
+---
+
+## 7. Where the key is stored
+
+One file: `~/.config/fingerprint/auth.json`, locked to `0600` (owner read/write only).
+
+```json
+{
+  "managementApiKey": "…",
+  "workspaceId": "sub_…",
+  "region": "eu",
+  "managementApiUrl": "https://management-api.fpjs.io"
+}
+```
+
+- Written by `saveAuthState()` at the end of a successful login.
+- Read by `fingerprint whoami` and before any wizard step that needs the key.
+- Deleted by `fingerprint logout` (the key itself keeps existing in the workspace — revoke
+  it from the dashboard's API-keys page if needed).
+- The path is **not** per-environment, so a prod login and a staging login overwrite the
+  same file — whichever you ran last wins.

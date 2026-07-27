@@ -3,8 +3,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export interface AuthState {
-  // Workspace-scoped Management API key (Bearer credential for the public Management API and the LLM
-  // gateway). This is the only credential the CLI stores — no dashboard session / refresh token.
+  // OAuth access token (JWT) from the MCP auth server login. This is the Bearer credential the LLM
+  // gateway verifies against the auth server's JWKS. Short-lived; see wizard/llm.ts.
+  accessToken: string
+  // Workspace-scoped Management API key (extracted from the access token's `sub`), used as the Bearer
+  // for the public Management API — NOT for the gateway. Kept separately from the access token.
   managementApiKey: string
   // The workspace the key is scoped to, and its agent region ('us'|'eu'|'ap') for app env config.
   workspaceId: string

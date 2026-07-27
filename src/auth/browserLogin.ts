@@ -8,9 +8,9 @@ import { saveAuthState } from './tokenStore.js'
 // Browser login is OAuth 2.0 Authorization Code + PKCE against WorkOS AuthKit — the same engine the
 // MCP integration uses. The CLI is a public OAuth client: it starts a loopback server, opens the
 // browser to WorkOS's authorize endpoint, and exchanges the returned code (with its PKCE verifier)
-// for a token. WorkOS redirects the user through the dashboard's /cli-auth consent page, where the
-// workspace-scoped Management API key is minted and handed back inside the token. Because the secret
-// `code_verifier` never leaves the CLI, nothing sensitive travels in a browser URL or email.
+// for a token. The auth server signs the user in, mints the workspace-scoped Management API key, and
+// hands it back inside the token. Because the secret `code_verifier` never leaves the CLI, nothing
+// sensitive travels in a browser URL or email.
 //
 // The token WorkOS returns is a JWT whose `sub` carries the Management API key and whose metadata
 // carries the workspace id + region (see mgmt-api `workOsOauthComplete`). The CLI reads them out; the
@@ -224,6 +224,7 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
     }
 
     saveAuthState({
+      accessToken: token.access_token,
       managementApiKey,
       workspaceId,
       region,

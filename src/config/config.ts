@@ -2,18 +2,13 @@ export type Region = 'us' | 'eu' | 'ap'
 export type Environment = 'production' | 'staging'
 
 interface EnvironmentUrls {
-  // Private mgmt-api. Not used during login anymore (that's WorkOS OAuth now); kept for any direct
-  // mgmt-api calls. No dashboard session is ever held.
-  apiUrl: string
   // Public Management API the CLI drives with its workspace-scoped Management API key (create/list
   // API keys + environments). This is where all post-login work happens.
   managementApiUrl: string
-  // Dashboard hosting the /cli-auth consent page WorkOS redirects to during OAuth. The Management key
-  // minted there is only valid against the SAME environment, so these URLs must always come from one
-  // preset — never mix them.
-  dashboardUrl: string
-  // Hosted Fingerprint LLM gateway (Cloudflare Worker) the agent SDK is pointed at, so end users
-  // never need an Anthropic key. It authenticates callers by the WorkOS access token.
+  // Hosted Fingerprint LLM gateway (Node/Fastify on EKS) the agent SDK is pointed at, so end users
+  // never need an Anthropic key. It authenticates callers by the OAuth access token (JWT), verified
+  // against the auth server's JWKS. Overridable via FINGERPRINT_GATEWAY_URL.
+  // TODO(infra): confirm the deployed EKS hostnames below before release.
   gatewayUrl: string
   // WorkOS AuthKit OAuth issuer — the AuthKit domain of the WorkOS environment the CLI app lives in
   // (like MCP's `https://mcpauth.fpjs.io`), NOT `api.workos.com` (that's WorkOS's management API,
@@ -30,23 +25,14 @@ interface EnvironmentUrls {
 // single value.
 const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   production: {
-    apiUrl: 'https://api.fpjs.pro',
     managementApiUrl: 'https://management-api.fpjs.io',
-    dashboardUrl: 'https://dashboard.fingerprint.com',
-    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
-    // MCP auth server (discovered from the MCP resource metadata). Endpoints come from
-    // <issuer>/.well-known/oauth-authorization-server. Override via FINGERPRINT_OAUTH_ISSUER.
+    gatewayUrl: 'https://llm-gateway.fpjs.io',
     oauthIssuer: 'https://mcpauth.fingerprint.com',
-    // Public client registered via Dynamic Client Registration on the MCP auth server (test value).
     oauthClientId: 'client_01KYHSG8DC4YHTJGWRADHBZ24D',
   },
   staging: {
-    apiUrl: 'https://mgmtapi.fpjs.sh',
     managementApiUrl: 'https://public-mgmtapi.fpjs.sh',
-    dashboardUrl: 'https://dashboard.fpjs.sh',
-    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
-    // Staging has no MCP OAuth server of its own, so reuse the prod MCP auth server for login.
-    // NOTE: the key it mints is PROD-scoped — it won't authenticate against the staging mgmt-api above.
+    gatewayUrl: 'https://llm-gateway.fpjs.sh',
     oauthIssuer: 'https://scientific-cat-58-staging.authkit.app',
     oauthClientId: 'client_01KYHMB30PPDR66CWY8BKVTZRX',
   },
@@ -69,23 +55,19 @@ function selectEnvironment(): Environment {
 }
 
 export interface RuntimeConfig {
-  apiUrl: string
   managementApiUrl: string
-  dashboardUrl: string
   gatewayUrl: string
   oauthIssuer: string
   oauthClientId: string
   region: Region
 }
 
-// Precedence per URL: explicit arg / per-URL env var > selected environment preset.
-export function resolveConfig(apiUrl?: string, region?: string): RuntimeConfig {
+// Precedence per URL: per-URL env var > selected environment preset.
+export function resolveConfig(region?: string): RuntimeConfig {
   const env = ENVIRONMENTS[selectEnvironment()]
   const resolvedRegion = (region ?? process.env.FINGERPRINT_REGION ?? 'us') as Region
   return {
-    apiUrl: apiUrl ?? process.env.FINGERPRINT_API_URL ?? env.apiUrl,
     managementApiUrl: process.env.FINGERPRINT_MANAGEMENT_API_URL ?? env.managementApiUrl,
-    dashboardUrl: process.env.FINGERPRINT_DASHBOARD_URL ?? env.dashboardUrl,
     gatewayUrl: process.env.FINGERPRINT_GATEWAY_URL ?? env.gatewayUrl,
     oauthIssuer: process.env.FINGERPRINT_OAUTH_ISSUER ?? env.oauthIssuer,
     oauthClientId: process.env.FINGERPRINT_OAUTH_CLIENT_ID ?? env.oauthClientId,
