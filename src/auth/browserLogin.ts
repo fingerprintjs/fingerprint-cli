@@ -1,32 +1,29 @@
-import { randomBytes } from 'node:crypto'
-import { setTimeout as sleep } from 'node:timers/promises'
+import { createHash, randomBytes } from 'node:crypto'
+import { createServer, type Server } from 'node:http'
+import { AddressInfo } from 'node:net'
 import open from 'open'
-import { resolveConfig } from '../config/config.js'
-import { ApiClient, ApiError } from '../api/client.js'
+import { OAUTH_SCOPES, resolveConfig } from '../config/config.js'
 import { saveAuthState } from './tokenStore.js'
 
-// Browser login uses poll delivery (PostHog-style): no local server, no loopback port. The CLI
-// generates a high-entropy `hash`, opens the dashboard's /cli-auth page carrying it, and polls the
-// mgmt-api for the credential. After the user authorizes a workspace in the browser, mgmt-api mints a
-// workspace-scoped Management API key and caches it under the hash; our next poll retrieves it once,
-// over TLS. The key never travels in a browser URL or redirect, and there's no port to bind — so this
-// works over SSH and inside containers, unlike a loopback flow.
+// Browser login is OAuth 2.0 Authorization Code + PKCE against WorkOS AuthKit — the same engine the
+// MCP integration uses. The CLI is a public OAuth client: it starts a loopback server, opens the
+// browser to WorkOS's authorize endpoint, and exchanges the returned code (with its PKCE verifier)
+// for a token. WorkOS redirects the user through the dashboard's /cli-auth consent page, where the
+// workspace-scoped Management API key is minted and handed back inside the token. Because the secret
+// `code_verifier` never leaves the CLI, nothing sensitive travels in a browser URL or email.
 //
-// Contract with the dashboard /cli-auth page:
-//   open: <dashboardUrl>/cli-auth?hash=<hash>&intent=<login|signup>  (an auth-guarded route: it
-//         bounces through the auth page and back, preserving the query, only when there's no active
-//         session; `intent` tells the guard whether to send that user to /login or /signup)
-//   poll: GET <apiUrl>/sso/cli-auth-poll?hash=<hash> → { status: 'pending' } | { status: 'complete', … }
-//
-// We open /cli-auth directly rather than /login?redirect_to=… : when a dashboard session already
-// exists, /login short-circuits and drops redirect_to, so /cli-auth never loads and the poll never
-// completes. Pointing at the destination lets the route guard handle the auth round-trip only when
-// it's actually needed — and `intent` lets it pick the right page (a new user shouldn't land on
-// /login) without the CLI ever opening /login or /signup directly.
+// The token WorkOS returns is a JWT whose `sub` carries the Management API key and whose metadata
+// carries the workspace id + region (see mgmt-api `workOsOauthComplete`). The CLI reads them out; the
+// same token is also accepted as a Bearer by the LLM gateway (verified there against WorkOS's JWKS).
 
-const POLL_PATH = '/sso/cli-auth-poll'
-const POLL_INTERVAL_MS = 2000
-const TIMEOUT_MS = 5 * 60 * 1000
+const CALLBACK_PATH = '/callback'
+// Fixed loopback ports (tried in order) so the redirect URIs can be pre-registered in WorkOS. RFC 8252
+// native-app loopback: host is always 127.0.0.1, only the port varies.
+const CALLBACK_PORTS = [8976, 8977, 8978, 8979, 8980]
+const LOGIN_TIMEOUT_MS = 5 * 60 * 1000
+// Signing up adds email confirmation + onboarding, which takes several minutes — the loopback stays
+// open the whole time so the CLI finishes automatically once the user comes back.
+const SIGNUP_TIMEOUT_MS = 20 * 60 * 1000
 
 export interface BrowserLoginResult {
   managementApiKey: string
@@ -34,75 +31,206 @@ export interface BrowserLoginResult {
   region: string
 }
 
-interface PollResponse {
-  status: 'pending' | 'complete'
-  managementApiKey?: string
-  workspaceId?: string
-  region?: string
+interface OAuthServerMetadata {
+  authorization_endpoint: string
+  token_endpoint: string
+}
+
+interface TokenResponse {
+  access_token: string
+  token_type?: string
+  expires_in?: number
+  scope?: string
+}
+
+function base64url(buf: Buffer): string {
+  return buf.toString('base64url')
+}
+
+// PKCE: a high-entropy verifier stays in the CLI; only its SHA-256 hash (the challenge) is sent.
+function createPkce(): { verifier: string; challenge: string } {
+  const verifier = base64url(randomBytes(32))
+  const challenge = base64url(createHash('sha256').update(verifier).digest())
+  return { verifier, challenge }
+}
+
+// Decode a JWT payload without verifying — we received it directly from WorkOS over TLS, and the LLM
+// gateway verifies the signature on its side. We only need to read the claims WorkOS stuffed in.
+function decodeJwtPayload(token: string): Record<string, unknown> {
+  const part = token.split('.')[1]
+  if (!part) throw new Error('Malformed token from WorkOS.')
+  return JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>
+}
+
+async function discoverEndpoints(issuer: string): Promise<OAuthServerMetadata> {
+  const url = `${issuer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(`Couldn’t reach the login service (HTTP ${res.status}). Please try again in a few minutes.`)
+  }
+  const meta = (await res.json()) as Partial<OAuthServerMetadata>
+  if (!meta.authorization_endpoint || !meta.token_endpoint) {
+    throw new Error('Login service returned unexpected metadata. Please try again in a few minutes.')
+  }
+  return { authorization_endpoint: meta.authorization_endpoint, token_endpoint: meta.token_endpoint }
+}
+
+// Start the loopback server on the first free fixed port and resolve with the captured code once the
+// browser is redirected back. Rejects on OAuth error, state mismatch, or timeout.
+function startLoopback(
+  expectedState: string,
+  timeoutMs: number
+): Promise<{ port: number; waitForCode: Promise<string>; close: () => void }> {
+  return new Promise((resolveServer, rejectServer) => {
+    let settleCode: (code: string) => void
+    let failCode: (err: Error) => void
+    const waitForCode = new Promise<string>((res, rej) => {
+      settleCode = res
+      failCode = rej
+    })
+
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      if (url.pathname !== CALLBACK_PATH) {
+        res.writeHead(404).end()
+        return
+      }
+      const error = url.searchParams.get('error')
+      const code = url.searchParams.get('code')
+      const state = url.searchParams.get('state')
+      const ok = !error && code && state === expectedState
+      res.writeHead(200, { 'Content-Type': 'text/html' }).end(
+        `<!doctype html><meta charset="utf-8"><title>Fingerprint CLI</title>
+         <body style="font:16px system-ui;text-align:center;padding:64px">
+         <h2>${ok ? 'You’re signed in ✓' : 'Sign-in failed'}</h2>
+         <p>${ok ? 'Return to your terminal — you can close this tab.' : 'Return to your terminal and try again.'}</p>
+         <script>window.close()</script></body>`
+      )
+      if (error) return failCode(new Error(`Authorization was denied (${error}).`))
+      if (!code) return failCode(new Error('No authorization code returned.'))
+      if (state !== expectedState) return failCode(new Error('State mismatch — aborting for safety.'))
+      settleCode(code)
+    })
+
+    const timer = setTimeout(() => failCode(new Error('timeout')), timeoutMs)
+    timer.unref?.()
+    const close = () => {
+      clearTimeout(timer)
+      server.close()
+    }
+
+    let portIndex = 0
+    const tryListen = () => {
+      const port = CALLBACK_PORTS[portIndex]
+      if (port === undefined) {
+        rejectServer(new Error(`Couldn’t open a local port for login (tried ${CALLBACK_PORTS.join(', ')}).`))
+        return
+      }
+      server.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          portIndex += 1
+          tryListen()
+        } else {
+          rejectServer(err)
+        }
+      })
+      server.listen(port, '127.0.0.1', () => {
+        const actual = (server.address() as AddressInfo).port
+        resolveServer({ port: actual, waitForCode, close })
+      })
+    }
+    tryListen()
+  })
 }
 
 export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {}): Promise<BrowserLoginResult> {
   const cfg = resolveConfig()
-  // High-entropy lookup id. It travels through the browser URL, so security rests on its entropy plus
-  // the credential being single-use and short-TTL server-side — never on the URL staying secret.
-  const hash = randomBytes(32).toString('base64url')
+  if (!cfg.oauthIssuer || !cfg.oauthClientId) {
+    throw new Error(
+      'CLI login is not configured yet (missing OAuth issuer/client id). Set FINGERPRINT_OAUTH_ISSUER and FINGERPRINT_OAUTH_CLIENT_ID.'
+    )
+  }
 
   const intent = opts.intent ?? 'login'
-  const authUrl = `${cfg.dashboardUrl}/cli-auth?hash=${hash}&intent=${intent}`
+  const timeoutMs = intent === 'signup' ? SIGNUP_TIMEOUT_MS : LOGIN_TIMEOUT_MS
+  const { verifier, challenge } = createPkce()
+  const state = base64url(randomBytes(16))
+
+  const { authorization_endpoint, token_endpoint } = await discoverEndpoints(cfg.oauthIssuer)
+  const { port, waitForCode, close } = await startLoopback(state, timeoutMs)
+  const redirectUri = `http://127.0.0.1:${port}${CALLBACK_PATH}`
+
+  const authUrl = new URL(authorization_endpoint)
+  authUrl.searchParams.set('client_id', cfg.oauthClientId)
+  authUrl.searchParams.set('redirect_uri', redirectUri)
+  authUrl.searchParams.set('response_type', 'code')
+  authUrl.searchParams.set('code_challenge', challenge)
+  authUrl.searchParams.set('code_challenge_method', 'S256')
+  authUrl.searchParams.set('scope', OAUTH_SCOPES.join(' '))
+  authUrl.searchParams.set('state', state)
+  // Send brand-new users straight to sign-up (WorkOS AuthKit honors screen_hint); the confirmation
+  // email resumes this same authorize flow, and the loopback below waits the whole time.
+  if (intent === 'signup') authUrl.searchParams.set('screen_hint', 'sign-up')
+
   console.log(`\nOpening your browser to ${intent === 'signup' ? 'sign up' : 'sign in'}...`)
-  console.log(`If it doesn't open, visit:\n  ${authUrl}\n`)
-  await open(authUrl).catch(() => {
+  console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`)
+  await open(authUrl.toString()).catch(() => {
     // Browser couldn't be opened automatically; the printed URL is the fallback.
   })
+  if (intent === 'signup') {
+    console.log('Check your inbox and click the confirmation link, then finish setup in the browser.')
+  }
+  console.log('Waiting for you to finish in the browser — come back here when you’re done...')
 
-  const client = new ApiClient(cfg.apiUrl)
-  const deadline = Date.now() + TIMEOUT_MS
-  console.log('Waiting for you to finish signing in in the browser...')
+  try {
+    const code = await waitForCode.catch((e: Error) => {
+      if (e.message === 'timeout') {
+        throw new Error(`Timed out after ${Math.round(timeoutMs / 60000)} minutes. Run \`fingerprint ${intent}\` again.`)
+      }
+      throw e
+    })
 
-  let consecutiveErrors = 0
-  for (;;) {
-    if (Date.now() > deadline) {
-      throw new Error('Login timed out after 5 minutes. Run `fingerprint login` again.')
+    const tokenRes = await fetch(token_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        client_id: cfg.oauthClientId,
+        code_verifier: verifier,
+      }),
+    })
+    if (!tokenRes.ok) {
+      throw new Error(`Login failed while exchanging the code (HTTP ${tokenRes.status}). Run \`fingerprint ${intent}\` again.`)
+    }
+    const token = (await tokenRes.json()) as TokenResponse
+
+    // The token subject encodes three dash-separated parts — `serverApiKey-managementApiKey-region` —
+    // exactly the format the MCP server reads (region may itself contain dashes, so keep the remainder).
+    // The workspace id rides in the `urn:fingerprint:sub_id` claim.
+    const claims = decodeJwtPayload(token.access_token)
+    const subject = typeof claims.sub === 'string' ? claims.sub : ''
+    const firstDash = subject.indexOf('-')
+    const secondDash = subject.indexOf('-', firstDash + 1)
+    if (firstDash < 0 || secondDash < 0) {
+      throw new Error('Login token was not in the expected format. Run `fingerprint login` again.')
+    }
+    const managementApiKey = subject.slice(firstDash + 1, secondDash)
+    const region = subject.slice(secondDash + 1)
+    const workspaceId = String(claims['urn:fingerprint:sub_id'] ?? '')
+    if (!managementApiKey) {
+      throw new Error('Login succeeded but no API key was returned. Run `fingerprint login` again.')
     }
 
-    let res: PollResponse | null = null
-    try {
-      res = await client.request<PollResponse>(`${POLL_PATH}?hash=${hash}`, { method: 'GET' })
-      consecutiveErrors = 0
-    } catch (e) {
-      // A 404 means the endpoint isn't there — no point polling for five minutes; surface it now.
-      if (e instanceof ApiError && e.status === 404) {
-        throw new Error('Login isn’t available right now. Please try again in a few minutes.')
-      }
-      // No HTTP status means the request never reached the server — almost always no (or blocked)
-      // internet. A single failure might be a blip, so retry a few times in case it recovers; give up
-      // sooner than for server-side errors since a total lack of connectivity rarely fixes itself.
-      const offline = !(e instanceof ApiError)
-      if (offline && ++consecutiveErrors >= 3) {
-        throw new Error('Couldn’t reach Fingerprint — check your internet connection, then run `fingerprint login` again.')
-      }
-      // Server-side hiccup (rate limit, brief 5xx): tolerate a longer run before giving up. Keep the
-      // message plain — internal URLs and raw fetch errors don't help the person logging in.
-      if (!offline && ++consecutiveErrors >= 10) {
-        throw new Error('Login failed. Please run `fingerprint login` again.')
-      }
-    }
-
-    if (res?.status === 'complete' && res.managementApiKey) {
-      const result: BrowserLoginResult = {
-        managementApiKey: res.managementApiKey,
-        workspaceId: res.workspaceId ?? '',
-        region: res.region ?? '',
-      }
-      saveAuthState({
-        managementApiKey: result.managementApiKey,
-        workspaceId: result.workspaceId,
-        region: result.region,
-        managementApiUrl: cfg.managementApiUrl,
-      })
-      return result
-    }
-
-    await sleep(POLL_INTERVAL_MS)
+    saveAuthState({
+      managementApiKey,
+      workspaceId,
+      region,
+      managementApiUrl: cfg.managementApiUrl,
+    })
+    return { managementApiKey, workspaceId, region }
+  } finally {
+    close()
   }
 }

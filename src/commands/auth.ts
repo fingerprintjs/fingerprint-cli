@@ -1,17 +1,38 @@
+import { select } from '@inquirer/prompts'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
+import { isCi } from '../utils/ci.js'
 import { integrateCommand } from './integrate.js'
+
+type Intent = 'login' | 'signup'
+
+// Decide whether to send the user to sign-in or sign-up before opening the browser. The `login` and
+// `signup` commands pass `intent` explicitly; when it's omitted (the bare `fingerprint` entry) we ask
+// up front, so a brand-new user lands on sign-up instead of a sign-in page they can't use. In CI
+// there's no one to ask — default to sign-in.
+async function resolveIntent(intent?: Intent): Promise<Intent> {
+  if (intent) return intent
+  if (isCi()) return 'login'
+  return select<Intent>({
+    message: 'Do you already have a Fingerprint account?',
+    choices: [
+      { name: 'Yes — log in', value: 'login' },
+      { name: 'No — create one', value: 'signup' },
+    ],
+  })
+}
 
 // Authentication is browser-only (PostHog-style): the CLI never collects an email or password, and
 // never holds a dashboard session. It opens the dashboard, where the user logs in (or signs up and
 // onboards, picking a workspace + region). The dashboard hands a workspace-scoped Management API key
-// back to a one-shot loopback server (see auth/browserLogin.ts), which saves it as the auth state.
+// back to the CLI (see auth/browserLogin.ts), which saves it as the auth state.
 //
 // `chain: false` authenticates only — skips the integrate step. The launcher uses it so logging in
-// to (say) generate a key doesn't drag the user into a full integration. `signup: true` opens the
-// browser on the sign-up page instead of sign-in (same flow otherwise).
-export async function login(opts: { chain?: boolean; signup?: boolean } = {}) {
-  await loginWithBrowser({ intent: opts.signup ? 'signup' : 'login' })
+// to (say) generate a key doesn't drag the user into a full integration. `intent` forces the sign-in
+// or sign-up page; omit it to ask the user (same flow either way).
+async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
+  const intent = await resolveIntent(opts.intent)
+  await loginWithBrowser({ intent })
   console.log('Logged in successfully.')
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
@@ -22,11 +43,17 @@ export async function login(opts: { chain?: boolean; signup?: boolean } = {}) {
   }
 }
 
+// `fingerprint login` / `fingerprint signup` force the page; the bare `fingerprint` entry uses
+// `startAuth`, which asks the user whether they have an account.
+export const login = (opts: { chain?: boolean } = {}) => authenticate({ ...opts, intent: 'login' })
+export const signup = (opts: { chain?: boolean } = {}) => authenticate({ ...opts, intent: 'signup' })
+export const startAuth = (opts: { chain?: boolean } = {}) => authenticate(opts)
+
 // Launcher helper: make sure we're authenticated before running a menu action, without chaining into
 // integrate.
 export async function ensureAuth(): Promise<void> {
   if (getAuthState()?.managementApiKey) return
-  await login({ chain: false })
+  await startAuth({ chain: false })
   if (!getAuthState()?.managementApiKey) throw new Error('Authentication required.')
 }
 

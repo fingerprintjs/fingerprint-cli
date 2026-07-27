@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import { login, logout, whoami } from './commands/auth.js'
+import { login, signup, startAuth, logout, whoami } from './commands/auth.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
 import { getAuthState } from './auth/tokenStore.js'
@@ -35,7 +35,7 @@ program
 program
   .command('signup')
   .description('Create a Fingerprint account through the browser')
-  .action(async () => login({ signup: true }))
+  .action(async () => signup())
 program.command('logout').action(logout)
 program.command('whoami').action(whoami)
 
@@ -76,9 +76,9 @@ async function defaultCommand(unknownCommand?: string) {
 
   if (!auth?.managementApiKey) {
     if (isCi()) throw new Error('Not authenticated. Run `fingerprint login` first.')
-    // Browser login handles both new and returning users (signup + onboarding happen in the browser),
-    // then chains straight into integrate.
-    await login()
+    // Ask whether they have an account (login vs signup), then run browser auth for both new and
+    // returning users (signup + onboarding happen in the browser) and chain straight into integrate.
+    await startAuth()
     return
   }
 
