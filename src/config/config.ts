@@ -42,13 +42,13 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   },
   staging: {
     apiUrl: 'https://mgmtapi.fpjs.sh',
-    managementApiUrl: 'https://public-mgmt-api.stage.fpjs.sh/',
+    managementApiUrl: 'https://public-mgmtapi.fpjs.sh',
     dashboardUrl: 'https://dashboard.fpjs.sh',
     gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
     // Staging has no MCP OAuth server of its own, so reuse the prod MCP auth server for login.
     // NOTE: the key it mints is PROD-scoped — it won't authenticate against the staging mgmt-api above.
-    oauthIssuer: 'https://mcpauth.fingerprint.com',
-    oauthClientId: 'client_01KYHSG8DC4YHTJGWRADHBZ24D',
+    oauthIssuer: 'https://scientific-cat-58-staging.authkit.app',
+    oauthClientId: 'client_01KYHMB30PPDR66CWY8BKVTZRX',
   },
 }
 
