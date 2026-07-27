@@ -103,8 +103,8 @@ function startLoopback(
         `<!doctype html><meta charset="utf-8"><title>Fingerprint CLI</title>
          <body style="font:16px system-ui;text-align:center;padding:64px">
          <h2>${ok ? 'You’re signed in ✓' : 'Sign-in failed'}</h2>
-         <p>${ok ? 'Return to your terminal — you can close this tab.' : 'Return to your terminal and try again.'}</p>
-         <script>window.close()</script></body>`
+         <p>${ok ? 'You can close this tab and return to your terminal.' : 'Return to your terminal and try again.'}</p>
+         </body>`
       )
       if (error) return failCode(new Error(`Authorization was denied (${error}).`))
       if (!code) return failCode(new Error('No authorization code returned.'))
