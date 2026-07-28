@@ -26,6 +26,7 @@ const LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 const SIGNUP_TIMEOUT_MS = 20 * 60 * 1000
 
 export interface BrowserLoginResult {
+  serverApiKey: string
   managementApiKey: string
   workspaceId: string
   region: string
@@ -216,6 +217,7 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
     if (firstDash < 0 || secondDash < 0) {
       throw new Error('Login token was not in the expected format. Run `fingerprint login` again.')
     }
+    const serverApiKey = subject.slice(0, firstDash)
     const managementApiKey = subject.slice(firstDash + 1, secondDash)
     const region = subject.slice(secondDash + 1)
     const workspaceId = String(claims['urn:fingerprint:sub_id'] ?? '')
@@ -225,12 +227,13 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
 
     saveAuthState({
       accessToken: token.access_token,
+      serverApiKey,
       managementApiKey,
       workspaceId,
       region,
       managementApiUrl: cfg.managementApiUrl,
     })
-    return { managementApiKey, workspaceId, region }
+    return { serverApiKey, managementApiKey, workspaceId, region }
   } finally {
     close()
   }

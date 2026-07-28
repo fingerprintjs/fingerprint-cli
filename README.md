@@ -5,7 +5,7 @@ CLI version of core Fingerprint dashboard onboarding workflows.
 ## Run it now (from source)
 
 Not published to npm yet, so run it from a clone. The wizard's LLM calls are routed through a
-hosted Fingerprint gateway (a Cloudflare Worker), so **you do not need an Anthropic API key**.
+hosted Fingerprint LLM gateway, so **you do not need an Anthropic API key**.
 
 ```bash
 git clone https://github.com/fingerprintjs/fingerprint-cli/ fingerprint-cli

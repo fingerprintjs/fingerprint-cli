@@ -6,6 +6,9 @@ export interface AuthState {
   // OAuth access token (JWT) from the MCP auth server login. This is the Bearer credential the LLM
   // gateway verifies against the auth server's JWKS. Short-lived; see wizard/llm.ts.
   accessToken: string
+  // Server (Secret) API key from the login bundle, used server-side for backend event verification.
+  // Handed to backend integrations as-is so the CLI never has to mint one.
+  serverApiKey: string
   // Workspace-scoped Management API key (extracted from the access token's `sub`), used as the Bearer
   // for the public Management API — NOT for the gateway. Kept separately from the access token.
   managementApiKey: string

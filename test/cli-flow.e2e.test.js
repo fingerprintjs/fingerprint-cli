@@ -24,14 +24,14 @@ test('keys public fetches the browser key for the workspace', async () => {
   assert.match(res.stdout, /pub_123/)
 })
 
-test('keys secret creates and prints a secret key', async () => {
+test('keys secret prints the workspace server key from the login bundle', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
 
   const res = await runCli(['keys', 'secret'], { home })
 
   assert.equal(res.status, 0, res.stderr)
-  assert.match(res.stdout, /sec_456/)
+  assert.match(res.stdout, /srv_1/)
 })
 
 test('integrate --analyze reports the detected stack (read-only, no apply)', async () => {

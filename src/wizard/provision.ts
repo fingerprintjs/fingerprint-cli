@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { ManagementClient } from '../api/management.js'
-import { fetchPublicKey, createSecretKey } from '../api/keys.js'
+import { fetchPublicKey } from '../api/keys.js'
 import { requireAuth } from '../utils/session.js'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { log } from './log.js'
@@ -160,16 +160,19 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
 
   let secretKey: string | undefined
   if (secretApps.length) {
-    // Reuse a secret already provisioned into a backend env (don't mint a new key each run).
+    // Reuse a secret already provisioned into a backend env; otherwise use the Server API key from the
+    // login bundle. The CLI never mints keys itself.
     for (const app of secretApps) {
       const conv = conventionFor(app)
       secretKey = readEnvVar(join(app.dir, conv.file), conv.secretVar!)
       if (secretKey) break
     }
     if (secretKey) log.info('Reusing existing Secret API key from env.')
-    else {
-      secretKey = await createSecretKey(client)
-      log.info('Created Secret API key.')
+    else if (auth.serverApiKey) {
+      secretKey = auth.serverApiKey
+      log.info('Using Server API key from login.')
+    } else {
+      log.warn('No Server API key available from login — skipping backend secret.')
     }
   }
 

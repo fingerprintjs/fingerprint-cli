@@ -50,7 +50,15 @@ export function seedAuth(home, managementApiUrl, extra = {}) {
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'auth.json'),
-    JSON.stringify({ managementApiKey: 'mgmt_key_1', workspaceId: 'sub_1', region: 'us', managementApiUrl, ...extra })
+    JSON.stringify({
+      accessToken: 'tok_1',
+      serverApiKey: 'srv_1',
+      managementApiKey: 'mgmt_key_1',
+      workspaceId: 'sub_1',
+      region: 'us',
+      managementApiUrl,
+      ...extra,
+    })
   )
 }
 

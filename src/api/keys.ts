@@ -16,14 +16,3 @@ export async function fetchPublicKey(client: ManagementClient): Promise<string |
   })
   return res.data.find((k) => k.token)?.token ?? undefined
 }
-
-// Secret key values are only returned at creation, so we can't re-read an existing one — each create
-// counts against the workspace key limit.
-export async function createSecretKey(client: ManagementClient): Promise<string> {
-  const res = await client.request<{ data: ApiKey }>('/api-keys', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'secret', name: 'CLI Secret Key' }),
-  })
-  if (!res.data.token) throw new Error('Management API did not return a secret key value.')
-  return res.data.token
-}
