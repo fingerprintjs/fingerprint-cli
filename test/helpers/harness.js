@@ -11,6 +11,7 @@ export const CLI = fileURLToPath(new URL('../../dist/index.js', import.meta.url)
 // returning the `{ data }` envelope the ManagementClient expects. Lets the e2e drive real CLI
 // commands over real HTTP with no network. The CLI authenticates with its Management API key.
 export function startManagementApi() {
+  const analyticsEvents = []
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
@@ -25,6 +26,21 @@ export function startManagementApi() {
       if (route === 'GET /api-keys') return ok([{ id: 'key_pub', type: 'public', status: 'enabled', token: 'pub_123' }])
       // POST /api-keys → mint a secret key (value only returned here).
       if (route === 'POST /api-keys') return ok({ id: 'key_sec', type: 'secret', status: 'enabled', token: 'sec_456' })
+      // POST /analytics/events → the relay that forwards to Amplitude server-side.
+      if (route === 'POST /analytics/events') {
+        let parsed
+        try {
+          parsed = JSON.parse(body)
+        } catch {
+          // Surface a malformed payload as a 400 the test can assert on, rather than throwing in
+          // the request handler and taking down the run with an unrelated stack trace.
+          res.writeHead(400, { 'content-type': 'application/json' })
+          return res.end(JSON.stringify({ error: { message: `invalid JSON: ${body}` } }))
+        }
+        analyticsEvents.push({ body: parsed, authorization: req.headers.authorization })
+        res.writeHead(202)
+        return res.end()
+      }
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: `no route: ${route}` } }))
     })
@@ -32,7 +48,11 @@ export function startManagementApi() {
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address()
-      resolve({ url: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) })
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        analyticsEvents: () => analyticsEvents,
+        close: () => new Promise((r) => server.close(r)),
+      })
     })
   })
 }

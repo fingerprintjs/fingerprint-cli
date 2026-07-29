@@ -7,6 +7,7 @@ import { getAuthState } from './auth/tokenStore.js'
 import { setCiContext, isCi } from './utils/ci.js'
 import { setVerbose } from './utils/verbose.js'
 import { setInteractive } from './utils/interactive.js'
+import { trackCommand } from './analytics/track.js'
 
 const program = new Command()
 program.name('fingerprint').description('Fingerprint CLI dashboard companion')
@@ -26,6 +27,11 @@ program.hook('preAction', () => {
   setVerbose(Boolean(opts.verbose))
   // Per-step prompting needs a human; never enable it in CI/headless runs.
   setInteractive(Boolean(opts.interactive) && !ci)
+})
+
+// postAction, not preAction, so `login` has written credentials by the time we look for a workspace.
+program.hook('postAction', async (_thisCommand, actionCommand) => {
+  await trackCommand(actionCommand === program ? 'default' : actionCommand.name())
 })
 
 program
