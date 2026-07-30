@@ -8,6 +8,12 @@ const enabled = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR
 type Style = 'cyan' | 'dim' | 'green' | 'yellow' | 'red' | 'magenta' | 'bold'
 const paint = (style: Style) => (text: string) => (enabled ? styleText(style, text) : text)
 
+// Fingerprint brand orange (#FF5A36). styleText has no named orange, so we use a truecolor escape
+// when color is enabled; otherwise return the text unchanged.
+const BRAND_ORANGE = '\x1b[38;2;255;90;54m'
+const RESET = '\x1b[0m'
+const brand = (text: string) => (enabled ? `${BRAND_ORANGE}${text}${RESET}` : text)
+
 export const color = {
   cyan: paint('cyan'),
   dim: paint('dim'),
@@ -16,4 +22,12 @@ export const color = {
   red: paint('red'),
   magenta: paint('magenta'),
   bold: paint('bold'),
+  brand,
+}
+
+// Small branded header used at the start of auth / setup flows — example of a custom CLI look.
+export function banner(subtitle?: string): void {
+  const title = color.brand(color.bold('Fingerprint'))
+  const line = subtitle ? `${title} ${color.dim('·')} ${subtitle}` : title
+  console.log(`\n${line}\n`)
 }

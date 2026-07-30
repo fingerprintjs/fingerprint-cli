@@ -86,6 +86,11 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 A verbose run log is written to your OS temp dir at `fingerprint-wizard.log` (never inside your
 project), useful for debugging a failed integration.
 
+## CLI output reference
+
+See [docs/cli-output.md](docs/cli-output.md) for a catalog of every user-facing terminal message
+and how it looks today (status symbols, colors, auth, integrate, errors).
+
 ## Environment variables
 
 - `FINGERPRINT_ENV` (`production|staging`, default: `production`) — use `staging` for internal testing

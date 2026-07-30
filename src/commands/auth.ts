@@ -2,6 +2,8 @@ import { select } from '@inquirer/prompts'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { isCi } from '../utils/ci.js'
+import { banner, color } from '../utils/color.js'
+import { log } from '../wizard/log.js'
 import { integrateCommand } from './integrate.js'
 
 type Intent = 'login' | 'signup'
@@ -32,13 +34,14 @@ async function resolveIntent(intent?: Intent): Promise<Intent> {
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const intent = await resolveIntent(opts.intent)
+  banner(intent === 'signup' ? 'Create your account' : 'Sign in')
   await loginWithBrowser({ intent })
-  console.log('Logged in successfully.')
+  log.success('Logged in successfully.')
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
   if (opts.chain !== false) {
-    console.log('\nNext: integrate Fingerprint into the current project.')
+    log.step('Next: integrate Fingerprint into the current project.')
     await integrateCommand()
   }
 }
@@ -62,11 +65,12 @@ export async function ensureAuth(): Promise<void> {
 // API keys page if needed.
 export function logout() {
   clearAuthState()
-  console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
+  log.info('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
 
 export function whoami() {
   const auth = getAuthState()
   if (!auth?.managementApiKey) throw new Error('Not logged in')
-  console.log(JSON.stringify({ workspaceId: auth.workspaceId, region: auth.region }, null, 2))
+  console.log(`${color.dim('workspace')}  ${color.bold(auth.workspaceId)}`)
+  console.log(`${color.dim('region')}     ${color.bold(auth.region)}`)
 }

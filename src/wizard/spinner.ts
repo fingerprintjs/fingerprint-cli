@@ -1,15 +1,12 @@
 import { color } from '../utils/color.js'
+import { colorizeFrame, frameDurationMs, frameLines } from './asciiPlayer.js'
+import { INTEGRATE_ANIMATION } from './animations/integrate.js'
 
-// A dependency-free single-line spinner for the long agent pass. In default (non-verbose) mode the
-// per-step tool calls are hidden, so a few minutes of work can read as "stuck". This keeps a live
-// line showing the current high-level activity plus a rotating Fingerprint tip, so a quiet stretch
-// reads as "still working, on track" rather than frozen. Verbose mode streams real tool lines
-// instead and never uses this.
+// Loading UI for the long agent pass. In default (non-verbose) mode the per-step tool calls are
+// hidden, so a few minutes of work can read as "stuck". This keeps a live ASCII Motion–style
+// animation (https://ascii-motion.app) plus a status line with the current high-level activity and
+// a rotating Fingerprint tip. Verbose mode streams real tool lines instead and never uses this.
 
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-// Shown as a dim, ephemeral suffix that cycles every few seconds — gives the user something to read
-// and makes elapsed time visible. Purely cosmetic; nothing here is load-bearing.
 const TIPS = [
   'Fingerprint re-identifies returning visitors even after they clear cookies or go incognito.',
   'Smart Signals flag bots, VPNs, tampering, and incognito — all verified server-side.',
@@ -18,66 +15,102 @@ const TIPS = [
   'The public key is safe in the browser; the secret key stays server-side only.',
 ]
 
-const FRAME_MS = 80
-const TIP_EVERY = Math.round(5000 / FRAME_MS) // rotate the tip ~every 5s
+const TIP_MS = 5000
 
 export class Spinner {
-  private timer: ReturnType<typeof setInterval> | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private tipTimer: ReturnType<typeof setInterval> | null = null
   private frame = 0
-  private ticks = 0
   private tip = 0
   private message = ''
+  private height = 0 // animation lines + 1 status line, once painted
 
   start(message: string): void {
-    if (this.timer) return
+    if (this.timer || this.tipTimer) return
     this.message = message
-    this.render()
-    this.timer = setInterval(() => {
-      this.frame = (this.frame + 1) % FRAMES.length
-      this.ticks++
-      if (this.ticks % TIP_EVERY === 0) this.tip = (this.tip + 1) % TIPS.length
-      this.render()
-    }, FRAME_MS)
-    this.timer.unref?.() // never keep the process alive for the spinner
+    this.frame = 0
+    this.paint(true)
+    this.scheduleFrame()
+    this.tipTimer = setInterval(() => {
+      this.tip = (this.tip + 1) % TIPS.length
+      this.paint(false)
+    }, TIP_MS)
+    this.tipTimer.unref?.()
   }
 
   setMessage(message: string): void {
     this.message = message
-    if (this.timer) this.render()
+    if (this.height) this.paint(false)
   }
 
-  // Print a line above the spinner without leaving artifacts on the live line.
+  // Print a line above the live block without leaving artifacts.
   print(line: string): void {
     this.clear()
     process.stdout.write(line + '\n')
-    if (this.timer) this.render()
+    this.paint(true)
   }
 
   stop(): void {
     if (this.timer) {
-      clearInterval(this.timer)
+      clearTimeout(this.timer)
       this.timer = null
+    }
+    if (this.tipTimer) {
+      clearInterval(this.tipTimer)
+      this.tipTimer = null
     }
     this.clear()
   }
 
-  private clear(): void {
-    process.stdout.write('\r\x1b[K')
+  private scheduleFrame(): void {
+    const ms = frameDurationMs(INTEGRATE_ANIMATION, this.frame)
+    this.timer = setTimeout(() => {
+      this.frame++
+      this.paint(false)
+      this.scheduleFrame()
+    }, ms)
+    this.timer.unref?.()
   }
 
-  private render(): void {
-    // Measure with plain strings (color codes would break the width math), then colorize. The tip
-    // is truncated to the remaining columns so the line never wraps and breaks the \r redraw.
-    const head = `${FRAMES[this.frame]} ${this.message}`
+  private clear(): void {
+    if (!this.height) return
+    // Cursor is on the status (last) line — move to the top of the block and erase downward.
+    process.stdout.write(`\x1b[${this.height - 1}A\r`)
+    for (let i = 0; i < this.height; i++) {
+      process.stdout.write('\x1b[2K')
+      if (i < this.height - 1) process.stdout.write('\n')
+    }
+    process.stdout.write(`\x1b[${this.height - 1}A\r`)
+    this.height = 0
+  }
+
+  private paint(first: boolean): void {
+    const anim = colorizeFrame(frameLines(INTEGRATE_ANIMATION, this.frame))
+    const status = this.statusLine()
+    const block = [...anim, status]
+
+    if (!first && this.height > 0) {
+      process.stdout.write(`\x1b[${this.height - 1}A\r`)
+    }
+
+    for (let i = 0; i < block.length; i++) {
+      process.stdout.write(`\x1b[2K${block[i]}`)
+      if (i < block.length - 1) process.stdout.write('\n')
+    }
+    this.height = block.length
+  }
+
+  private statusLine(): string {
+    const head = `◇ ${this.message}`
     const cols = process.stdout.columns || 80
     const room = cols - head.length - 2
-    let line = `${color.cyan(FRAMES[this.frame])} ${this.message}`
+    let line = `${color.cyan('◇')} ${this.message}`
     if (room > 12) {
       const raw = `  ${TIPS[this.tip]}`
       const tip = raw.length > room ? raw.slice(0, room - 1) + '…' : raw
       line += color.dim(tip)
     }
-    process.stdout.write(`\r\x1b[K${line}`)
+    return line
   }
 }
 

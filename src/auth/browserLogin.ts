@@ -3,6 +3,8 @@ import { createServer, type Server } from 'node:http'
 import { AddressInfo } from 'node:net'
 import open from 'open'
 import { OAUTH_SCOPES, resolveConfig } from '../config/config.js'
+import { color } from '../utils/color.js'
+import { log } from '../wizard/log.js'
 import { saveAuthState } from './tokenStore.js'
 
 // Browser login is OAuth 2.0 Authorization Code + PKCE against WorkOS AuthKit — the same engine the
@@ -173,15 +175,15 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   // email resumes this same authorize flow, and the loopback below waits the whole time.
   if (intent === 'signup') authUrl.searchParams.set('screen_hint', 'sign-up')
 
-  console.log(`\nOpening your browser to ${intent === 'signup' ? 'sign up' : 'sign in'}...`)
-  console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`)
+  log.step(`Opening your browser to ${intent === 'signup' ? 'sign up' : 'sign in'}...`)
+  log.info(`If it doesn't open, visit:\n  ${color.cyan(authUrl.toString())}`)
   await open(authUrl.toString()).catch(() => {
     // Browser couldn't be opened automatically; the printed URL is the fallback.
   })
   if (intent === 'signup') {
-    console.log('Check your inbox and click the confirmation link, then finish setup in the browser.')
+    log.info('Check your inbox and click the confirmation link, then finish setup in the browser.')
   }
-  console.log('Waiting for you to finish in the browser — come back here when you’re done...')
+  log.info('Waiting for you to finish in the browser — come back here when you’re done...')
 
   try {
     const code = await waitForCode.catch((e: Error) => {
