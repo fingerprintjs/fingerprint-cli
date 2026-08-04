@@ -1,7 +1,35 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 
-import { makeHome, runCli, seedAuth, startManagementApi } from './helpers/harness.js'
+import {
+  makeHome,
+  makeRepo,
+  makeSkillsDir,
+  runCli,
+  seedAuth,
+  startGateway,
+  startManagementApi,
+} from './helpers/harness.js'
+
+// Drives a real integration so the chained cases below reach `integrate` for real.
+async function runInRepo(api, args) {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// applied\n')
+
+  const res = await runCli(args, {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+  })
+  await gw.close()
+  return res
+}
+
+const commands = (api) => api.analyticsEvents().map((e) => e.body.properties.command)
 
 // `whoami` is the subject throughout: it's the cheapest command that needs no network of its own,
 // so anything the fake Management API sees came from the telemetry hook.
@@ -18,6 +46,29 @@ test('an authenticated command reports which command ran', async () => {
   assert.equal(events.length, 1)
   assert.deepEqual(events[0].body, { event: 'cli_command_run', properties: { command: 'whoami' } })
   assert.equal(events[0].authorization, 'Bearer mgmt_key_1')
+
+  await api.close()
+})
+
+test('a chained run reports the step the command hook cannot see', async () => {
+  const api = await startManagementApi()
+
+  // `setup` runs integrate from inside its own action, so commander never dispatches it and the
+  // hook only ever sees `setup`.
+  const res = await runInRepo(api, ['setup', '--yes'])
+  assert.equal(res.status, 0, res.stderr)
+  assert.deepEqual(commands(api), ['integrate', 'setup'])
+
+  await api.close()
+})
+
+test('an invoked command reports once, not once per call site', async () => {
+  const api = await startManagementApi()
+
+  // Both the explicit call in integrateCommand and the hook name this one.
+  const res = await runInRepo(api, ['integrate', '--yes'])
+  assert.equal(res.status, 0, res.stderr)
+  assert.deepEqual(commands(api), ['integrate'])
 
   await api.close()
 })

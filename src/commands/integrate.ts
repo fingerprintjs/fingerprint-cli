@@ -2,6 +2,7 @@ import { resolve } from 'node:path'
 import { analyzeRepo, formatAnalysis } from '../wizard/detect.js'
 import { integrateProject } from '../wizard/runner.js'
 import { requireAuth } from '../utils/session.js'
+import { trackCommand } from '../analytics/track.js'
 
 export async function integrateCommand(opts: { path?: string; analyze?: boolean; yes?: boolean } = {}) {
   const root = resolve(opts.path ?? process.cwd())
@@ -16,6 +17,8 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
   // report and stays available to logged-out users.)
   if (willApply) {
     requireAuth()
+    // Chained runs reach integrate without it being the invoked command, so the hook never sees it.
+    void trackCommand('integrate')
   }
 
   console.log(formatAnalysis(analysis))
