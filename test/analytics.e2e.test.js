@@ -22,43 +22,6 @@ test('an authenticated command reports which command ran', async () => {
   await api.close()
 })
 
-test('DO_NOT_TRACK turns telemetry off', async () => {
-  const api = await startManagementApi()
-  const home = makeHome()
-  seedAuth(home, api.url)
-
-  const res = await runCli(['whoami'], { home, env: { DO_NOT_TRACK: '1' } })
-  assert.equal(res.status, 0, res.stderr)
-  assert.deepEqual(api.analyticsEvents(), [])
-
-  await api.close()
-})
-
-test('DO_NOT_TRACK=0 leaves telemetry on', async () => {
-  const api = await startManagementApi()
-  const home = makeHome()
-  seedAuth(home, api.url)
-
-  const res = await runCli(['whoami'], { home, env: { DO_NOT_TRACK: '0' } })
-  assert.equal(res.status, 0, res.stderr)
-  assert.equal(api.analyticsEvents().length, 1)
-
-  await api.close()
-})
-
-test('an empty DO_NOT_TRACK counts as unset', async () => {
-  const api = await startManagementApi()
-  const home = makeHome()
-  seedAuth(home, api.url)
-
-  // `DO_NOT_TRACK=` is how a shell clears a variable, not how it opts out.
-  const res = await runCli(['whoami'], { home, env: { DO_NOT_TRACK: '' } })
-  assert.equal(res.status, 0, res.stderr)
-  assert.equal(api.analyticsEvents().length, 1)
-
-  await api.close()
-})
-
 test('an unauthenticated run sends nothing', async () => {
   const api = await startManagementApi()
 

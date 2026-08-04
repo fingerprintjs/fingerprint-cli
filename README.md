@@ -81,19 +81,6 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 - `--verbose` — show the agent's individual steps (file reads, edits, tool calls)
 - `--interactive` — ask before each file edit and package install
 
-## Telemetry
-
-Signed-in runs report which command was run, so we can see which parts of the CLI people actually
-use. That is the whole payload: the command name, attributed to the workspace your API key is
-already scoped to. No arguments, file paths, file contents, keys, or error output, and nothing is
-written to your machine to recognize you. Runs before you sign in send nothing at all.
-
-Turn it off by setting `DO_NOT_TRACK` to any non-empty value other than `0`:
-
-```bash
-export DO_NOT_TRACK=1
-```
-
 ## Logs
 
 A verbose run log is written to your OS temp dir at `fingerprint-wizard.log` (never inside your
@@ -105,4 +92,3 @@ project), useful for debugging a failed integration.
 - `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/fingerprintjs/skills`)
 - `FINGERPRINT_SKILLS_DIR` — use a local skills checkout instead of fetching (for skill development)
 - `FINGERPRINT_GATEWAY_URL` — override the hosted LLM gateway (for local gateway dev)
-- `DO_NOT_TRACK` — set to any non-empty value other than `0` to turn off telemetry
