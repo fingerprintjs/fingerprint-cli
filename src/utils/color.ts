@@ -5,22 +5,22 @@ import { styleText } from 'node:util'
 // plain. Only the styles the wizard actually uses are exposed.
 const enabled = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR
 
-type Style = 'cyan' | 'dim' | 'green' | 'yellow' | 'red' | 'magenta' | 'bold'
+type Style = 'dim' | 'green' | 'yellow' | 'red' | 'magenta' | 'cyan' | 'bold'
 const paint = (style: Style) => (text: string) => (enabled ? styleText(style, text) : text)
 
-// Fingerprint brand orange (#FF5A36). styleText has no named orange, so we use a truecolor escape
+// Fingerprint brand orange. styleText has no named orange, so we use a truecolor escape
 // when color is enabled; otherwise return the text unchanged.
-const BRAND_ORANGE = '\x1b[38;2;255;90;54m'
+const ORANGE_5 = '\x1b[38;2;254;168;140m'
 const RESET = '\x1b[0m'
-const brand = (text: string) => (enabled ? `${BRAND_ORANGE}${text}${RESET}` : text)
+const brand = (text: string) => (enabled ? `${ORANGE_5}${text}${RESET}` : text)
 
 export const color = {
-  cyan: paint('cyan'),
   dim: paint('dim'),
   green: paint('green'),
   yellow: paint('yellow'),
   red: paint('red'),
   magenta: paint('magenta'),
+  cyan: paint('cyan'),
   bold: paint('bold'),
   brand,
 }

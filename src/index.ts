@@ -7,6 +7,8 @@ import { getAuthState } from './auth/tokenStore.js'
 import { setCiContext, isCi } from './utils/ci.js'
 import { setVerbose } from './utils/verbose.js'
 import { setInteractive } from './utils/interactive.js'
+import { color } from './utils/color.js'
+import { printFiglet } from './utils/figlet.js'
 
 const program = new Command()
 program.name('fingerprint').description('Fingerprint CLI dashboard companion')
@@ -73,6 +75,22 @@ async function defaultCommand(unknownCommand?: string) {
   }
 
   const auth = getAuthState()
+
+  // Welcome message
+  printFiglet()
+  console.log()
+  console.log(color.brand('   Welcome to the Fingerprint CLI.'))
+  console.log()
+  console.log('   To get started:')
+  const tips = [
+    'Sign up or log in with your email.',
+    'Create or select a workspace.',
+    'Integrate Fingerprint into your project.',
+  ]
+  for (const [i, tip] of tips.entries()) {
+    console.log(`${color.dim(`   ${i + 1}.`)} ${tip}`)
+  }
+  console.log()
 
   if (!auth?.managementApiKey) {
     if (isCi()) throw new Error('Not authenticated. Run `fingerprint login` first.')
