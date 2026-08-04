@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, formatAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
+import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
 import { provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
@@ -164,7 +164,7 @@ async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promis
     }
 
     const target = analyzeRepo(dir)
-    console.log(formatAnalysis(target))
+    printAnalysis(target)
     if (!target.skills.length && !target.frontend && !target.backend) {
       log.warn('No supported app detected there — skipping.')
       continue

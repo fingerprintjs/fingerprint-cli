@@ -1,5 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
+import { color } from '../utils/color.js'
+import { log } from './log.js'
 
 export type AppRole = 'frontend' | 'backend' | 'fullstack' | 'unknown'
 
@@ -191,29 +194,71 @@ export function analyzeRepo(root: string = process.cwd()): RepoAnalysis {
   }
 }
 
-export function formatAnalysis(a: RepoAnalysis): string {
-  const lines: string[] = []
-  lines.push(`Repository: ${a.root}`)
-  lines.push(`Layout: ${a.monorepo ? 'monorepo / multiple apps' : 'single app'}`)
-  lines.push('')
-  lines.push('Detected apps:')
-  if (a.apps.length === 0) {
-    lines.push('  (none — no package.json or python project found)')
-  }
-  for (const app of a.apps) {
-    const fw = app.framework ?? 'unknown framework'
-    lines.push(`  - ${app.rel}  [${app.role}]  ${fw}, ${app.language}${app.packageManager ? `, ${app.packageManager}` : ''}`)
-  }
-  lines.push('')
-  lines.push(`Frontend: ${a.frontend ? `${a.frontend.framework} (${a.frontend.rel})` : 'not found'}`)
-  lines.push(`Backend:  ${a.backend ? `${a.backend.framework} (${a.backend.rel})` : 'not found'}`)
-  lines.push('')
-  lines.push(
-    a.skills.length
-      ? `Matched skills: ${a.skills.join(' + ')}`
-      : a.frontend || a.backend
-        ? 'No curated skill for this stack — a docs-based integration can be attempted (experimental).'
-        : 'No supported app detected — nothing to integrate.'
-  )
-  return lines.join('\n')
+const LANG_LABEL: Record<DetectedApp['language'], string> = {
+  ts: 'TypeScript',
+  js: 'JavaScript',
+  python: 'Python',
+  unknown: 'unknown',
 }
+
+function displayPath(p: string): string {
+  const home = homedir()
+  return p.startsWith(home) ? `~${p.slice(home.length)}` : p
+}
+
+function appName(app: DetectedApp, root: string): string {
+  if (app.rel === '.') return basename(root)
+  return app.rel
+}
+
+function formatTags(app: DetectedApp): string {
+  const parts: string[] = []
+  if (app.language !== 'unknown') parts.push(color.cyan(LANG_LABEL[app.language]))
+  if (app.packageManager && app.packageManager !== 'unknown') parts.push(color.cyan(app.packageManager))
+  if (app.framework) parts.push(color.cyan(app.framework))
+  else parts.push(color.dim('framework not detected'))
+  return parts.join(color.dim(' · '))
+}
+
+function layoutLabel(a: RepoAnalysis): string {
+  if (!a.monorepo) return 'single app'
+  const pm = a.apps.find((x) => x.packageManager && x.packageManager !== 'unknown')?.packageManager
+  if (pm === 'pnpm' && existsSync(join(a.root, 'pnpm-workspace.yaml'))) {
+    return `monorepo ${color.dim('·')} pnpm workspace`
+  }
+  return 'monorepo · multiple apps'
+}
+
+/** Print the analysis block with clack-style hierarchy (heading + step + rail + aligned kv). */
+export function printAnalysis(a: RepoAnalysis): void {
+  log.heading('integrate')
+  log.step('Analyzing project')
+  log.kv('Repository', displayPath(a.root))
+  log.kv('Layout', layoutLabel(a))
+  log.line()
+  log.info(color.dim('Apps found'))
+  if (a.apps.length === 0) {
+    log.info(`  ${color.dim('(none — no package.json or python project found)')}`)
+  } else {
+    for (const app of a.apps) {
+      log.info(`  ${color.bold(appName(app, a.root))}  ${formatTags(app)}`)
+    }
+  }
+  log.line()
+  log.kv(
+    'Frontend',
+    a.frontend ? `${color.cyan(a.frontend.framework ?? 'app')} ${color.dim(`(${a.frontend.rel})`)}` : color.dim('not found')
+  )
+  log.kv(
+    'Backend',
+    a.backend ? `${color.cyan(a.backend.framework ?? 'app')} ${color.dim(`(${a.backend.rel})`)}` : color.dim('not found')
+  )
+  if (a.skills.length) {
+    log.line()
+    log.kv('Skills', a.skills.map((s) => color.cyan(s)).join(color.dim(' + ')))
+  } else if (a.frontend || a.backend) {
+    log.line()
+    log.info(color.dim('No curated skill for this stack — a docs-based integration can be attempted.'))
+  }
+}
+

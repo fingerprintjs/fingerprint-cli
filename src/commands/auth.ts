@@ -1,4 +1,4 @@
-import { select } from '@inquirer/prompts'
+import { select } from '../utils/prompt.js'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { isCi } from '../utils/ci.js'
@@ -34,14 +34,12 @@ async function resolveIntent(intent?: Intent): Promise<Intent> {
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const intent = await resolveIntent(opts.intent)
-  banner(intent === 'signup' ? 'Create your account' : 'Sign in')
-  await loginWithBrowser({ intent })
-  log.success('Logged in successfully.')
+  const result = await loginWithBrowser({ intent })
+  log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
   if (opts.chain !== false) {
-    log.step('Next: integrate Fingerprint into the current project.')
     await integrateCommand()
   }
 }

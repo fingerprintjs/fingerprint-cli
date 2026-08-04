@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
-import { analyzeRepo, formatAnalysis } from '../wizard/detect.js'
+import { analyzeRepo, printAnalysis } from '../wizard/detect.js'
 import { integrateProject } from '../wizard/runner.js'
+import { printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
 
 export async function integrateCommand(opts: { path?: string; analyze?: boolean; yes?: boolean } = {}) {
@@ -18,9 +19,21 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
     requireAuth()
   }
 
-  console.log(formatAnalysis(analysis))
+  printAnalysis(analysis)
 
-  if (!willApply) return
+  if (!willApply) {
+    if (!analysis.frontend && !analysis.backend) {
+      printFailure({
+        title: 'No supported app to integrate',
+        reason: 'No frontend or backend framework we can wire up was found in this repo.',
+        recoveries: [
+          { command: 'fingerprint integrate --path <dir>', description: 'point at an app directory' },
+          { command: 'fingerprint --help', description: 'see available commands' },
+        ],
+      })
+    }
+    return
+  }
 
   // Provision keys + apply the integration for this repo, then offer to set up other projects
   // (a separate frontend/backend, or any other repo) based on what this one covers.

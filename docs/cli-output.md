@@ -15,24 +15,32 @@ Piped / CI output is plain text with the same symbols and wording.
 
 | Token    | ANSI / effect                         | Used for                                      |
 |----------|---------------------------------------|-----------------------------------------------|
-| `cyan`   | cyan                                  | Steps (`◇`), spinner frames, auth URL         |
+| `cyan`   | cyan                                  | Steps (`◇`), spinner frames                   |
 | `green`  | green                                 | Success (`✔`)                                 |
 | `yellow` | yellow                                | Warnings (`▲`)                                |
 | `red`    | red                                   | Errors (`✖`)                                  |
 | `magenta`| magenta                               | Verbose tool calls (`●`)                      |
-| `dim`    | dim / faint                           | Info rail (`│`), tips, labels, secondary text |
-| `bold`   | bold                                  | Tool names, `whoami` values                   |
-| `brand`  | truecolor `#FF5A36` (Fingerprint orange) | Branded banner title (styling example)     |
+| `dim`    | dim / faint                           | Info rail (`│`/`└`), labels, URLs, “not found”|
+| `bold`   | bold                                  | Step titles, app names, key values            |
+| `brand`  | `#FF5A36` (Fingerprint orange)        | Branded banner title                          |
+| `badge`  | `bgCyan` + `black`                    | Phase headings (`log.heading`)                |
+| `link()` | dim                                   | Clickable URLs when the terminal supports it  |
 
 ### Status symbols (`src/wizard/log.ts`)
 
+Clack-style hierarchy: bold section titles, a dim rail grouping detail, blank lines between
+blocks. Absence is dim; emphasized details (language, package manager, framework) use cyan.
+
 ```
-│  info     (dim)       continuing detail / narration
-◇  step     (cyan)      a phase is starting
-✔  success  (green)     something completed
-▲  warn     (yellow)    non-fatal issue / review needed
-✖  error    (red)       failure
-●  tool     (magenta)   verbose-only agent tool call (+ bold name, dim detail)
+   heading  (bg cyan + black) phase badge; next step connects with │
+◇  step     (cyan + bold)   section header (leading blank line)
+│  info     (dim rail)      detail under the current section
+│  kv                     aligned `Label      value` under the rail
+✔  success  (green)         completed outcome
+▲  warn     (yellow)        inline warning / failure section title
+✖  error    (red)           failure
+└  end      (dim)           closes the final section
+●  tool     (magenta)       verbose-only agent tool call (+ bold name, dim detail)
 ```
 
 ### Integrate animation (`src/wizard/spinner.ts` + `animations/integrate.ts`)
@@ -98,7 +106,7 @@ prompts from `text()` print `Message: ` with the cursor after the colon.
 
 ### Auth: `login` / `signup` / browser OAuth (`browserLogin.ts`)
 
-**Banner + waiting** (styling example applied):
+**Banner + waiting**:
 
 ```
 Fingerprint · Sign in
@@ -106,7 +114,7 @@ Fingerprint · Sign in
 ◇ Opening your browser to sign in...
 │ If it doesn't open, visit:
   https://…/oauth2/authorize?…
-│ Waiting for you to finish in the browser — come back here when you’re done...
+│ Waiting for you to finish in the browser. Please return here when you’re done...
 ```
 
 Signup adds:
@@ -120,11 +128,10 @@ Signup adds:
 **On success** (when chained into integrate, the default for `login` / bare entry):
 
 ```
-✔ Logged in successfully.
-◇ Next: integrate Fingerprint into the current project.
+✔ Signed in
 ```
 
-Then the integrate flow runs.
+Then the integrate flow runs
 
 **Browser callback HTML** (loopback `http://127.0.0.1:<port>/callback`):
 
@@ -213,30 +220,44 @@ Errors:
 
 ---
 
-### `fingerprint integrate` — analysis block (`formatAnalysis`)
+### `fingerprint integrate` — analysis block (`printAnalysis`)
 
-Always printed first (plain, no status symbols):
+Always printed first as a headed section:
 
 ```
-Repository: /path/to/repo
-Layout: single app                    # or: monorepo / multiple apps
-
-Detected apps:
-  - .  [fullstack]  next, ts, pnpm
-  - apps/api  [backend]  express, ts, npm
-  # or:
-  - (none — no package.json or python project found)
-
-Frontend: next (.)
-Backend:  express (apps/api)
-# or: not found
-
-Matched skills: fingerprint-nextjs
-# or: No curated skill for this stack — a docs-based integration can be attempted (experimental).
-# or: No supported app detected — nothing to integrate.
+ integrate                                  # cyan badge (bgCyan + black)
+│
+◇ Analyzing project
+│ Repository  ~/path/to/repo
+│ Layout      monorepo · pnpm workspace     # or: single app
+│
+│ Apps found
+│   fingerprint-cli  TypeScript · pnpm · framework not detected
+│   apps/api         TypeScript · npm · express
+│
+│ Frontend    not found                     # or: next (.) — framework cyan, path dim
+│ Backend     not found
+│ Skills      fingerprint-nextjs            # only when curated skills match
 ```
 
-With `--analyze` (or unsupported stack with no frontend/backend), the command stops after this block.
+Root app name uses the directory basename (not bare `.`). Missing signals are dim;
+detected language / package manager / framework are cyan.
+
+With `--analyze`, the command stops after this block.
+
+**Unsupported stack** (no frontend/backend) adds a failure block:
+
+```
+▲ No supported app to integrate
+│ No frontend or backend framework we can wire up was found in this repo.
+│
+│ Try:
+│   fingerprint integrate --path <dir>  point at an app directory
+│   fingerprint --help                  see available commands
+│
+│ Docs  https://dev.fingerprint.com/docs
+└
+```
 
 ---
 
@@ -401,15 +422,11 @@ via `console.error`, with `exitCode = 1`. No status symbol.
 
 ---
 
-## Styling example on this branch
-
-`feat/cli-styling` (from `feat/cli-browser-auth`) adds a minimal custom look as a starting point:
+## Visual hierarchy notes
 
 1. **`color.brand`** — Fingerprint orange `#FF5A36`
 2. **`banner(subtitle)`** — orange `Fingerprint · <subtitle>` before auth
-3. Auth waiting / success / logout / `whoami` routed through `log.*` + styled labels instead of bare `console.log` / JSON
-4. **Integrate ASCII animation** — multi-line “identify” pulse during the agent pass, in the
-   [ASCII Motion](https://ascii-motion.app) export shape (`src/wizard/animations/integrate.ts`),
-   so art can be redesigned there and dropped back in
-
-Wizard status symbols (`◇`/`✔`/`▲`/`✖`/`│`/`●`) are unchanged; they already form a coherent system to extend.
+3. Auth / analysis / provision / apply go through `log.*` (step → rail detail → success/warn)
+4. Unsupported stacks end with `printFailure` (reason + recovery commands + docs + `└`)
+5. **Integrate ASCII animation** — multi-line “identify” pulse during the agent pass
+   (`src/wizard/animations/integrate.ts`)

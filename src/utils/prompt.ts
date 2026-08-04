@@ -7,7 +7,7 @@ import { color } from './color.js'
 // Inquirer defaults highlight + answer to cyan; brand those magenta once for every select.
 const selectTheme = {
   style: {
-    highlight: (text: string) => color.brand(text),
+    highlight: (text: string) => color.magenta(text),
     answer: (text: string) => color.green(text),
   },
 }
