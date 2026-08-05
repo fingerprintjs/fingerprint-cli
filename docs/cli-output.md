@@ -106,32 +106,27 @@ prompts from `text()` print `Message: ` with the cursor after the colon.
 
 ### Auth: `login` / `signup` / browser OAuth (`browserLogin.ts`)
 
-**Banner + waiting**:
+When auth chains into integrate (the default for `login` / bare entry / `setup`), the
+`integrate` phase badge opens the sequence before Sign in:
 
 ```
-Fingerprint · Sign in
-
-◇ Opening your browser to sign in...
-│ If it doesn't open, visit:
-  https://…/oauth2/authorize?…
+ integrate
+│
+◇ Sign in
+│ If the browser doesn’t open, visit:
+│   https://…/oauth2/authorize?…
 │ Waiting for you to finish in the browser. Please return here when you’re done...
+✔ Signed in  workspace <id>
 ```
 
-Signup adds:
+Signup uses `◇ Sign up` and adds:
 
 ```
 │ Check your inbox and click the confirmation link, then finish setup in the browser.
 ```
 
-(and banner subtitle `Create your account`; timeout is 20 minutes vs 5 for login.)
-
-**On success** (when chained into integrate, the default for `login` / bare entry):
-
-```
-✔ Signed in
-```
-
-Then the integrate flow runs
+(timeout is 20 minutes vs 5 for login.) Then the integrate flow continues under the same heading
+(`skipHeading` so the badge is not printed twice).
 
 **Browser callback HTML** (loopback `http://127.0.0.1:<port>/callback`):
 
@@ -222,7 +217,8 @@ Errors:
 
 ### `fingerprint integrate` — analysis block (`printAnalysis`)
 
-Always printed first as a headed section:
+`integrateCommand` opens with the phase badge, then the analysis step (and any prior Sign in
+when auth chained in). Direct `fingerprint integrate` when already logged in:
 
 ```
  integrate                                  # cyan badge (bgCyan + black)

@@ -229,9 +229,8 @@ function layoutLabel(a: RepoAnalysis): string {
   return 'monorepo · multiple apps'
 }
 
-/** Print the analysis block with clack-style hierarchy (heading + step + rail + aligned kv). */
+/** Print the analysis block with clack-style hierarchy (step + rail + aligned kv). */
 export function printAnalysis(a: RepoAnalysis): void {
-  log.heading('integrate')
   log.step('Analyzing project')
   log.kv('Repository', displayPath(a.root))
   log.kv('Layout', layoutLabel(a))

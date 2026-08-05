@@ -34,13 +34,16 @@ async function resolveIntent(intent?: Intent): Promise<Intent> {
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const intent = await resolveIntent(opts.intent)
+  // When chaining into integrate, open the phase badge before Sign in so the whole sequence
+  // (auth → analyze → apply) sits under one heading.
+  if (opts.chain !== false) log.heading('integrate')
   const result = await loginWithBrowser({ intent })
   log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
   if (opts.chain !== false) {
-    await integrateCommand()
+    await integrateCommand({ skipHeading: true })
   }
 }
 

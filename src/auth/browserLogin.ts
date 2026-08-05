@@ -176,7 +176,8 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   if (intent === 'signup') authUrl.searchParams.set('screen_hint', 'sign-up')
 
   log.step(intent === 'signup' ? 'Sign up' : 'Sign in')
-  log.info('If the browser doesn’t open, visit:')
+  log.info('Opening your browser...')
+  log.info(`  ${color.dim(`If it doesn't open, visit:`)}`)
   log.info(`  ${color.dim(authUrl.toString())}`)
   await open(authUrl.toString()).catch(() => {
     // Browser couldn't be opened automatically; the printed URL is the fallback.
@@ -184,7 +185,7 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   if (intent === 'signup') {
     log.info('Check your inbox and click the confirmation link, then finish setup in the browser.')
   }
-  log.info('Waiting for you to finish in the browser. Please return here when you’re done...')
+  log.info('\nWaiting for you to finish in the browser. Please return here when you’re done...')
 
   try {
     const code = await waitForCode.catch((e: Error) => {
