@@ -217,7 +217,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
 export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
-  const llm = resolveLlmConfig()
+  const llm = await resolveLlmConfig()
   const ids = analysis.skills
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
@@ -303,7 +303,7 @@ function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
 // No deterministic package install (we have no skill metadata) — it edits the manifest and
 // reports the install command instead.
 export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean> {
-  const llm = resolveLlmConfig()
+  const llm = await resolveLlmConfig()
   const response = query({
     prompt: buildDocsTaskPrompt(analysis),
     options: {

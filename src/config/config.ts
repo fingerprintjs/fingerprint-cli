@@ -38,11 +38,13 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   },
 }
 
-// OAuth scopes the CLI requests. Kept to just `openid` — the WorkOS environment has no custom
-// permissions/scopes defined, and requesting an undefined scope 400s the authorize call. The
-// Management key travels in the token subject (not via scopes), and the LLM gateway accepts any valid
-// token from the issuer (its scope check is unset). Add a real scope here later if we define one.
-export const OAUTH_SCOPES = ['openid']
+// OAuth scopes the CLI requests. No custom permissions/scopes are defined in the WorkOS environment,
+// and requesting an undefined scope 400s the authorize call — so these are the two standard ones only.
+// `offline_access` is what makes the auth server return a refresh token: access tokens are short-lived,
+// and without it a session dies minutes after login with no way back but another browser round-trip
+// (see auth/refresh.ts). The Management key travels in the token subject (not via scopes), and the LLM
+// gateway accepts any valid token from the issuer (its scope check is unset).
+export const OAUTH_SCOPES = ['openid', 'offline_access']
 
 const DEFAULT_ENVIRONMENT: Environment = 'production'
 
