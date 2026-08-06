@@ -26,13 +26,13 @@ interface EnvironmentUrls {
 const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   production: {
     managementApiUrl: 'https://management-api.fpjs.io',
-    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
+    gatewayUrl: 'https://llm-gateway.fpjs.io',
     oauthIssuer: 'https://mcpauth.fingerprint.com',
     oauthClientId: 'client_01KYHSG8DC4YHTJGWRADHBZ24D',
   },
   staging: {
     managementApiUrl: 'https://public-mgmtapi.fpjs.sh',
-    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
+    gatewayUrl: 'https://llm-gateway.fpjs.sh',
     oauthIssuer: 'https://scientific-cat-58-staging.authkit.app',
     oauthClientId: 'client_01KYHMB30PPDR66CWY8BKVTZRX',
   },
