@@ -35,8 +35,9 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const { intent, chosen } = await resolveIntent(opts.intent)
   await loginWithBrowser({ intent })
-  // Not at the prompt: there's no auth state to attribute it to until login lands.
-  if (chosen) await trackCommand(intent)
+  // Not at the prompt: there's no auth state to attribute it to until login lands. Its own value, so
+  // picking it from the menu doesn't get counted as having typed `login`/`signup`.
+  if (chosen) await trackCommand(`${intent}-choice`)
   console.log('Logged in successfully.')
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
