@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -80,6 +80,56 @@ export function seedAuth(home, managementApiUrl, extra = {}) {
       ...extra,
     })
   )
+}
+
+// Read the auth state back, to assert on what a run persisted.
+export function readAuth(home) {
+  return JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'auth.json'), 'utf8'))
+}
+
+// An unsigned JWT carrying `claims`. The CLI only ever decodes the payload (the gateway is what
+// verifies signatures), so a real key isn't needed to exercise the expiry logic.
+export function fakeJwt(claims) {
+  const body = Buffer.from(JSON.stringify(claims)).toString('base64url')
+  return `header.${body}.signature`
+}
+
+export const expiredJwt = () => fakeJwt({ sub: 'srv_1-mgmt_key_1-us', exp: Math.floor(Date.now() / 1000) - 60 })
+export const liveJwt = () => fakeJwt({ sub: 'srv_1-mgmt_key_1-us', exp: Math.floor(Date.now() / 1000) + 3600 })
+
+// A fake OAuth authorization server: discovery + the refresh_token grant, which is all the CLI's
+// token refresh touches. `rt_dead` is rejected the way a revoked/expired refresh token would be.
+export function startAuthServer() {
+  const grants = []
+  let base = ''
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const path = req.url.split('?')[0]
+      const json = (status, data) => {
+        res.writeHead(status, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(data))
+      }
+      if (path === '/.well-known/oauth-authorization-server') {
+        return json(200, { authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` })
+      }
+      if (path === '/token') {
+        const params = Object.fromEntries(new URLSearchParams(body))
+        grants.push(params)
+        if (params.refresh_token === 'rt_dead') return json(400, { error: 'invalid_grant' })
+        // Rotate the refresh token on every use, like the real server does.
+        return json(200, { access_token: liveJwt(), refresh_token: 'rt_rotated', expires_in: 3600 })
+      }
+      json(404, { error: `no route: ${path}` })
+    })
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      base = `http://127.0.0.1:${server.address().port}`
+      resolve({ url: base, grants: () => grants, close: () => new Promise((r) => server.close(r)) })
+    })
+  })
 }
 
 // A fake LLM gateway speaking Anthropic's /v1/messages streaming protocol, scripted to make the

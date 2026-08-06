@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http'
 import { AddressInfo } from 'node:net'
 import open from 'open'
 import { OAUTH_SCOPES, resolveConfig } from '../config/config.js'
+import { debugLog } from '../utils/log-file.js'
 import { saveAuthState } from './tokenStore.js'
 
 // Browser login is OAuth 2.0 Authorization Code + PKCE against WorkOS AuthKit — the same engine the
@@ -37,8 +38,11 @@ interface OAuthServerMetadata {
   token_endpoint: string
 }
 
-interface TokenResponse {
+export interface TokenResponse {
   access_token: string
+  // Only returned when `offline_access` is among the granted scopes. auth/refresh.ts trades it for a
+  // new access token once the current one expires.
+  refresh_token?: string
   token_type?: string
   expires_in?: number
   scope?: string
@@ -57,13 +61,13 @@ function createPkce(): { verifier: string; challenge: string } {
 
 // Decode a JWT payload without verifying — we received it directly from WorkOS over TLS, and the LLM
 // gateway verifies the signature on its side. We only need to read the claims WorkOS stuffed in.
-function decodeJwtPayload(token: string): Record<string, unknown> {
+export function decodeJwtPayload(token: string): Record<string, unknown> {
   const part = token.split('.')[1]
   if (!part) throw new Error('Malformed token from WorkOS.')
   return JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>
 }
 
-async function discoverEndpoints(issuer: string): Promise<OAuthServerMetadata> {
+export async function discoverEndpoints(issuer: string): Promise<OAuthServerMetadata> {
   const url = `${issuer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`
   const res = await fetch(url)
   if (!res.ok) {
@@ -225,8 +229,15 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
       throw new Error('Login succeeded but no API key was returned. Run `fingerprint login` again.')
     }
 
+    // No refresh token means the session dies with this access token (minutes), so leave a trail —
+    // it points at the `offline_access` scope or the OAuth client config rather than at the user.
+    if (!token.refresh_token) {
+      debugLog('login returned no refresh_token — session will not survive access-token expiry')
+    }
+
     saveAuthState({
       accessToken: token.access_token,
+      refreshToken: token.refresh_token,
       serverApiKey,
       managementApiKey,
       workspaceId,
