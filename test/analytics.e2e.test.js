@@ -73,6 +73,18 @@ test('an invoked command reports once, not once per call site', async () => {
   await api.close()
 })
 
+test('a mistyped command is not reported as a bare run', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['integrat'], { home })
+  assert.equal(res.status, 1, res.stdout)
+  assert.deepEqual(commands(api), ['unknown'])
+
+  await api.close()
+})
+
 test('an unauthenticated run sends nothing', async () => {
   const api = await startManagementApi()
 

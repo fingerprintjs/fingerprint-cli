@@ -29,9 +29,14 @@ program.hook('preAction', () => {
   setInteractive(Boolean(opts.interactive) && !ci)
 })
 
+// An unrecognized command resolves through the default action rather than throwing, so it reaches
+// the hook looking like a bare `fingerprint`.
+let ranUnknownCommand = false
+
 // postAction, not preAction, so `login` has written credentials by the time we look for a workspace.
 program.hook('postAction', async (_thisCommand, actionCommand) => {
-  await trackCommand(actionCommand === program ? 'default' : actionCommand.name())
+  if (actionCommand !== program) return trackCommand(actionCommand.name())
+  await trackCommand(ranUnknownCommand ? 'unknown' : 'default')
 })
 
 program
@@ -74,6 +79,8 @@ async function defaultCommand(unknownCommand?: string) {
   // positional that reaches here is an unrecognized command (typically a typo). Fail with a friendly
   // hint instead of commander's bare "too many arguments".
   if (unknownCommand) {
+    // Reporting a typo as `default` would read as launcher usage, which is the opposite of what it is.
+    ranUnknownCommand = true
     reportUnknownCommand(unknownCommand)
     return
   }
