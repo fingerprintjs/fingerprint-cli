@@ -8,7 +8,6 @@ interface EnvironmentUrls {
   // Hosted Fingerprint LLM gateway (Node/Fastify on EKS) the agent SDK is pointed at, so end users
   // never need an Anthropic key. It authenticates callers by the OAuth access token (JWT), verified
   // against the auth server's JWKS. Overridable via FINGERPRINT_GATEWAY_URL.
-  // TODO(infra): confirm the deployed EKS hostnames below before release.
   gatewayUrl: string
   // WorkOS AuthKit OAuth issuer — the AuthKit domain of the WorkOS environment the CLI app lives in
   // (like MCP's `https://mcpauth.fpjs.io`), NOT `api.workos.com` (that's WorkOS's management API,

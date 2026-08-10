@@ -56,8 +56,17 @@ Run it from your project's root directory.
 `fingerprint login` opens your browser to the Fingerprint dashboard. Sign in there — **new users sign
 up, pick a server region, and get a workspace** in the same flow — and once you authorize, the CLI
 (which has been waiting) picks up the credential automatically; return to your terminal and close the
-tab. No password is ever typed into the CLI, and there's no local server or port involved, so it works
-over SSH and in containers too.
+tab. No password is ever typed into the CLI.
+
+Under the hood this is OAuth 2.0 Authorization Code with PKCE. The CLI briefly listens on a loopback
+address — `127.0.0.1`, first free port in `8976–8980` — solely to catch the redirect back from the
+browser, and the secret that proves the exchange (the PKCE verifier) never leaves your machine, so
+nothing sensitive travels in a browser URL or an email. The listener is closed as soon as login
+finishes.
+
+Because that redirect points at `127.0.0.1`, **the browser has to be on the same machine as the CLI.**
+Over SSH or inside a container, forward the port first — `ssh -L 8976:127.0.0.1:8976 <host>` — or the
+redirect lands nowhere and the login waits until it times out.
 
 The CLI stores a **workspace-scoped API key** for the workspace you signed into, at
 `~/.config/fingerprint/auth.json` (mode `0600`). That key is what `keys` and `integrate` use to talk

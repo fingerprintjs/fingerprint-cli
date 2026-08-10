@@ -148,6 +148,19 @@ function startLoopback(
   })
 }
 
+// The loopback redirect only resolves if the browser completing the login runs on this machine. Over
+// SSH — or in a container — the browser is somewhere else, its redirect to 127.0.0.1 reaches nothing,
+// and the CLI would sit through the whole timeout with no explanation. We can't complete the flow for
+// them, but we can name the problem up front and give the fix. Returns why we think this is headless.
+function headlessReason(): string | undefined {
+  if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return 'this looks like an SSH session'
+  // Only meaningful on Linux; macOS and Windows always have a window server.
+  if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    return 'no display is available'
+  }
+  return undefined
+}
+
 export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {}): Promise<BrowserLoginResult> {
   const cfg = resolveConfig()
   if (!cfg.oauthIssuer || !cfg.oauthClientId) {
@@ -176,6 +189,13 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   // Send brand-new users straight to sign-up (WorkOS AuthKit honors screen_hint); the confirmation
   // email resumes this same authorize flow, and the loopback below waits the whole time.
   if (intent === 'signup') authUrl.searchParams.set('screen_hint', 'sign-up')
+
+  const headless = headlessReason()
+  if (headless) {
+    console.log(`\nHeads up: ${headless}, and this login needs a browser on this machine — the sign-in`)
+    console.log(`redirect goes to ${redirectUri}, which only exists here.`)
+    console.log(`If your browser is elsewhere, forward the port first:\n  ssh -L ${port}:127.0.0.1:${port} <this-host>`)
+  }
 
   console.log(`\nOpening your browser to ${intent === 'signup' ? 'sign up' : 'sign in'}...`)
   console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`)
