@@ -53,11 +53,11 @@ test('an authenticated command reports which command ran', async () => {
 test('a chained run reports the step the command hook cannot see', async () => {
   const api = await startManagementApi()
 
-  // `setup` runs integrate from inside its own action, so commander never dispatches it and the
-  // hook only ever sees `setup`.
-  const res = await runInRepo(api, ['setup', '--yes'])
+  // The bare `fingerprint` runs integrate from inside its own action, so commander never dispatches
+  // it and the hook only ever sees `default`.
+  const res = await runInRepo(api, ['--yes'])
   assert.equal(res.status, 0, res.stderr)
-  assert.deepEqual(commands(api), ['integrate', 'setup'])
+  assert.deepEqual(commands(api), ['integrate', 'default'])
 
   await api.close()
 })
