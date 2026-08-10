@@ -73,6 +73,27 @@ test('an invoked command reports once, not once per call site', async () => {
   await api.close()
 })
 
+test('logout reports before it drops the credential', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['logout'], { home })
+  assert.equal(res.status, 0, res.stderr)
+
+  // Sent with the key that is about to be cleared, so the event still lands on a workspace.
+  const events = api.analyticsEvents()
+  assert.deepEqual(commands(api), ['logout'])
+  assert.equal(events[0].authorization, 'Bearer mgmt_key_1')
+
+  // And it still actually logged out: a follow-up run has no credential to report with.
+  const after = await runCli(['whoami'], { home })
+  assert.equal(after.status, 1)
+  assert.equal(api.analyticsEvents().length, 1)
+
+  await api.close()
+})
+
 test('a mistyped command is not reported as a bare run', async () => {
   const api = await startManagementApi()
   const home = makeHome()

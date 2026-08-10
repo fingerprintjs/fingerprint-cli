@@ -66,6 +66,10 @@ export async function ensureAuth(): Promise<void> {
 // local credential. The key itself keeps existing in the workspace — revoke it from the dashboard's
 // API keys page if needed.
 export function logout() {
+  // Before clearing, not after: the key is the credential the event is sent with. Fire-and-forget is
+  // safe because the request is dispatched synchronously, so it is already in flight by the time the
+  // state goes.
+  void trackCommand('logout')
   clearAuthState()
   console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
