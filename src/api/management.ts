@@ -1,5 +1,6 @@
 import { getAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
+import { debugLog } from '../utils/log-file.js'
 
 // Public Management API version header — required by the API (see fingerprint-mcp-server).
 const API_VERSION = '2025-11-20'
@@ -34,16 +35,26 @@ export class ManagementClient {
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await fetch(new URL(path, this.baseUrl), {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Version': API_VERSION,
-        Authorization: `Bearer ${this.key}`,
-        'User-Agent': 'fingerprint-cli/0.0.2',
-        ...(init.headers ?? {}),
-      },
-    })
+    const url = new URL(path, this.baseUrl)
+    let res: Response
+    try {
+      res = await fetch(url, {
+        ...init,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Version': API_VERSION,
+          Authorization: `Bearer ${this.key}`,
+          'User-Agent': 'fingerprint-cli/0.0.2',
+          ...(init.headers ?? {}),
+        },
+      })
+    } catch (e) {
+      // DNS/connect/TLS failures reject with Node's bare `TypeError: fetch failed`, which reaches the
+      // user with no URL and nothing to act on. Name the host we couldn't reach, and keep the original
+      // cause in the debug log for diagnosis.
+      debugLog(`Management API request to ${url.href} failed: ${e instanceof Error ? e.message : String(e)}`)
+      throw new ManagementApiError(`Couldn’t reach the Management API at ${url.origin}. Check your connection.`)
+    }
 
     if (res.status === 204) return null as T
 

@@ -10,9 +10,9 @@ hosted Fingerprint LLM gateway, so **you do not need an Anthropic API key**.
 ```bash
 git clone https://github.com/fingerprintjs/fingerprint-cli/ fingerprint-cli
 cd fingerprint-cli
-npm install
-npm run build
-npm link            # makes the `fingerprint` command available globally
+pnpm install
+pnpm run build
+pnpm link --global  # makes the `fingerprint` command available globally
 ```
 
 Then, from your project's root directory:

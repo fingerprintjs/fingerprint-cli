@@ -38,8 +38,12 @@ export function getAuthState(): AuthState | null {
 }
 
 export function saveAuthState(state: AuthState): void {
-  mkdirSync(configDir, { recursive: true })
-  writeFileSync(configPath, JSON.stringify(state, null, 2))
+  mkdirSync(configDir, { recursive: true, mode: 0o700 })
+  // Create the file already restricted rather than chmod-ing after the fact: this holds the access
+  // token, the refresh token and both API keys, and writing first would leave it umask-readable
+  // (usually 0644) until the chmod landed. The chmod still runs to tighten a file that already
+  // existed, since `mode` only applies at creation.
+  writeFileSync(configPath, JSON.stringify(state, null, 2), { mode: 0o600 })
   chmodSync(configPath, 0o600)
 }
 

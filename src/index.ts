@@ -41,7 +41,7 @@ program.command('whoami').action(whoami)
 
 program
   .command('keys')
-  .description('Generate an API key for the active workspace and print it')
+  .description('Print an API key for the active workspace')
   .argument('[type]', 'key type: public | secret (prompts if omitted)')
   .action((type) => keysCommand(type))
 
