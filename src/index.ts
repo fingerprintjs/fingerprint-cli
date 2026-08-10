@@ -29,8 +29,8 @@ program.hook('preAction', () => {
   setInteractive(Boolean(opts.interactive) && !ci)
 })
 
-// An unrecognized command resolves through the default action rather than throwing, so it reaches
-// the hook looking like a bare `fingerprint`.
+// An unrecognized command resolves through the default action, so it reaches the hook looking
+// like a bare `fingerprint`.
 let ranUnknownCommand = false
 
 // postAction, not preAction, so `login` has written credentials by the time we look for a workspace.

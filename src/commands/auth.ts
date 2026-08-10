@@ -35,8 +35,8 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const { intent, chosen } = await resolveIntent(opts.intent)
   await loginWithBrowser({ intent })
-  // Not at the prompt: there's no auth state to attribute it to until login lands. Its own value, so
-  // picking it from the menu doesn't get counted as having typed `login`/`signup`.
+  // After login lands, since there's no auth state to attribute it to before that. Its own value so
+  // it isn't counted as having typed `login`/`signup`.
   if (chosen) await trackCommand(`${intent}-choice`)
   console.log('Logged in successfully.')
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
@@ -66,9 +66,8 @@ export async function ensureAuth(): Promise<void> {
 // local credential. The key itself keeps existing in the workspace — revoke it from the dashboard's
 // API keys page if needed.
 export function logout() {
-  // Before clearing, not after: the key is the credential the event is sent with. Fire-and-forget is
-  // safe because the request is dispatched synchronously, so it is already in flight by the time the
-  // state goes.
+  // Before clearing: the key is the credential the event is sent with, and the request is
+  // dispatched synchronously so it's already in flight.
   void trackCommand('logout')
   clearAuthState()
   console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')

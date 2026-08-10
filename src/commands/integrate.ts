@@ -19,7 +19,6 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
   if (willApply) {
     requireAuth()
     // Chained runs reach integrate without it being the invoked command, so the hook never sees it.
-    // Ahead of the refresh so a dead session still reports the attempt.
     void trackCommand('integrate')
     // Applying provisions keys and edits files before it ever calls the LLM gateway, so settle the
     // session up front (refreshing it if the access token is spent). Without this, a dead session
