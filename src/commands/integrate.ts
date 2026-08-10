@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
 import { analyzeRepo, printAnalysis } from '../wizard/detect.js'
+import { getFreshAccessToken } from '../auth/refresh.js'
 import { integrateProject } from '../wizard/runner.js'
 import { log, printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
@@ -23,6 +24,10 @@ export async function integrateCommand(
   // report and stays available to logged-out users.)
   if (willApply) {
     requireAuth()
+    // Applying provisions keys and edits files before it ever calls the LLM gateway, so settle the
+    // session up front (refreshing it if the access token is spent). Without this, a dead session
+    // surfaces only after those side effects have already landed.
+    await getFreshAccessToken()
   }
 
   printAnalysis(analysis)

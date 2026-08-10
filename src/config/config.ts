@@ -8,7 +8,6 @@ interface EnvironmentUrls {
   // Hosted Fingerprint LLM gateway (Node/Fastify on EKS) the agent SDK is pointed at, so end users
   // never need an Anthropic key. It authenticates callers by the OAuth access token (JWT), verified
   // against the auth server's JWKS. Overridable via FINGERPRINT_GATEWAY_URL.
-  // TODO(infra): confirm the deployed EKS hostnames below before release.
   gatewayUrl: string
   // WorkOS AuthKit OAuth issuer — the AuthKit domain of the WorkOS environment the CLI app lives in
   // (like MCP's `https://mcpauth.fpjs.io`), NOT `api.workos.com` (that's WorkOS's management API,
@@ -26,23 +25,25 @@ interface EnvironmentUrls {
 const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
   production: {
     managementApiUrl: 'https://management-api.fpjs.io',
-    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
+    gatewayUrl: 'https://llm-gateway.fpjs.io',
     oauthIssuer: 'https://mcpauth.fingerprint.com',
     oauthClientId: 'client_01KYHSG8DC4YHTJGWRADHBZ24D',
   },
   staging: {
     managementApiUrl: 'https://public-mgmtapi.fpjs.sh',
-    gatewayUrl: 'https://fingerprint-llm-gateway.elvo.workers.dev',
+    gatewayUrl: 'https://llm-gateway.fpjs.sh',
     oauthIssuer: 'https://scientific-cat-58-staging.authkit.app',
     oauthClientId: 'client_01KYHMB30PPDR66CWY8BKVTZRX',
   },
 }
 
-// OAuth scopes the CLI requests. Kept to just `openid` — the WorkOS environment has no custom
-// permissions/scopes defined, and requesting an undefined scope 400s the authorize call. The
-// Management key travels in the token subject (not via scopes), and the LLM gateway accepts any valid
-// token from the issuer (its scope check is unset). Add a real scope here later if we define one.
-export const OAUTH_SCOPES = ['openid']
+// OAuth scopes the CLI requests. No custom permissions/scopes are defined in the WorkOS environment,
+// and requesting an undefined scope 400s the authorize call — so these are the two standard ones only.
+// `offline_access` is what makes the auth server return a refresh token: access tokens are short-lived,
+// and without it a session dies minutes after login with no way back but another browser round-trip
+// (see auth/refresh.ts). The Management key travels in the token subject (not via scopes), and the LLM
+// gateway accepts any valid token from the issuer (its scope check is unset).
+export const OAUTH_SCOPES = ['openid', 'offline_access']
 
 const DEFAULT_ENVIRONMENT: Environment = 'production'
 

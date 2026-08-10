@@ -5,6 +5,7 @@ import open from 'open'
 import { OAUTH_SCOPES, resolveConfig } from '../config/config.js'
 import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
+import { debugLog } from '../utils/log-file.js'
 import { saveAuthState } from './tokenStore.js'
 
 // Browser login is OAuth 2.0 Authorization Code + PKCE against WorkOS AuthKit — the same engine the
@@ -39,8 +40,11 @@ interface OAuthServerMetadata {
   token_endpoint: string
 }
 
-interface TokenResponse {
+export interface TokenResponse {
   access_token: string
+  // Only returned when `offline_access` is among the granted scopes. auth/refresh.ts trades it for a
+  // new access token once the current one expires.
+  refresh_token?: string
   token_type?: string
   expires_in?: number
   scope?: string
@@ -59,13 +63,13 @@ function createPkce(): { verifier: string; challenge: string } {
 
 // Decode a JWT payload without verifying — we received it directly from WorkOS over TLS, and the LLM
 // gateway verifies the signature on its side. We only need to read the claims WorkOS stuffed in.
-function decodeJwtPayload(token: string): Record<string, unknown> {
+export function decodeJwtPayload(token: string): Record<string, unknown> {
   const part = token.split('.')[1]
   if (!part) throw new Error('Malformed token from WorkOS.')
   return JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>
 }
 
-async function discoverEndpoints(issuer: string): Promise<OAuthServerMetadata> {
+export async function discoverEndpoints(issuer: string): Promise<OAuthServerMetadata> {
   const url = `${issuer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`
   const res = await fetch(url)
   if (!res.ok) {
@@ -146,6 +150,19 @@ function startLoopback(
   })
 }
 
+// The loopback redirect only resolves if the browser completing the login runs on this machine. Over
+// SSH — or in a container — the browser is somewhere else, its redirect to 127.0.0.1 reaches nothing,
+// and the CLI would sit through the whole timeout with no explanation. We can't complete the flow for
+// them, but we can name the problem up front and give the fix. Returns why we think this is headless.
+function headlessReason(): string | undefined {
+  if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return 'this looks like an SSH session'
+  // Only meaningful on Linux; macOS and Windows always have a window server.
+  if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    return 'no display is available'
+  }
+  return undefined
+}
+
 export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {}): Promise<BrowserLoginResult> {
   const cfg = resolveConfig()
   if (!cfg.oauthIssuer || !cfg.oauthClientId) {
@@ -174,7 +191,14 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   // Send brand-new users straight to sign-up (WorkOS AuthKit honors screen_hint); the confirmation
   // email resumes this same authorize flow, and the loopback below waits the whole time.
   if (intent === 'signup') authUrl.searchParams.set('screen_hint', 'sign-up')
-
+    const headless = headlessReason()
+  if (headless) {
+    log.warn(`Heads up: ${headless}, and this login needs a browser on this machine — the sign-in`)
+    log.info(`redirect goes to ${redirectUri}, which only exists here.`)
+    log.info(`If your browser is elsewhere, forward the port first:`)
+    log.info(`  ssh -L ${port}:127.0.0.1:${port} <this-host>`)
+  }
+  
   log.step(intent === 'signup' ? 'Sign up' : 'Sign in')
   log.info('Opening your browser...')
   log.info(`  ${color.dim(`If it doesn't open, visit:`)}`)
@@ -229,8 +253,15 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
       throw new Error('Login succeeded but no API key was returned. Run `fingerprint login` again.')
     }
 
+    // No refresh token means the session dies with this access token (minutes), so leave a trail —
+    // it points at the `offline_access` scope or the OAuth client config rather than at the user.
+    if (!token.refresh_token) {
+      debugLog('login returned no refresh_token — session will not survive access-token expiry')
+    }
+
     saveAuthState({
       accessToken: token.access_token,
+      refreshToken: token.refresh_token,
       serverApiKey,
       managementApiKey,
       workspaceId,
