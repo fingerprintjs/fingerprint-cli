@@ -3,13 +3,26 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export interface AuthState {
+  // OAuth access token (JWT) from the MCP auth server login. This is the Bearer credential the LLM
+  // gateway verifies against the auth server's JWKS. Short-lived; see wizard/llm.ts.
   accessToken: string
+  // OAuth refresh token from the same login (requires the `offline_access` scope). The access token
+  // above expires quickly, so this is what keeps a session alive across runs without sending the user
+  // back through the browser. The auth server rotates it on every use — always persist the new one.
+  // Optional: absent from state written before refresh support, and if the server declines to issue one.
   refreshToken?: string
-  userId?: string
-  currentSubscriptionId?: string
-  pendingEmailConfirmation?: boolean
-  apiUrl: string
+  // Server (Secret) API key from the login bundle, used server-side for backend event verification.
+  // Handed to backend integrations as-is so the CLI never has to mint one.
+  serverApiKey: string
+  // Workspace-scoped Management API key (extracted from the access token's `sub`), used as the Bearer
+  // for the public Management API — NOT for the gateway. Kept separately from the access token.
+  managementApiKey: string
+  // The workspace the key is scoped to, and its agent region ('us'|'eu'|'ap') for app env config.
+  workspaceId: string
   region: string
+  // Public Management API base URL for this login's environment (kept so the CLI keeps talking to the
+  // same environment the user logged into).
+  managementApiUrl: string
 }
 
 const configDir = join(homedir(), '.config', 'fingerprint')

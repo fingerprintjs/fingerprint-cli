@@ -1,15 +1,16 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const CLI = fileURLToPath(new URL('../../dist/index.js', import.meta.url))
 
-// A fake mgmt-api: just enough of the endpoints the real flow hits, returning the {ok,data}
-// envelope ApiClient expects. Lets the e2e drive real CLI commands over real HTTP with no network.
-export function startMgmtApi() {
+// A fake PUBLIC Management API: just the endpoints the post-login flow hits (list/create API keys),
+// returning the `{ data }` envelope the ManagementClient expects. Lets the e2e drive real CLI
+// commands over real HTTP with no network. The CLI authenticates with its Management API key.
+export function startManagementApi() {
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
@@ -17,16 +18,15 @@ export function startMgmtApi() {
       const path = req.url.split('?')[0]
       const ok = (data) => {
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, data }))
+        res.end(JSON.stringify({ data }))
       }
       const route = `${req.method} ${path}`
-      if (route === 'POST /sso/auth') return ok({ sso: { isEnabled: false } })
-      if (route === 'POST /login') return ok({ accessToken: 'acc_1', refreshToken: 'ref_1', context: { id: 'user_1' } })
-      if (route === 'GET /subscriptions') return ok([{ id: 'sub_1', name: 'Test WS', regionCode: 'use1' }])
-      if (route === 'GET /subscriptions/sub_1/tokens') return ok([{ type: 'browser', token: 'pub_123' }])
-      if (route === 'POST /subscriptions/sub_1/tokens') return ok({ type: 'api', token: 'sec_456' })
+      // GET /api-keys?type=public&... → the workspace's public (browser) key.
+      if (route === 'GET /api-keys') return ok([{ id: 'key_pub', type: 'public', status: 'enabled', token: 'pub_123' }])
+      // POST /api-keys → mint a secret key (value only returned here).
+      if (route === 'POST /api-keys') return ok({ id: 'key_sec', type: 'secret', status: 'enabled', token: 'sec_456' })
       res.writeHead(404, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: { message: `no route: ${route}` } }))
+      res.end(JSON.stringify({ error: { message: `no route: ${route}` } }))
     })
   })
   return new Promise((resolve) => {
@@ -42,15 +42,74 @@ export function makeHome() {
   return mkdtempSync(join(tmpdir(), 'fp-home-'))
 }
 
-// Pre-authenticate by writing the auth state the CLI would have saved after login (avoids needing a
-// PTY to drive the interactive password prompt). apiUrl points the CLI at the fake mgmt-api.
-export function seedAuth(home, apiUrl, extra = {}) {
+// Pre-authenticate by writing the auth state the CLI would have saved after browser login (avoids
+// needing to drive the interactive browser flow). `managementApiUrl` points the CLI at the fake
+// Management API above; the workspace + region are fixed at login time.
+export function seedAuth(home, managementApiUrl, extra = {}) {
   const dir = join(home, '.config', 'fingerprint')
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'auth.json'),
-    JSON.stringify({ accessToken: 'acc_1', refreshToken: 'ref_1', apiUrl, region: 'us', ...extra })
+    JSON.stringify({
+      accessToken: 'tok_1',
+      serverApiKey: 'srv_1',
+      managementApiKey: 'mgmt_key_1',
+      workspaceId: 'sub_1',
+      region: 'us',
+      managementApiUrl,
+      ...extra,
+    })
   )
+}
+
+// Read the auth state back, to assert on what a run persisted.
+export function readAuth(home) {
+  return JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'auth.json'), 'utf8'))
+}
+
+// An unsigned JWT carrying `claims`. The CLI only ever decodes the payload (the gateway is what
+// verifies signatures), so a real key isn't needed to exercise the expiry logic.
+export function fakeJwt(claims) {
+  const body = Buffer.from(JSON.stringify(claims)).toString('base64url')
+  return `header.${body}.signature`
+}
+
+export const expiredJwt = () => fakeJwt({ sub: 'srv_1-mgmt_key_1-us', exp: Math.floor(Date.now() / 1000) - 60 })
+export const liveJwt = () => fakeJwt({ sub: 'srv_1-mgmt_key_1-us', exp: Math.floor(Date.now() / 1000) + 3600 })
+
+// A fake OAuth authorization server: discovery + the refresh_token grant, which is all the CLI's
+// token refresh touches. `rt_dead` is rejected the way a revoked/expired refresh token would be.
+export function startAuthServer() {
+  const grants = []
+  let base = ''
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const path = req.url.split('?')[0]
+      const json = (status, data) => {
+        res.writeHead(status, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(data))
+      }
+      if (path === '/.well-known/oauth-authorization-server') {
+        return json(200, { authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` })
+      }
+      if (path === '/token') {
+        const params = Object.fromEntries(new URLSearchParams(body))
+        grants.push(params)
+        if (params.refresh_token === 'rt_dead') return json(400, { error: 'invalid_grant' })
+        // Rotate the refresh token on every use, like the real server does.
+        return json(200, { access_token: liveJwt(), refresh_token: 'rt_rotated', expires_in: 3600 })
+      }
+      json(404, { error: `no route: ${path}` })
+    })
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      base = `http://127.0.0.1:${server.address().port}`
+      resolve({ url: base, grants: () => grants, close: () => new Promise((r) => server.close(r)) })
+    })
+  })
 }
 
 // A fake LLM gateway speaking Anthropic's /v1/messages streaming protocol, scripted to make the

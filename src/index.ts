@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import { select } from '@inquirer/prompts'
-import { signup, signupConfirm, login, logout, whoami, resumeEmailConfirmation } from './commands/auth.js'
-import { workspaceList, workspaceStart, workspaceUse } from './commands/workspace.js'
+import { login, signup, startAuth, logout, whoami } from './commands/auth.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
 import { getAuthState } from './auth/tokenStore.js'
@@ -31,22 +29,15 @@ program.hook('preAction', () => {
 })
 
 program
-  .command('signup')
-  .option('--name <name>')
-  .option('--email <email>')
-  .action(async (opts) => signup({ name: opts.name, email: opts.email }))
-program.command('signup-confirm').argument('<linkOrIntent>').argument('[code]').action(signupConfirm)
-program
   .command('login')
-  .option('--email <email>')
-  .action(async (opts) => login({ email: opts.email }))
+  .description('Log in through the browser')
+  .action(async () => login())
+program
+  .command('signup')
+  .description('Create a Fingerprint account through the browser')
+  .action(async () => signup())
 program.command('logout').action(logout)
 program.command('whoami').action(whoami)
-
-const workspace = program.command('workspace')
-workspace.command('ls').action(workspaceList)
-workspace.command('start').action(workspaceStart)
-workspace.command('use').argument('[id]').action(workspaceUse)
 
 program
   .command('keys')
@@ -69,39 +60,30 @@ program
   })
 
 // Default command: `fingerprint` with no subcommand. Route by where the user is so the whole
-// onboarding is one command (signup → workspace → keys → integrate, resuming from any point).
-async function defaultCommand() {
+// onboarding is one command (login → integrate, resuming from any point). Signup + workspace/region
+// selection all happen in the browser during login, so by the time we're authenticated the workspace
+// is already chosen.
+async function defaultCommand(unknownCommand?: string) {
+  // Registered subcommands are dispatched by commander before the default action runs, so any
+  // positional that reaches here is an unrecognized command (typically a typo). Fail with a friendly
+  // hint instead of commander's bare "too many arguments".
+  if (unknownCommand) {
+    reportUnknownCommand(unknownCommand)
+    return
+  }
+
   const auth = getAuthState()
 
-  if (!auth?.accessToken) {
+  if (!auth?.managementApiKey) {
     if (isCi()) throw new Error('Not authenticated. Run `fingerprint login` first.')
-    const choice = await select({
-      message: 'Welcome to Fingerprint. What would you like to do?',
-      choices: [
-        { name: 'Sign up with email/password', value: 'signup' },
-        { name: 'Log in with email/password', value: 'login' },
-      ],
-    })
-    if (choice === 'signup') await signup()
-    else await login()
+    // Ask whether they have an account (login vs signup), then run browser auth for both new and
+    // returning users (signup + onboarding happen in the browser) and chain straight into integrate.
+    await startAuth()
     return
   }
 
-  // Email confirmation must complete before workspace/keys — the mgmt-api rejects those calls for an
-  // unconfirmed account ("no permission"). Resume at confirmation rather than skipping ahead.
-  if (auth.pendingEmailConfirmation) {
-    if (isCi()) throw new Error('Email not confirmed. Confirm with `fingerprint signup-confirm "<link from email>"` first.')
-    console.log("Your email isn't confirmed yet — finish that before setting up a workspace.")
-    await resumeEmailConfirmation()
-    return
-  }
-
-  if (!auth.currentSubscriptionId) {
-    if (isCi()) throw new Error('No active workspace. Run `fingerprint workspace use <id>` first.')
-    await workspaceStart()
-  }
-
-  // Workspace is active → integrate the repo in the current directory (provisions keys + applies).
+  // Authenticated (workspace already chosen in the browser) → integrate the repo in the current
+  // directory (provisions keys + applies).
   await integrateCommand()
 }
 
@@ -109,10 +91,51 @@ async function defaultCommand() {
 // `npx fingerprintjs/fingerprint-cli#<branch> setup`.
 program
   .command('setup')
-  .description('Run the full Fingerprint onboarding: signup → workspace → keys → integrate')
-  .action(defaultCommand)
+  .description('Run the full Fingerprint onboarding: login → integrate')
+  .action(() => defaultCommand())
 
-program.action(defaultCommand)
+// A variadic optional positional lets the bare `fingerprint` run onboarding while still catching an
+// unknown command (even a multi-word one) instead of erroring with "too many arguments".
+program
+  .argument('[command...]', 'command to run (omit to run the full onboarding)')
+  .action((args: string[]) => defaultCommand(args[0]))
+
+// Friendly unknown-command message with a "did you mean" suggestion, in place of commander's terse
+// argument error. Known command names + aliases are the suggestion pool.
+function reportUnknownCommand(name: string): void {
+  const known = program.commands.flatMap((c) => [c.name(), ...c.aliases()])
+  const suggestion = closestCommand(name, known)
+  console.error(`Unknown command "${name}".`)
+  if (suggestion) console.error(`Did you mean "${suggestion}"?`)
+  console.error('\nRun `fingerprint --help` to see the available commands.')
+  process.exitCode = 1
+}
+
+// Nearest known command by edit distance, but only when it's a plausible typo (not any random word).
+function closestCommand(input: string, candidates: string[]): string | undefined {
+  let best: string | undefined
+  let bestDist = Infinity
+  for (const c of candidates) {
+    const d = editDistance(input, c)
+    if (d < bestDist) {
+      bestDist = d
+      best = c
+    }
+  }
+  return best !== undefined && bestDist <= Math.max(2, Math.ceil(input.length / 3)) ? best : undefined
+}
+
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0))
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+  }
+  return dp[a.length][b.length]
+}
 
 program.parseAsync().catch((err) => {
   console.error(err.message)

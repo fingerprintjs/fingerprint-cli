@@ -1,8 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
-import { ApiClient } from '../api/client.js'
-import { endpoints } from '../api/endpoints.js'
-import { fetchPublicKey, createSecretKey } from '../api/keys.js'
+import { ManagementClient } from '../api/management.js'
+import { fetchPublicKey } from '../api/keys.js'
 import { requireAuth } from '../utils/session.js'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { log } from './log.js'
@@ -58,20 +57,6 @@ function conventionFor(app: DetectedApp): EnvConvention {
     default:
       return { file: '.env' }
   }
-}
-
-// Map the workspace regionCode (use1/euc1/aps1) to the JS agent region ('us'|'eu'|'ap').
-const REGION_BY_CODE: Record<string, string> = { use1: 'us', euc1: 'eu', aps1: 'ap' }
-
-async function fetchRegion(client: ApiClient, subscriptionId: string): Promise<string> {
-  const subs = await client.request<any[]>(endpoints.subscriptions, { method: 'GET' }, true)
-  const sub = subs.find((s) => s.id === subscriptionId)
-  // Fail fast: a wrong region silently written to env causes "API key not found" at runtime, which
-  // is far harder to debug than an upfront error here.
-  if (!sub) throw new Error(`Active workspace ${subscriptionId} not found. Run: fingerprint workspace use <id>`)
-  const region = REGION_BY_CODE[sub.regionCode]
-  if (!region) throw new Error(`Unknown workspace region "${sub.regionCode}" for ${subscriptionId}.`)
-  return region
 }
 
 function relevantApps(a: RepoAnalysis): DetectedApp[] {
@@ -158,8 +143,7 @@ export interface ProvisionResult {
 // agent, so secrets stay out of the LLM transcript).
 export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   const auth = requireAuth()
-  if (!auth.currentSubscriptionId) throw new Error('No active workspace. Run: fingerprint workspace use <id>')
-  const client = new ApiClient(auth.apiUrl)
+  const client = new ManagementClient()
 
   const apps = relevantApps(analyzeRepo(root))
 
@@ -167,24 +151,28 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   const secretApps = apps.filter((a) => conventionFor(a).secretVar)
 
   // The agent region must match the workspace region, or identification fails ("API key not found").
-  const region = await fetchRegion(client, auth.currentSubscriptionId)
+  // It's fixed at login (the Management key is workspace-scoped), so read it from the auth state.
+  const region = auth.region
   log.info(`Workspace region: ${region}`)
 
-  const publicKey = publicApps.length ? await fetchPublicKey(client, auth.currentSubscriptionId) : undefined
+  const publicKey = publicApps.length ? await fetchPublicKey(client) : undefined
   if (publicKey) log.info('Using existing Public API key.')
 
   let secretKey: string | undefined
   if (secretApps.length) {
-    // Reuse a secret already provisioned into a backend env (don't mint a new key each run).
+    // Reuse a secret already provisioned into a backend env; otherwise use the Server API key from the
+    // login bundle. The CLI never mints keys itself.
     for (const app of secretApps) {
       const conv = conventionFor(app)
       secretKey = readEnvVar(join(app.dir, conv.file), conv.secretVar!)
       if (secretKey) break
     }
     if (secretKey) log.info('Reusing existing Secret API key from env.')
-    else {
-      secretKey = await createSecretKey(client, auth.currentSubscriptionId)
-      log.info('Created Secret API key.')
+    else if (auth.serverApiKey) {
+      secretKey = auth.serverApiKey
+      log.info('Using Server API key from login.')
+    } else {
+      log.warn('No Server API key available from login — skipping backend secret.')
     }
   }
 
