@@ -8,13 +8,17 @@ const TIMEOUT_MS = 1000
 const sent = new Set<string>()
 
 // Relayed through the Management API because the Amplitude key can't ship in the binary.
-export async function trackCommand(command: string): Promise<void> {
+// `auth` is a parameter so a caller about to drop the credential can pass its own snapshot.
+export async function trackCommand(command: string, auth = getAuthState()): Promise<void> {
   if (sent.has(command)) return
-  if (!getAuthState()?.managementApiKey) return
+  if (!auth?.managementApiKey) return
   sent.add(command)
 
   try {
-    await new ManagementClient().request('/analytics/events', {
+    await new ManagementClient({
+      managementApiKey: auth.managementApiKey,
+      managementApiUrl: auth.managementApiUrl,
+    }).request('/analytics/events', {
       method: 'POST',
       body: JSON.stringify({ event: 'cli_command_run', properties: { command } }),
       signal: AbortSignal.timeout(TIMEOUT_MS),

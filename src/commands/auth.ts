@@ -66,10 +66,10 @@ export async function ensureAuth(): Promise<void> {
 // local credential. The key itself keeps existing in the workspace — revoke it from the dashboard's
 // API keys page if needed.
 export function logout() {
-  // Before clearing: the key is the credential the event is sent with, and the request is
-  // dispatched synchronously so it's already in flight.
-  void trackCommand('logout')
+  // The key is the credential the event is sent with, so hand the snapshot over before dropping it.
+  const auth = getAuthState()
   clearAuthState()
+  void trackCommand('logout', auth)
   console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
 

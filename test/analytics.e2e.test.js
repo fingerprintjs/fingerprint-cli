@@ -73,7 +73,7 @@ test('an invoked command reports once, not once per call site', async () => {
   await api.close()
 })
 
-test('logout reports before it drops the credential', async () => {
+test('logout reports with the credential it just dropped', async () => {
   const api = await startManagementApi()
   const home = makeHome()
   seedAuth(home, api.url)
@@ -81,7 +81,8 @@ test('logout reports before it drops the credential', async () => {
   const res = await runCli(['logout'], { home })
   assert.equal(res.status, 0, res.stderr)
 
-  // Sent with the key that is about to be cleared, so the event still lands on a workspace.
+  // Auth state is already gone by the time trackCommand runs, so this can only have come from the
+  // snapshot passed in.
   const events = api.analyticsEvents()
   assert.deepEqual(commands(api), ['logout'])
   assert.equal(events[0].authorization, 'Bearer mgmt_key_1')
