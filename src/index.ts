@@ -7,6 +7,7 @@ import { getAuthState } from './auth/tokenStore.js'
 import { setCiContext, isCi } from './utils/ci.js'
 import { setVerbose } from './utils/verbose.js'
 import { setInteractive } from './utils/interactive.js'
+import { track } from './analytics/track.js'
 
 const program = new Command()
 program.name('fingerprint').description('Fingerprint CLI dashboard companion')
@@ -27,6 +28,26 @@ program.hook('preAction', () => {
   // Per-step prompting needs a human; never enable it in CI/headless runs.
   setInteractive(Boolean(opts.interactive) && !ci)
 })
+
+// An unrecognized command resolves through the default action, so it reaches the hook looking
+// like a bare `fingerprint`.
+let ranUnknownCommand = false
+
+// Recorded here and reported once the run settles. postAction would be tidier but is skipped when
+// the action throws, which lost exactly the commands worth measuring: integrate fails often enough
+// in real use that `login` and `default` were going missing entirely.
+let invokedCommand: string | undefined
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  invokedCommand = actionCommand === program ? undefined : actionCommand.name()
+})
+
+// After the run settles, so `login` has written credentials by the time we look for a workspace.
+async function reportRun(status: 'ok' | 'error'): Promise<void> {
+  await track('cli_command_run', {
+    command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
+    status,
+  })
+}
 
 program
   .command('login')
@@ -68,6 +89,8 @@ async function defaultCommand(unknownCommand?: string) {
   // positional that reaches here is an unrecognized command (typically a typo). Fail with a friendly
   // hint instead of commander's bare "too many arguments".
   if (unknownCommand) {
+    // Reporting a typo as `default` would read as launcher usage, which is the opposite of what it is.
+    ranUnknownCommand = true
     reportUnknownCommand(unknownCommand)
     return
   }
@@ -84,15 +107,8 @@ async function defaultCommand(unknownCommand?: string) {
 
   // Authenticated (workspace already chosen in the browser) → integrate the repo in the current
   // directory (provisions keys + applies).
-  await integrateCommand()
+  await integrateCommand({ chained: true })
 }
-
-// Named alias for the default flow, so it can be invoked explicitly — e.g.
-// `npx fingerprintjs/fingerprint-cli#<branch> setup`.
-program
-  .command('setup')
-  .description('Run the full Fingerprint onboarding: login → integrate')
-  .action(() => defaultCommand())
 
 // A variadic optional positional lets the bare `fingerprint` run onboarding while still catching an
 // unknown command (even a multi-word one) instead of erroring with "too many arguments".
@@ -137,7 +153,11 @@ function editDistance(a: string, b: string): number {
   return dp[a.length][b.length]
 }
 
-program.parseAsync().catch((err) => {
-  console.error(err.message)
-  process.exitCode = 1
-})
+program
+  .parseAsync()
+  .then(() => reportRun(process.exitCode ? 'error' : 'ok'))
+  .catch(async (err) => {
+    console.error(err.message)
+    process.exitCode = 1
+    await reportRun('error')
+  })

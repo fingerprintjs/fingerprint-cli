@@ -3,6 +3,7 @@ import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { isCi } from '../utils/ci.js'
 import { integrateCommand } from './integrate.js'
+import { pinAuthForTracking, track } from '../analytics/track.js'
 
 type Intent = 'login' | 'signup'
 
@@ -10,16 +11,17 @@ type Intent = 'login' | 'signup'
 // `signup` commands pass `intent` explicitly; when it's omitted (the bare `fingerprint` entry) we ask
 // up front, so a brand-new user lands on sign-up instead of a sign-in page they can't use. In CI
 // there's no one to ask — default to sign-in.
-async function resolveIntent(intent?: Intent): Promise<Intent> {
-  if (intent) return intent
-  if (isCi()) return 'login'
-  return select<Intent>({
+async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen: boolean }> {
+  if (intent) return { intent, chosen: false }
+  if (isCi()) return { intent: 'login', chosen: false }
+  const selected = await select<Intent>({
     message: 'Do you already have a Fingerprint account?',
     choices: [
       { name: 'Yes — log in', value: 'login' },
       { name: 'No — create one', value: 'signup' },
     ],
   })
+  return { intent: selected, chosen: true }
 }
 
 // Authentication is browser-only (PostHog-style): the CLI never collects an email or password, and
@@ -31,15 +33,19 @@ async function resolveIntent(intent?: Intent): Promise<Intent> {
 // to (say) generate a key doesn't drag the user into a full integration. `intent` forces the sign-in
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
-  const intent = await resolveIntent(opts.intent)
+  const { intent, chosen } = await resolveIntent(opts.intent)
   await loginWithBrowser({ intent })
+  // After login lands, since there's no auth state to attribute it to before that. The bare entry
+  // reaches login/signup through this answer, which `cli_command_run` can't show — it reports
+  // `default` for the whole run.
+  if (chosen) void track('cli_auth_intent_selected', { intent })
   console.log('Logged in successfully.')
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
   if (opts.chain !== false) {
     console.log('\nNext: integrate Fingerprint into the current project.')
-    await integrateCommand()
+    await integrateCommand({ chained: true })
   }
 }
 
@@ -61,6 +67,9 @@ export async function ensureAuth(): Promise<void> {
 // local credential. The key itself keeps existing in the workspace — revoke it from the dashboard's
 // API keys page if needed.
 export function logout() {
+  // The key is the credential the event is sent with, so pin it before dropping it. The postAction
+  // hook reports `logout` after this returns, by which point the auth state is gone.
+  pinAuthForTracking(getAuthState())
   clearAuthState()
   console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }

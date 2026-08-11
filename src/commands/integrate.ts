@@ -3,8 +3,11 @@ import { getFreshAccessToken } from '../auth/refresh.js'
 import { analyzeRepo, formatAnalysis } from '../wizard/detect.js'
 import { integrateProject } from '../wizard/runner.js'
 import { requireAuth } from '../utils/session.js'
+import { track } from '../analytics/track.js'
 
-export async function integrateCommand(opts: { path?: string; analyze?: boolean; yes?: boolean } = {}) {
+export async function integrateCommand(
+  opts: { path?: string; analyze?: boolean; yes?: boolean; chained?: boolean } = {}
+) {
   const root = resolve(opts.path ?? process.cwd())
 
   const analysis = analyzeRepo(root)
@@ -17,6 +20,18 @@ export async function integrateCommand(opts: { path?: string; analyze?: boolean;
   // report and stays available to logged-out users.)
   if (willApply) {
     requireAuth()
+    // Every apply reports here, invoked or chained. `cli_command_run` misses the chained ones
+    // entirely — commander never dispatched them — so this is the one place the real integrate
+    // count lives. The detected stack rides along: which frameworks people actually point this at
+    // is what decides where the next curated skill goes. Framework/skill ids only — never paths.
+    void track('cli_integrate_started', {
+      chained: Boolean(opts.chained),
+      frontend: analysis.frontend?.framework ?? '',
+      backend: analysis.backend?.framework ?? '',
+      skills: analysis.skills.join(','),
+      monorepo: analysis.monorepo,
+      app_count: analysis.apps.length,
+    })
     // Applying provisions keys and edits files before it ever calls the LLM gateway, so settle the
     // session up front (refreshing it if the access token is spent). Without this, a dead session
     // surfaces only after those side effects have already landed.
