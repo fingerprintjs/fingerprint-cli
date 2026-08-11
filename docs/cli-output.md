@@ -177,11 +177,12 @@ Return to your terminal and try again.
 Authenticated (styling example — no longer raw JSON):
 
 ```
-workspace  sub_…
-region     eu
+subscription  sub_…
+region        eu
+email         you@example.com
 ```
 
-(`workspace` / `region` dim; values bold.)
+(labels dim; values bold. `email` is printed only when the login id_token carried an email claim.)
 
 Not authenticated:
 

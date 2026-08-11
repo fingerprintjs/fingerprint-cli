@@ -34,15 +34,15 @@ async function resolveIntent(intent?: Intent): Promise<Intent> {
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const intent = await resolveIntent(opts.intent)
-  // When chaining into integrate, open the phase badge before Sign in so the whole sequence
-  // (auth → analyze → apply) sits under one heading.
-  if (opts.chain !== false) log.heading('integrate')
   const result = await loginWithBrowser({ intent })
   log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
   if (opts.chain !== false) {
+    // Open the phase badge here, not before Sign in: signing in isn't integrating, and a failure
+    // during login would otherwise print under an `integrate` heading it has nothing to do with.
+    log.heading('integrate')
     await integrateCommand({ skipHeading: true })
   }
 }
@@ -72,6 +72,8 @@ export function logout() {
 export function whoami() {
   const auth = getAuthState()
   if (!auth?.managementApiKey) throw new Error('Not logged in')
-  console.log(`${color.dim('workspace')}  ${color.bold(auth.workspaceId)}`)
-  console.log(`${color.dim('region')}     ${color.bold(auth.region)}`)
+  console.log(`${color.dim('subscription')}  ${color.bold(auth.workspaceId)}`)
+  console.log(`${color.dim('region')}        ${color.bold(auth.region)}`)
+  // Written only by logins that got an email claim, so older state and issuers without it stay quiet.
+  if (auth.email) console.log(`${color.dim('email')}         ${color.bold(auth.email)}`)
 }
