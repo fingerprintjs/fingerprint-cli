@@ -35,16 +35,15 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const { intent, chosen } = await resolveIntent(opts.intent)
   await loginWithBrowser({ intent })
-  // After login lands, since there's no auth state to attribute it to before that. Its own value so
-  // it isn't counted as having typed `login`/`signup`.
-  if (chosen) await trackCommand(`${intent}-choice`)
+  // After login lands, since there's no auth state to attribute it to before that.
+  if (chosen) await trackCommand(intent, 'prompt')
   console.log('Logged in successfully.')
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
   if (opts.chain !== false) {
     console.log('\nNext: integrate Fingerprint into the current project.')
-    await integrateCommand()
+    await integrateCommand({ chained: true })
   }
 }
 
@@ -69,7 +68,7 @@ export function logout() {
   // The key is the credential the event is sent with, so hand the snapshot over before dropping it.
   const auth = getAuthState()
   clearAuthState()
-  void trackCommand('logout', auth)
+  void trackCommand('logout', 'typed', auth)
   console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
 

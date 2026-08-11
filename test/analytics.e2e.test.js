@@ -29,7 +29,7 @@ async function runInRepo(api, args) {
   return res
 }
 
-const commands = (api) => api.analyticsEvents().map((e) => e.body.properties.command)
+const commands = (api) => api.analyticsEvents().map((e) => `${e.body.properties.command}:${e.body.properties.trigger}`)
 
 // `whoami` is the subject throughout: it's the cheapest command that needs no network of its own,
 // so anything the fake Management API sees came from the telemetry hook.
@@ -44,7 +44,10 @@ test('an authenticated command reports which command ran', async () => {
 
   const events = api.analyticsEvents()
   assert.equal(events.length, 1)
-  assert.deepEqual(events[0].body, { event: 'cli_command_run', properties: { command: 'whoami' } })
+  assert.deepEqual(events[0].body, {
+    event: 'cli_command_run',
+    properties: { command: 'whoami', trigger: 'typed' },
+  })
   assert.equal(events[0].authorization, 'Bearer mgmt_key_1')
 
   await api.close()
@@ -57,7 +60,7 @@ test('a chained run reports the step the command hook cannot see', async () => {
   // it and the hook only ever sees `default`.
   const res = await runInRepo(api, ['--yes'])
   assert.equal(res.status, 0, res.stderr)
-  assert.deepEqual(commands(api), ['integrate', 'default'])
+  assert.deepEqual(commands(api), ['integrate:chain', 'default:typed'])
 
   await api.close()
 })
@@ -68,7 +71,7 @@ test('an invoked command reports once, not once per call site', async () => {
   // Both the explicit call in integrateCommand and the hook name this one.
   const res = await runInRepo(api, ['integrate', '--yes'])
   assert.equal(res.status, 0, res.stderr)
-  assert.deepEqual(commands(api), ['integrate'])
+  assert.deepEqual(commands(api), ['integrate:typed'])
 
   await api.close()
 })
@@ -84,7 +87,7 @@ test('logout reports with the credential it just dropped', async () => {
   // Auth state is already gone by the time trackCommand runs, so this can only have come from the
   // snapshot passed in.
   const events = api.analyticsEvents()
-  assert.deepEqual(commands(api), ['logout'])
+  assert.deepEqual(commands(api), ['logout:typed'])
   assert.equal(events[0].authorization, 'Bearer mgmt_key_1')
 
   // And it still actually logged out: a follow-up run has no credential to report with.
@@ -102,7 +105,7 @@ test('a mistyped command is not reported as a bare run', async () => {
 
   const res = await runCli(['integrat'], { home })
   assert.equal(res.status, 1, res.stdout)
-  assert.deepEqual(commands(api), ['unknown'])
+  assert.deepEqual(commands(api), ['unknown:typed'])
 
   await api.close()
 })

@@ -35,8 +35,8 @@ let ranUnknownCommand = false
 
 // postAction, not preAction, so `login` has written credentials by the time we look for a workspace.
 program.hook('postAction', async (_thisCommand, actionCommand) => {
-  if (actionCommand !== program) return trackCommand(actionCommand.name())
-  await trackCommand(ranUnknownCommand ? 'unknown' : 'default')
+  if (actionCommand !== program) return trackCommand(actionCommand.name(), 'typed')
+  await trackCommand(ranUnknownCommand ? 'unknown' : 'default', 'typed')
 })
 
 program
@@ -97,7 +97,7 @@ async function defaultCommand(unknownCommand?: string) {
 
   // Authenticated (workspace already chosen in the browser) → integrate the repo in the current
   // directory (provisions keys + applies).
-  await integrateCommand()
+  await integrateCommand({ chained: true })
 }
 
 // A variadic optional positional lets the bare `fingerprint` run onboarding while still catching an
