@@ -3,7 +3,7 @@ import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { isCi } from '../utils/ci.js'
 import { integrateCommand } from './integrate.js'
-import { trackCommand } from '../analytics/track.js'
+import { pinAuthForTracking, track } from '../analytics/track.js'
 
 type Intent = 'login' | 'signup'
 
@@ -35,8 +35,10 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const { intent, chosen } = await resolveIntent(opts.intent)
   await loginWithBrowser({ intent })
-  // After login lands, since there's no auth state to attribute it to before that.
-  if (chosen) await trackCommand(intent, 'prompt')
+  // After login lands, since there's no auth state to attribute it to before that. The bare entry
+  // reaches login/signup through this answer, which `cli_command_run` can't show — it reports
+  // `default` for the whole run.
+  if (chosen) void track('cli_auth_intent_selected', { intent })
   console.log('Logged in successfully.')
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
@@ -65,10 +67,10 @@ export async function ensureAuth(): Promise<void> {
 // local credential. The key itself keeps existing in the workspace — revoke it from the dashboard's
 // API keys page if needed.
 export function logout() {
-  // The key is the credential the event is sent with, so hand the snapshot over before dropping it.
-  const auth = getAuthState()
+  // The key is the credential the event is sent with, so pin it before dropping it. The postAction
+  // hook reports `logout` after this returns, by which point the auth state is gone.
+  pinAuthForTracking(getAuthState())
   clearAuthState()
-  void trackCommand('logout', 'typed', auth)
   console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
 

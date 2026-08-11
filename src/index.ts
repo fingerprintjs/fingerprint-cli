@@ -7,7 +7,7 @@ import { getAuthState } from './auth/tokenStore.js'
 import { setCiContext, isCi } from './utils/ci.js'
 import { setVerbose } from './utils/verbose.js'
 import { setInteractive } from './utils/interactive.js'
-import { trackCommand } from './analytics/track.js'
+import { track } from './analytics/track.js'
 
 const program = new Command()
 program.name('fingerprint').description('Fingerprint CLI dashboard companion')
@@ -34,9 +34,11 @@ program.hook('preAction', () => {
 let ranUnknownCommand = false
 
 // postAction, not preAction, so `login` has written credentials by the time we look for a workspace.
+// The only place `cli_command_run` is emitted: commander resolved the name here, so `command` can
+// only ever be a real command. Routes commander never dispatched report as their own event.
 program.hook('postAction', async (_thisCommand, actionCommand) => {
-  if (actionCommand !== program) return trackCommand(actionCommand.name(), 'typed')
-  await trackCommand(ranUnknownCommand ? 'unknown' : 'default', 'typed')
+  if (actionCommand !== program) return track('cli_command_run', { command: actionCommand.name() })
+  await track('cli_command_run', { command: ranUnknownCommand ? 'unknown' : 'default' })
 })
 
 program
