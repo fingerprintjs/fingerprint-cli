@@ -33,13 +33,21 @@ program.hook('preAction', () => {
 // like a bare `fingerprint`.
 let ranUnknownCommand = false
 
-// postAction, not preAction, so `login` has written credentials by the time we look for a workspace.
-// The only place `cli_command_run` is emitted: commander resolved the name here, so `command` can
-// only ever be a real command. Routes commander never dispatched report as their own event.
-program.hook('postAction', async (_thisCommand, actionCommand) => {
-  if (actionCommand !== program) return track('cli_command_run', { command: actionCommand.name() })
-  await track('cli_command_run', { command: ranUnknownCommand ? 'unknown' : 'default' })
+// Recorded here and reported once the run settles. postAction would be tidier but is skipped when
+// the action throws, which lost exactly the commands worth measuring: integrate fails often enough
+// in real use that `login` and `default` were going missing entirely.
+let invokedCommand: string | undefined
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  invokedCommand = actionCommand === program ? undefined : actionCommand.name()
 })
+
+// After the run settles, so `login` has written credentials by the time we look for a workspace.
+async function reportRun(status: 'ok' | 'error'): Promise<void> {
+  await track('cli_command_run', {
+    command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
+    status,
+  })
+}
 
 program
   .command('login')
@@ -145,7 +153,11 @@ function editDistance(a: string, b: string): number {
   return dp[a.length][b.length]
 }
 
-program.parseAsync().catch((err) => {
-  console.error(err.message)
-  process.exitCode = 1
-})
+program
+  .parseAsync()
+  .then(() => reportRun(process.exitCode ? 'error' : 'ok'))
+  .catch(async (err) => {
+    console.error(err.message)
+    process.exitCode = 1
+    await reportRun('error')
+  })

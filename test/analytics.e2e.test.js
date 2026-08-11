@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 
 import {
@@ -51,7 +52,7 @@ test('an authenticated command reports which command ran', async () => {
   assert.equal(events.length, 1)
   assert.equal(events[0].body.event, 'cli_command_run')
   const { run_id, ...properties } = events[0].body.properties
-  assert.deepEqual(properties, { command: 'whoami', cli_flags: '' })
+  assert.deepEqual(properties, { command: 'whoami', cli_flags: '', status: 'ok' })
   assert.match(run_id, /^[0-9a-f-]{36}$/)
   assert.equal(events[0].authorization, 'Bearer mgmt_key_1')
 
@@ -121,6 +122,37 @@ test('a mistyped command is not reported as a bare run', async () => {
   assert.deepEqual(commands(api), ['unknown'])
 
   await api.close()
+})
+
+test('a command that fails still reports, with status error', async () => {
+  // Serves analytics and fails everything else, so `keys` throws after auth exists. This is what
+  // used to report nothing at all: a throw skips commander's postAction hook.
+  const events = []
+  const srv = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      if (req.url.startsWith('/analytics/events')) {
+        events.push(JSON.parse(body))
+        res.writeHead(202).end()
+        return
+      }
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end('{"error":{"message":"boom"}}')
+    })
+  })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+
+  const home = makeHome()
+  seedAuth(home, `http://127.0.0.1:${srv.address().port}`)
+  const res = await runCli(['keys', 'public'], { home })
+  assert.equal(res.status, 1)
+  assert.deepEqual(
+    events.map((e) => `${e.properties.command}:${e.properties.status}`),
+    ['keys:error']
+  )
+
+  srv.close()
 })
 
 test('an unauthenticated run sends nothing', async () => {
