@@ -16,6 +16,15 @@ export function pinAuthForTracking(auth: AuthState | null): void {
   pinnedAuth = auth
 }
 
+// Context a command discovers mid-run that belongs on this run's events. The Management API
+// allowlists event names (cli_command_run, cli_auth_intent_selected, cli_integrate_started), so a
+// detail with no event of its own — which key type was asked for, say — rides on the events there
+// are. Properties are not allowlisted, so these pass through.
+let runProperties: Record<string, unknown> = {}
+export function addRunProperties(properties: Record<string, unknown>): void {
+  runProperties = { ...runProperties, ...properties }
+}
+
 // Option names only. Values carry paths and keys, and never leave the machine.
 function cliFlags(): string {
   const names = process.argv
@@ -36,7 +45,10 @@ export async function track(event: string, properties: Record<string, unknown> =
       managementApiUrl: auth.managementApiUrl,
     }).request('/analytics/events', {
       method: 'POST',
-      body: JSON.stringify({ event, properties: { run_id: runId, cli_flags: cliFlags(), ...properties } }),
+      body: JSON.stringify({
+        event,
+        properties: { run_id: runId, cli_flags: cliFlags(), ...runProperties, ...properties },
+      }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
   } catch {
