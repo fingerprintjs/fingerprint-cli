@@ -43,30 +43,21 @@ blocks. Absence is dim; emphasized details (language, package manager, framework
 ●  tool     (magenta)       verbose-only agent tool call (+ bold name, dim detail)
 ```
 
-### Integrate animation (`src/wizard/spinner.ts` + `animations/integrate.ts`)
+### Integrate status line (`src/wizard/spinner.ts`)
 
-Live multi-line redraw — a live TTY only, so it's skipped under `--verbose`, `--ci`, and piped or
-redirected output (those get the plain `│ …` log lines instead). Frames follow the
-[ASCII Motion](https://ascii-motion.app) JSON export shape (pre-rasterized text lines + duration);
-authored for that tool so they can be redesigned there and swapped in.
+One line, redrawn in place. Live TTY only, so it's skipped under `--verbose`, `--ci`, and piped or
+redirected output (those get the plain `│ …` log lines instead).
 
 ```
-    ┌ · · · · · · · · · · · ┐
-         · ( · ) ·
-       ·     ◉     ·              ← brand-orange pulse (visitor “identify” rings)
-         · ( · ) ·
-    └ · · · · · · · · · · · ┘
-◇ Setting up the integration  Fingerprint re-identifies returning visitors even after…
+⠹ Setting up the integration  Fingerprint re-identifies returning visitors even after…
 ```
 
-- Animation: 8 frames, ~100–120ms each, concentric scan around a core `◉`
-- Status line: cyan `◇` + high-level activity + dim rotating tip (~every 5s)
-- Agent narration (`│ …`) prints above the block; the block is cleared and redrawn underneath
-- Cleared entirely when the agent finishes (success or error)
-
-**Replacing the art:** open [ascii-motion.app](https://ascii-motion.app), design a ~29×5 loop,
-Export → JSON (disable Include Empty Cells) or Text per frame, then update
-`src/wizard/animations/integrate.ts`. Keep height small so the status line stays on-screen.
+- Loader: brand-orange `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, one frame every 80ms. The cyan `◇` stays on static
+  `log.step` headers only.
+- Then the high-level activity, then a dim tip that rotates every 5s and is truncated to the
+  terminal width (dropped entirely under ~12 columns of room)
+- Agent narration (`│ …`) prints above the line; the line is cleared and redrawn underneath
+- Cleared when the agent finishes (success or error)
 
 ### Branded banner (`banner()` in `color.ts`) — styling example
 
@@ -426,5 +417,5 @@ via `console.error`, with `exitCode = 1`. No status symbol.
 2. **`banner(subtitle)`** — orange `Fingerprint · <subtitle>` before auth
 3. Auth / analysis / provision / apply go through `log.*` (step → rail detail → success/warn)
 4. Unsupported stacks end with `printFailure` (reason + recovery commands + docs + `└`)
-5. **Integrate ASCII animation** — multi-line “identify” pulse during the agent pass
-   (`src/wizard/animations/integrate.ts`)
+5. **Integrate status line** — brand-orange loader + activity + rotating tip during the agent pass
+   (`src/wizard/spinner.ts`)

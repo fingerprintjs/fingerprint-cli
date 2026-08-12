@@ -84,18 +84,18 @@ async function defaultCommand(unknownCommand?: string) {
   console.log()
   console.log(color.brand('   Welcome to the Fingerprint CLI.'))
   console.log()
-  console.log('   Fingerprint identifies every visitor to your app — returning, incognito, or')
-  console.log('   bot — with a device identifier that survives cleared cookies and new sessions.')
+  console.log(color.dim('   Fingerprint gives every visitor a device identifier that survives cleared'))
+  console.log(color.dim('   cookies, new sessions, and incognito, so you can tell real users from bots.'))
   console.log()
-  console.log('   This CLI sets it up end to end: it detects your stack, provisions API keys for')
-  console.log('   your workspace, and writes the integration into your code.')
+  console.log(color.dim('   This CLI sets it up end to end. It detects your stack, provisions API keys'))
+  console.log(color.dim('   for your workspace, and writes the integration into your code.'))
   console.log()
-  // A stored key isn't a live session, so check the token too — otherwise an expired login announces
+  // A stored key isn't a live session, so check the token too: otherwise an expired login announces
   // "Signed in" a few lines above the sign-in-required failure it's about to hit.
   console.log(
     auth?.managementApiKey && hasUsableSession()
-      ? color.dim(`   Signed in · workspace ${auth.workspaceId}`)
-      : color.dim('   Sign in or create an account to get started.')
+      ? `   Signed in · workspace ${auth.workspaceId}`
+      : '   Sign in or create an account to get started.'
   )
   console.log()
   const commands: [string, string][] = [
@@ -106,9 +106,9 @@ async function defaultCommand(unknownCommand?: string) {
     ['fingerprint --help', 'every command and flag'],
   ]
   const width = Math.max(...commands.map(([name]) => name.length))
-  console.log('   Commands')
+  console.log(color.dim('   Commands'))
   for (const [name, description] of commands) {
-    console.log(`     ${color.bold(name.padEnd(width))}  ${color.dim(description)}`)
+    console.log(`     ${name.padEnd(width)}  ${color.dim(description)}`)
   }
   console.log()
 
