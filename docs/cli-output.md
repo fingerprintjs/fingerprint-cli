@@ -45,7 +45,8 @@ blocks. Absence is dim; emphasized details (language, package manager, framework
 
 ### Integrate animation (`src/wizard/spinner.ts` + `animations/integrate.ts`)
 
-Live multi-line redraw (TTY, non-`--verbose` only). Frames follow the
+Live multi-line redraw — a live TTY only, so it's skipped under `--verbose`, `--ci`, and piped or
+redirected output (those get the plain `│ …` log lines instead). Frames follow the
 [ASCII Motion](https://ascii-motion.app) JSON export shape (pre-rasterized text lines + duration);
 authored for that tool so they can be redesigned there and swapped in.
 

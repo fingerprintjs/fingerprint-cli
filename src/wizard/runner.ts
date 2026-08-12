@@ -247,10 +247,11 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
 }
 
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with
-// the current high-level activity (the per-step tool calls are hidden); verbose mode and non-TTY
-// (CI) contexts skip the spinner and rely on the streamed/teed log lines instead.
+// the current high-level activity (the per-step tool calls are hidden); verbose mode, `--ci`, and
+// non-TTY (piped/redirected) contexts skip the spinner — its multi-line redraw only works on a live
+// TTY — and rely on the streamed/teed log lines instead.
 async function consume(response: unknown, initialMessage: string): Promise<boolean> {
-  const spinner = !isVerbose() && process.stdout.isTTY ? new Spinner() : null
+  const spinner = !isVerbose() && process.stdout.isTTY && !isCi() ? new Spinner() : null
   spinner?.start(initialMessage)
   let ok = false
   try {

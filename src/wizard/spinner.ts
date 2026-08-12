@@ -1,4 +1,5 @@
 import { color } from '../utils/color.js'
+import { isCi } from '../utils/ci.js'
 import { colorizeFrame, frameDurationMs, frameLines } from './asciiPlayer.js'
 import { INTEGRATE_ANIMATION } from './animations/integrate.js'
 
@@ -24,11 +25,18 @@ export class Spinner {
   private tip = 0
   private message = ''
   private height = 0 // animation lines + 1 status line, once painted
+  // The redraw addresses the cursor (`\x1b[nA`, `\x1b[2K`), which only means anything on a live TTY:
+  // piped, redirected, or CI output takes those escapes literally and fills with garbage. Callers are
+  // expected to skip the spinner there and log plain lines instead (see runner.consume); this guard
+  // keeps a caller that forgets from corrupting the stream. `print()` still appends its line, so the
+  // agent's narration survives either way.
+  private readonly live = Boolean(process.stdout.isTTY) && !isCi()
 
   start(message: string): void {
     if (this.timer || this.tipTimer) return
     this.message = message
     this.frame = 0
+    if (!this.live) return
     this.paint(true)
     this.scheduleFrame()
     this.tipTimer = setInterval(() => {
@@ -85,6 +93,7 @@ export class Spinner {
   }
 
   private paint(first: boolean): void {
+    if (!this.live) return
     const anim = colorizeFrame(frameLines(INTEGRATE_ANIMATION, this.frame))
     const status = this.statusLine()
     const block = [...anim, status]

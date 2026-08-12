@@ -199,14 +199,15 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   // Send brand-new users straight to sign-up (WorkOS AuthKit honors screen_hint); the confirmation
   // email resumes this same authorize flow, and the loopback below waits the whole time.
   if (intent === 'signup') authUrl.searchParams.set('screen_hint', 'sign-up')
-    const headless = headlessReason()
+
+  const headless = headlessReason()
   if (headless) {
     log.warn(`Heads up: ${headless}, and this login needs a browser on this machine — the sign-in`)
     log.info(`redirect goes to ${redirectUri}, which only exists here.`)
     log.info(`If your browser is elsewhere, forward the port first:`)
     log.info(`  ssh -L ${port}:127.0.0.1:${port} <this-host>`)
   }
-  
+
   log.step(intent === 'signup' ? 'Sign up' : 'Sign in')
   log.info('Opening your browser...')
   log.info(`  ${color.dim(`If it doesn't open, visit:`)}`)
@@ -237,6 +238,13 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
         client_id: cfg.oauthClientId,
         code_verifier: verifier,
       }),
+    }).catch((err: Error) => {
+      // Same network-level rejection as in discoverEndpoints — and worse here, since the user already
+      // finished in the browser, so a bare "fetch failed" gives no hint that retrying is all it takes.
+      debugLog(`token exchange fetch failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
+      throw new Error(
+        `Couldn’t reach the login service to finish signing in. Check your connection and run \`fingerprint ${intent}\` again.`
+      )
     })
     if (!tokenRes.ok) {
       throw new Error(`Login failed while exchanging the code (HTTP ${tokenRes.status}). Run \`fingerprint ${intent}\` again.`)

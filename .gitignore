@@ -2,6 +2,10 @@
 node_modules/
 .pnp
 .pnp.js
+# pnpm is the package manager (see "packageManager" in package.json); pnpm-lock.yaml is the only
+# lockfile we track. An npm run here would otherwise leave a second, divergent lockfile behind.
+package-lock.json
+yarn.lock
 
 # --- Build Outputs ---
 # Only ignore these if you use a build step (TypeScript, Babel, etc.)

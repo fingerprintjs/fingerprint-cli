@@ -79,7 +79,10 @@ export const liveJwt = () => fakeJwt({ sub: 'srv_1-mgmt_key_1-us', exp: Math.flo
 
 // A fake OAuth authorization server: discovery + the refresh_token grant, which is all the CLI's
 // token refresh touches. `rt_dead` is rejected the way a revoked/expired refresh token would be.
-export function startAuthServer() {
+// `deadTokenEndpoint` advertises a closed port as the token endpoint, so discovery succeeds and the
+// grant that follows fails at the network level (offline / DNS / proxy), which is a different code
+// path from any HTTP status.
+export function startAuthServer({ deadTokenEndpoint = false } = {}) {
   const grants = []
   let base = ''
   const server = createServer((req, res) => {
@@ -92,7 +95,9 @@ export function startAuthServer() {
         res.end(JSON.stringify(data))
       }
       if (path === '/.well-known/oauth-authorization-server') {
-        return json(200, { authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` })
+        // Port 1 is reserved and never listening, so a POST there rejects instead of answering.
+        const tokenEndpoint = deadTokenEndpoint ? 'http://127.0.0.1:1/token' : `${base}/token`
+        return json(200, { authorization_endpoint: `${base}/authorize`, token_endpoint: tokenEndpoint })
       }
       if (path === '/token') {
         const params = Object.fromEntries(new URLSearchParams(body))

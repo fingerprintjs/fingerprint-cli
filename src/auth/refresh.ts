@@ -14,8 +14,19 @@ import { getAuthState, updateAuthState } from './tokenStore.js'
 // Renew slightly early so a token that passes the check is still valid when the request lands.
 const EXPIRY_SKEW_MS = 60_000
 
-const LOGGED_OUT = 'Not logged in. Run: fingerprint login'
-const SESSION_EXPIRED = 'Your session expired. Run: fingerprint login'
+const LOGIN_HINT = 'Run: fingerprint login'
+const LOGGED_OUT = `Not logged in. ${LOGIN_HINT}`
+const SESSION_EXPIRED = `Your session expired. ${LOGIN_HINT}`
+// A dead connection is not a dead session: renewing needs the network, and so would logging in again,
+// so this case says what actually went wrong instead of sending the user at a browser round-trip.
+const UNREACHABLE = 'Couldn’t reach the login service to renew your session. Check your connection and try again.'
+
+// The messages above carry their own `Run: …` hint, for callers that surface a bare message (the
+// top-level handler in index.ts). Callers that render their own recovery list strip it so the same
+// instruction isn't printed twice.
+export function withoutLoginHint(message: string): string {
+  return message.replace(` ${LOGIN_HINT}`, '')
+}
 
 // Read expiry off the token itself rather than storing it separately — one source of truth, and it
 // also covers auth state written before refresh support existed. A token we can't read an `exp` from
@@ -28,6 +39,16 @@ function isSpent(token: string): boolean {
   } catch {
     return false
   }
+}
+
+// Can the saved credentials still produce a live token without the user logging in again — either a
+// token that hasn't expired, or a spent one we hold a refresh token for? Mirrors the two throw
+// conditions below, without the network call. Lets the welcome message avoid announcing "signed in"
+// for credentials that will fail the moment anything uses them.
+export function hasUsableSession(): boolean {
+  const auth = getAuthState()
+  if (!auth?.accessToken) return false
+  return !isSpent(auth.accessToken) || Boolean(auth.refreshToken)
 }
 
 // Returns an access token that is valid now, refreshing it first if needed.
@@ -47,6 +68,11 @@ export async function getFreshAccessToken(): Promise<string> {
       refresh_token: auth.refreshToken,
       client_id: cfg.oauthClientId,
     }),
+  }).catch((err: Error) => {
+    // Network-level failure: rejects rather than returning a response, so it never reaches the
+    // !res.ok branch below and would otherwise surface as a bare "fetch failed".
+    debugLog(`token refresh fetch failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
+    throw new Error(UNREACHABLE)
   })
 
   // A refresh token that's expired or revoked comes back 400 — nothing to retry, the user has to log

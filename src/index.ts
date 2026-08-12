@@ -4,6 +4,7 @@ import { login, signup, startAuth, logout, whoami } from './commands/auth.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
 import { getAuthState } from './auth/tokenStore.js'
+import { hasUsableSession } from './auth/refresh.js'
 import { setCiContext, isCi } from './utils/ci.js'
 import { setVerbose } from './utils/verbose.js'
 import { setInteractive } from './utils/interactive.js'
@@ -76,19 +77,38 @@ async function defaultCommand(unknownCommand?: string) {
 
   const auth = getAuthState()
 
-  // Welcome message
+  // Welcome message: what Fingerprint does, what this CLI does about it, and where to go next.
+  // Deliberately not a step list — the only step the user takes is answering the account prompt
+  // below; signing up, picking a workspace and region all happen in the browser after that.
   printFiglet()
   console.log()
   console.log(color.brand('   Welcome to the Fingerprint CLI.'))
   console.log()
-  console.log('   To get started:')
-  const tips = [
-    'Sign up or log in with your email.',
-    'Create or select a workspace.',
-    'Integrate Fingerprint into your project.',
+  console.log('   Fingerprint identifies every visitor to your app — returning, incognito, or')
+  console.log('   bot — with a device identifier that survives cleared cookies and new sessions.')
+  console.log()
+  console.log('   This CLI sets it up end to end: it detects your stack, provisions API keys for')
+  console.log('   your workspace, and writes the integration into your code.')
+  console.log()
+  // A stored key isn't a live session, so check the token too — otherwise an expired login announces
+  // "Signed in" a few lines above the sign-in-required failure it's about to hit.
+  console.log(
+    auth?.managementApiKey && hasUsableSession()
+      ? color.dim(`   Signed in · workspace ${auth.workspaceId}`)
+      : color.dim('   Sign in or create an account to get started.')
+  )
+  console.log()
+  const commands: [string, string][] = [
+    ['fingerprint', 'this guided setup, start to finish'],
+    ['fingerprint integrate', 'add Fingerprint to the repo in this directory'],
+    ['fingerprint keys', 'print a public or secret API key'],
+    ['fingerprint whoami', 'show the signed-in workspace'],
+    ['fingerprint --help', 'every command and flag'],
   ]
-  for (const [i, tip] of tips.entries()) {
-    console.log(`${color.dim(`   ${i + 1}.`)} ${tip}`)
+  const width = Math.max(...commands.map(([name]) => name.length))
+  console.log('   Commands')
+  for (const [name, description] of commands) {
+    console.log(`     ${color.bold(name.padEnd(width))}  ${color.dim(description)}`)
   }
   console.log()
 
