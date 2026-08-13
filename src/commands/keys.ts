@@ -3,6 +3,7 @@ import { ManagementClient } from '../api/management.js'
 import { fetchPublicKey } from '../api/keys.js'
 import { requireAuth } from '../utils/session.js'
 import { isCi } from '../utils/ci.js'
+import { addRunProperties } from '../analytics/track.js'
 
 // `fingerprint keys [type]` — fetch an API key for the logged-in workspace and print it. Use this when
 // you just need a credential to copy; `fingerprint integrate` is what writes keys into your .env files
@@ -12,6 +13,10 @@ export async function keysCommand(type?: string) {
   const client = new ManagementClient()
 
   const kind = type ?? (await pickKind())
+  // Which key was asked for is invisible upstream: `cli_command_run` reports `keys` either way, and
+  // `cli_flags` collects only `--options`, never the positional. The Management API allowlists event
+  // names, so this rides along as a property of this run's events rather than as one of its own.
+  addRunProperties({ key_type: kind, key_type_prompted: type === undefined })
 
   if (kind === 'public') {
     const key = await fetchPublicKey(client)

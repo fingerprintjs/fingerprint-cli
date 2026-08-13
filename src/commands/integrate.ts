@@ -4,9 +4,10 @@ import { getFreshAccessToken, withoutLoginHint } from '../auth/refresh.js'
 import { integrateProject } from '../wizard/runner.js'
 import { log, printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
+import { track } from '../analytics/track.js'
 
 export async function integrateCommand(
-  opts: { path?: string; analyze?: boolean; yes?: boolean; skipHeading?: boolean } = {}
+  opts: { path?: string; analyze?: boolean; yes?: boolean; skipHeading?: boolean; chained?: boolean } = {}
 ) {
   const root = resolve(opts.path ?? process.cwd())
 
@@ -20,6 +21,21 @@ export async function integrateCommand(
   // means the integrate phase never starts, so it shouldn't announce itself first.
   // (`--analyze` is a read-only report and stays available to logged-out users.)
   if (willApply && !(await settleSession())) return
+
+  // Every apply reports here, invoked or chained. `cli_command_run` misses the chained ones
+  // entirely — commander never dispatched them — so this is the one place the real integrate
+  // count lives. The detected stack rides along: which frameworks people actually point this at
+  // is what decides where the next curated skill goes. Framework/skill ids only — never paths.
+  if (willApply) {
+    void track('cli_integrate_started', {
+      chained: Boolean(opts.chained),
+      frontend: analysis.frontend?.framework ?? '',
+      backend: analysis.backend?.framework ?? '',
+      skills: analysis.skills.join(','),
+      monorepo: analysis.monorepo,
+      app_count: analysis.apps.length,
+    })
+  }
 
   // Phase badge opens the integrate sequence (analyze → apply). Callers that already printed it
   // (e.g. login chaining into integrate) pass `skipHeading`.

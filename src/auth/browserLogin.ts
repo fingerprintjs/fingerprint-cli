@@ -254,6 +254,11 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
     // The token subject encodes three dash-separated parts — `serverApiKey-managementApiKey-region` —
     // exactly the format the MCP server reads (region may itself contain dashes, so keep the remainder).
     // The workspace id rides in the `urn:fingerprint:sub_id` claim.
+    //
+    // Splitting on the first two dashes only works because API keys never contain one: mgmt-api mints
+    // them with a nanoid over a strictly alphanumeric alphabet (`common/src/helpers/generate.ts`). If
+    // that alphabet ever gains `-` or `_` (the nanoid default has both), login starts failing here with
+    // "not in the expected format" and the cause will not be obvious from this side.
     const claims = decodeJwtPayload(token.access_token)
     const subject = typeof claims.sub === 'string' ? claims.sub : ''
     const firstDash = subject.indexOf('-')
