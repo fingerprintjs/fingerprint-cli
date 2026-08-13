@@ -8,6 +8,7 @@ import { provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { color } from '../utils/color.js'
+import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
 import { assertAllowedPackage, installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes, isCi } from '../utils/ci.js'
@@ -368,8 +369,13 @@ function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'text' && block.text?.trim()) {
         const text = block.text.trim()
-        if (spinner) (spinner.print(`${color.dim('│')} ${text}`), debugLog(`info  ${text}`))
-        else log.info(text)
+        // Rendered for the console, raw for the debug log — a log file full of escape codes is worse
+        // to read than the markdown was. Railed per line, the way `log.info` does it: a multi-line
+        // block prefixed once leaves every line after the first hanging off the rail.
+        if (spinner) {
+          for (const line of renderMarkdown(text).split('\n')) spinner.print(`${color.dim('│')} ${line}`)
+          debugLog(`info  ${text}`)
+        } else log.info(renderMarkdown(text))
       }
       // Per-step tool calls (Read/Glob/Edit/...) are noisy; only stream them to the console with
       // --verbose. Otherwise update the spinner's high-level activity, and always tee the call to
