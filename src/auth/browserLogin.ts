@@ -3,6 +3,8 @@ import { createServer, type Server } from 'node:http'
 import { AddressInfo } from 'node:net'
 import open from 'open'
 import { OAUTH_SCOPES, resolveConfig } from '../config/config.js'
+import { color } from '../utils/color.js'
+import { log } from '../wizard/log.js'
 import { debugLog } from '../utils/log-file.js'
 import { saveAuthState } from './tokenStore.js'
 
@@ -43,6 +45,9 @@ export interface TokenResponse {
   // Only returned when `offline_access` is among the granted scopes. auth/refresh.ts trades it for a
   // new access token once the current one expires.
   refresh_token?: string
+  // Returned for the `openid` scope. The access token carries no identity claims, and neither issuer
+  // publishes a userinfo endpoint, so this is the only place the user's email is available.
+  id_token?: string
   token_type?: string
   expires_in?: number
   scope?: string
@@ -69,7 +74,12 @@ export function decodeJwtPayload(token: string): Record<string, unknown> {
 
 export async function discoverEndpoints(issuer: string): Promise<OAuthServerMetadata> {
   const url = `${issuer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`
-  const res = await fetch(url)
+  // A network-level failure (offline, DNS, proxy, TLS) rejects rather than returning a response, so
+  // it never reaches the !res.ok branch below — without this it surfaces as a bare "fetch failed".
+  const res = await fetch(url).catch((err: Error) => {
+    debugLog(`discovery fetch failed for ${url}: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
+    throw new Error(`Couldn’t reach the login service at ${issuer}. Check your connection and try again.`)
+  })
   if (!res.ok) {
     throw new Error(`Couldn’t reach the login service (HTTP ${res.status}). Please try again in a few minutes.`)
   }
@@ -192,20 +202,23 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
 
   const headless = headlessReason()
   if (headless) {
-    console.log(`\nHeads up: ${headless}, and this login needs a browser on this machine — the sign-in`)
-    console.log(`redirect goes to ${redirectUri}, which only exists here.`)
-    console.log(`If your browser is elsewhere, forward the port first:\n  ssh -L ${port}:127.0.0.1:${port} <this-host>`)
+    log.warn(`Heads up: ${headless}, and this login needs a browser on this machine — the sign-in`)
+    log.info(`redirect goes to ${redirectUri}, which only exists here.`)
+    log.info(`If your browser is elsewhere, forward the port first:`)
+    log.info(`  ssh -L ${port}:127.0.0.1:${port} <this-host>`)
   }
 
-  console.log(`\nOpening your browser to ${intent === 'signup' ? 'sign up' : 'sign in'}...`)
-  console.log(`If it doesn't open, visit:\n  ${authUrl.toString()}\n`)
+  log.step(intent === 'signup' ? 'Sign up' : 'Sign in')
+  log.info('Opening your browser...')
+  log.info(`  ${color.dim(`If it doesn't open, visit:`)}`)
+  log.info(`  ${color.dim(authUrl.toString())}`)
   await open(authUrl.toString()).catch(() => {
     // Browser couldn't be opened automatically; the printed URL is the fallback.
   })
   if (intent === 'signup') {
-    console.log('Check your inbox and click the confirmation link, then finish setup in the browser.')
+    log.info('Check your inbox and click the confirmation link, then finish setup in the browser.')
   }
-  console.log('Waiting for you to finish in the browser — come back here when you’re done...')
+  log.info('\nWaiting for you to finish in the browser. Please return here when you’re done...')
 
   try {
     const code = await waitForCode.catch((e: Error) => {
@@ -225,6 +238,13 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
         client_id: cfg.oauthClientId,
         code_verifier: verifier,
       }),
+    }).catch((err: Error) => {
+      // Same network-level rejection as in discoverEndpoints — and worse here, since the user already
+      // finished in the browser, so a bare "fetch failed" gives no hint that retrying is all it takes.
+      debugLog(`token exchange fetch failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
+      throw new Error(
+        `Couldn’t reach the login service to finish signing in. Check your connection and run \`fingerprint ${intent}\` again.`
+      )
     })
     if (!tokenRes.ok) {
       throw new Error(`Login failed while exchanging the code (HTTP ${tokenRes.status}). Run \`fingerprint ${intent}\` again.`)
@@ -260,6 +280,14 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
       debugLog('login returned no refresh_token — session will not survive access-token expiry')
     }
 
+    // Identity claims live in the id_token, not the access token. Optional throughout: an issuer that
+    // declines the `email` scope just means `whoami` omits the line. The claim names are logged so a
+    // missing email (or a workspace name, if one is ever added upstream) is diagnosable from a run log.
+    const idClaims = token.id_token ? decodeJwtPayload(token.id_token) : {}
+    debugLog(`id_token claims: ${Object.keys(idClaims).join(', ') || '(no id_token)'}`)
+    const email = typeof idClaims.email === 'string' ? idClaims.email : undefined
+    if (!email) debugLog('login returned no email claim — check the `email` scope in the WorkOS environment')
+
     saveAuthState({
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
@@ -267,6 +295,7 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
       managementApiKey,
       workspaceId,
       region,
+      email,
       managementApiUrl: cfg.managementApiUrl,
     })
     return { serverApiKey, managementApiKey, workspaceId, region }

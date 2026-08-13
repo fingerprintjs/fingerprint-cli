@@ -17,9 +17,13 @@ export interface AuthState {
   // Workspace-scoped Management API key (extracted from the access token's `sub`), used as the Bearer
   // for the public Management API — NOT for the gateway. Kept separately from the access token.
   managementApiKey: string
-  // The workspace the key is scoped to, and its agent region ('us'|'eu'|'ap') for app env config.
+  // The subscription the key is scoped to (the `sub_…` id), and its agent region ('us'|'eu'|'ap')
+  // for app env config.
   workspaceId: string
   region: string
+  // Signed-in user's email, from the login id_token. Optional: absent from state written before
+  // email support, and when the issuer returns no email claim.
+  email?: string
   // Public Management API base URL for this login's environment (kept so the CLI keeps talking to the
   // same environment the user logged into).
   managementApiUrl: string

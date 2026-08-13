@@ -43,7 +43,9 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
 // and without it a session dies minutes after login with no way back but another browser round-trip
 // (see auth/refresh.ts). The Management key travels in the token subject (not via scopes), and the LLM
 // gateway accepts any valid token from the issuer (its scope check is unset).
-export const OAUTH_SCOPES = ['openid', 'offline_access']
+// `email` is a standard OIDC scope both issuers advertise in `scopes_supported`; it puts the user's
+// email in the id_token, which is the only source for it (neither issuer publishes userinfo).
+export const OAUTH_SCOPES = ['openid', 'offline_access', 'email']
 
 const DEFAULT_ENVIRONMENT: Environment = 'production'
 

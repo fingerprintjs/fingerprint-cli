@@ -1,7 +1,9 @@
-import { select } from '@inquirer/prompts'
+import { select } from '../utils/prompt.js'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { isCi } from '../utils/ci.js'
+import { color } from '../utils/color.js'
+import { log } from '../wizard/log.js'
 import { integrateCommand } from './integrate.js'
 import { pinAuthForTracking, track } from '../analytics/track.js'
 
@@ -34,18 +36,20 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const { intent, chosen } = await resolveIntent(opts.intent)
-  await loginWithBrowser({ intent })
+  const result = await loginWithBrowser({ intent })
   // After login lands, since there's no auth state to attribute it to before that. The bare entry
   // reaches login/signup through this answer, which `cli_command_run` can't show — it reports
   // `default` for the whole run.
   if (chosen) void track('cli_auth_intent_selected', { intent })
-  console.log('Logged in successfully.')
+  log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
   if (opts.chain !== false) {
-    console.log('\nNext: integrate Fingerprint into the current project.')
-    await integrateCommand({ chained: true })
+    // Open the phase badge here, not before Sign in: signing in isn't integrating, and a failure
+    // during login would otherwise print under an `integrate` heading it has nothing to do with.
+    log.heading('integrate')
+    await integrateCommand({ skipHeading: true, chained: true })
   }
 }
 
@@ -71,11 +75,14 @@ export function logout() {
   // hook reports `logout` after this returns, by which point the auth state is gone.
   pinAuthForTracking(getAuthState())
   clearAuthState()
-  console.log('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
+  log.info('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
 
 export function whoami() {
   const auth = getAuthState()
   if (!auth?.managementApiKey) throw new Error('Not logged in')
-  console.log(JSON.stringify({ workspaceId: auth.workspaceId, region: auth.region }, null, 2))
+  console.log(`${color.dim('subscription')}  ${color.bold(auth.workspaceId)}`)
+  console.log(`${color.dim('region')}        ${color.bold(auth.region)}`)
+  // Written only by logins that got an email claim, so older state and issuers without it stay quiet.
+  if (auth.email) console.log(`${color.dim('email')}         ${color.bold(auth.email)}`)
 }

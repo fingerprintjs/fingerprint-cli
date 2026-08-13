@@ -1,56 +1,51 @@
 import { color } from '../utils/color.js'
+import { isCi } from '../utils/ci.js'
 
-// A dependency-free single-line spinner for the long agent pass. In default (non-verbose) mode the
-// per-step tool calls are hidden, so a few minutes of work can read as "stuck". This keeps a live
-// line showing the current high-level activity plus a rotating Fingerprint tip, so a quiet stretch
-// reads as "still working, on track" rather than frozen. Verbose mode streams real tool lines
-// instead and never uses this.
-
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-// Shown as a dim, ephemeral suffix that cycles every few seconds — gives the user something to read
-// and makes elapsed time visible. Purely cosmetic; nothing here is load-bearing.
-const TIPS = [
-  'Fingerprint re-identifies returning visitors even after they clear cookies or go incognito.',
-  'Smart Signals flag bots, VPNs, tampering, and incognito — all verified server-side.',
-  'A visitor ID stays stable for months, so repeat fraud is visible across sessions.',
-  'Always verify the event server-side: a browser can be spoofed, the Server API cannot.',
-  'The public key is safe in the browser; the secret key stays server-side only.',
-]
+// Loading UI for the long agent pass. In default (non-verbose) mode the per-step tool calls are
+// hidden, so a few minutes of work can read as "stuck". This keeps one live line: a loader and the
+// current high-level activity. Verbose mode streams real tool lines instead and never uses this.
 
 const FRAME_MS = 80
-const TIP_EVERY = Math.round(5000 / FRAME_MS) // rotate the tip ~every 5s
+
+const LOADER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
 export class Spinner {
   private timer: ReturnType<typeof setInterval> | null = null
   private frame = 0
-  private ticks = 0
-  private tip = 0
   private message = ''
+  private painted = false
+  // Redrawing in place (`\r`, `\x1b[K`) only means anything on a live TTY: piped, redirected, or CI
+  // output takes those escapes literally. Callers are expected to skip the spinner there and log
+  // plain lines instead (see runner.consume); this guard keeps a caller that forgets from corrupting
+  // the stream. `print()` still appends its line, so the agent's narration survives either way.
+  private readonly live = Boolean(process.stdout.isTTY) && !isCi()
 
   start(message: string): void {
     if (this.timer) return
     this.message = message
-    this.render()
+    this.frame = 0
+    if (!this.live) return
+    // Blank line above the live line, so the loader doesn't sit flush against the step it follows.
+    // Written once here rather than in paint(): the redraw only ever rewrites its own line.
+    process.stdout.write('\n')
+    this.paint()
     this.timer = setInterval(() => {
-      this.frame = (this.frame + 1) % FRAMES.length
-      this.ticks++
-      if (this.ticks % TIP_EVERY === 0) this.tip = (this.tip + 1) % TIPS.length
-      this.render()
+      this.frame++
+      this.paint()
     }, FRAME_MS)
     this.timer.unref?.() // never keep the process alive for the spinner
   }
 
   setMessage(message: string): void {
     this.message = message
-    if (this.timer) this.render()
+    if (this.painted) this.paint()
   }
 
-  // Print a line above the spinner without leaving artifacts on the live line.
+  // Print a line above the live line without leaving artifacts.
   print(line: string): void {
     this.clear()
     process.stdout.write(line + '\n')
-    if (this.timer) this.render()
+    this.paint()
   }
 
   stop(): void {
@@ -62,22 +57,21 @@ export class Spinner {
   }
 
   private clear(): void {
+    if (!this.painted) return
     process.stdout.write('\r\x1b[K')
+    this.painted = false
   }
 
-  private render(): void {
-    // Measure with plain strings (color codes would break the width math), then colorize. The tip
-    // is truncated to the remaining columns so the line never wraps and breaks the \r redraw.
-    const head = `${FRAMES[this.frame]} ${this.message}`
-    const cols = process.stdout.columns || 80
-    const room = cols - head.length - 2
-    let line = `${color.cyan(FRAMES[this.frame])} ${this.message}`
-    if (room > 12) {
-      const raw = `  ${TIPS[this.tip]}`
-      const tip = raw.length > room ? raw.slice(0, room - 1) + '…' : raw
-      line += color.dim(tip)
-    }
-    process.stdout.write(`\r\x1b[K${line}`)
+  private paint(): void {
+    if (!this.live) return
+    // No trailing newline: the cursor stays on this line so the next paint overwrites it.
+    process.stdout.write(`\r\x1b[K${this.statusLine()}`)
+    this.painted = true
+  }
+
+  private statusLine(): string {
+    const glyph = LOADER_FRAMES[this.frame % LOADER_FRAMES.length]
+    return `${color.brand(glyph)} ${color.dim(this.message)}`
   }
 }
 

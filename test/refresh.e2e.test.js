@@ -80,10 +80,37 @@ test('an expired token with no refresh token fails before provisioning touches t
   await Promise.all([auth.close(), gw.close()])
 
   assert.notEqual(res.status, 0, 'expected a non-zero exit')
-  assert.match(res.stderr + res.stdout, /session expired/i)
+  // The dead session is reported as the styled failure block: the specific reason, then the recovery.
+  const out = res.stderr + res.stdout
+  assert.match(out, /session expired/i)
+  assert.match(out, /fingerprint login/)
   // The point of the pre-flight: no keys provisioned, no files written, nothing to clean up.
   assert.ok(!existsSync(join(repo, 'web', '.env')), 'provisioned keys despite a dead session')
   assert.equal(gw.calls(), 0, 'called the gateway with a dead token')
+})
+
+// A refresh that can't reach the network rejects instead of returning a response, so it skips the
+// HTTP-status branch. It used to surface as a bare "fetch failed"; it must name the real problem and
+// must not be mistaken for a dead session, which would send the user at a browser round-trip that
+// can't work either.
+test('a refresh that cannot reach the login service says so, without claiming the session died', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url, { accessToken: expiredJwt(), refreshToken: 'rt_1' })
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  const auth = await startAuthServer({ deadTokenEndpoint: true })
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// should never be written\n')
+
+  const res = await runCli(['integrate', '--yes'], { home, cwd: repo, env: integrateEnv(auth, gw, skillsDir) })
+  await Promise.all([auth.close(), gw.close()])
+
+  assert.notEqual(res.status, 0, 'expected a non-zero exit')
+  const out = res.stderr + res.stdout
+  assert.doesNotMatch(out, /fetch failed/i)
+  // The renew wording, not discoverEndpoints' — discovery answered fine here; the grant is what failed.
+  assert.match(out, /reach the login service to renew your session/i)
+  assert.doesNotMatch(out, /session expired/i)
+  assert.equal(gw.calls(), 0, 'called the gateway without a live token')
 })
 
 test('a token that is still valid is used as-is, with no refresh round-trip', async () => {

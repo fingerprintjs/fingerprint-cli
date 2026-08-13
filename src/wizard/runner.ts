@@ -3,11 +3,12 @@ import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, formatAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
+import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
 import { provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { color } from '../utils/color.js'
+import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
 import { assertAllowedPackage, installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes, isCi } from '../utils/ci.js'
@@ -164,7 +165,7 @@ async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promis
     }
 
     const target = analyzeRepo(dir)
-    console.log(formatAnalysis(target))
+    printAnalysis(target)
     if (!target.skills.length && !target.frontend && !target.backend) {
       log.warn('No supported app detected there — skipping.')
       continue
@@ -247,10 +248,11 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
 }
 
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with
-// the current high-level activity (the per-step tool calls are hidden); verbose mode and non-TTY
-// (CI) contexts skip the spinner and rely on the streamed/teed log lines instead.
+// the current high-level activity (the per-step tool calls are hidden); verbose mode, `--ci`, and
+// non-TTY (piped/redirected) contexts skip the spinner — its multi-line redraw only works on a live
+// TTY — and rely on the streamed/teed log lines instead.
 async function consume(response: unknown, initialMessage: string): Promise<boolean> {
-  const spinner = !isVerbose() && process.stdout.isTTY ? new Spinner() : null
+  const spinner = !isVerbose() && process.stdout.isTTY && !isCi() ? new Spinner() : null
   spinner?.start(initialMessage)
   let ok = false
   try {
@@ -367,8 +369,13 @@ function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'text' && block.text?.trim()) {
         const text = block.text.trim()
-        if (spinner) (spinner.print(`${color.dim('│')} ${text}`), debugLog(`info  ${text}`))
-        else log.info(text)
+        // Rendered for the console, raw for the debug log — a log file full of escape codes is worse
+        // to read than the markdown was. Railed per line, the way `log.info` does it: a multi-line
+        // block prefixed once leaves every line after the first hanging off the rail.
+        if (spinner) {
+          for (const line of renderMarkdown(text).split('\n')) spinner.print(`${color.dim('│')} ${line}`)
+          debugLog(`info  ${text}`)
+        } else log.info(renderMarkdown(text))
       }
       // Per-step tool calls (Read/Glob/Edit/...) are noisy; only stream them to the console with
       // --verbose. Otherwise update the spinner's high-level activity, and always tee the call to
