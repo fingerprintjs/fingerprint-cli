@@ -106,3 +106,20 @@ and how it looks today (status symbols, colors, auth, integrate, errors).
 - `FINGERPRINT_SKILLS_REPO` — skills repo to fetch (default: `https://github.com/fingerprintjs/skills`)
 - `FINGERPRINT_SKILLS_DIR` — use a local skills checkout instead of fetching (for skill development)
 - `FINGERPRINT_GATEWAY_URL` — override the hosted LLM gateway (for local gateway dev)
+
+## License
+
+The Fingerprint CLI is licensed under the [MIT License](LICENSE).
+
+That covers the CLI's own source code. It does **not** cover the CLI's dependencies, which keep their
+own terms. In particular, the agentic capabilities are powered by
+[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk),
+which is **not** open source — Claude is served under Anthropic's commercial license:
+
+> © Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here:
+> https://code.claude.com/docs/en/legal-and-compliance
+
+So using the wizard means accepting Anthropic's Legal Agreements in addition to the MIT license
+granted here. Every other production dependency is permissively licensed (MIT, ISC, BSD, Unlicense).
+
+See [NOTICES.txt](NOTICES.txt) for the full third-party attribution list.
