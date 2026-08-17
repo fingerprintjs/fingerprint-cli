@@ -1,4 +1,4 @@
-import { color, isColorEnabled } from './color.js'
+import { banner, color, isColorEnabled } from './color.js'
 
 // Plain strings (not a template literal) so `/`, `\`, and `` ` `` in the art stay literal.
 const BANNER = `
@@ -53,6 +53,15 @@ export function printFiglet(): void {
   const lines = BANNER.split('\n')
   const contentWidth = Math.max(...lines.map((l) => l.length))
   const innerWidth = contentWidth + PAD * 2
+
+  // Every row here is a fixed 90 columns (84 of art plus the frame), and none of it can reflow: a
+  // narrower terminal wraps each row onto the next and the border comes apart mid-character. Show the
+  // one-line banner instead. `columns` is undefined when stdout isn't a TTY, where the art is just as
+  // wrong in a pipe or a log file, so the fallback covers that too.
+  if ((process.stdout.columns ?? 0) < innerWidth) {
+    banner(BOTTOM_LABEL.trim())
+    return
+  }
 
   // Corner art: ╭─                        ─╮
   const topGap = Math.max(1, innerWidth - 4)
