@@ -15,15 +15,13 @@ jobs:
     name: 'Build project, run CI checks and publish new release'
     uses: fingerprintjs/dx-team-toolkit/.github/workflows/release-sdk-changesets.yml@v1
     with:
-      appId: ${{ vars.APP_ID }}
-      runnerAppId: ${{ vars.RUNNER_APP_ID }}
+      client-id: ${{ vars.APP_CLIENT_ID }}
+      runner-client-id: ${{ vars.RUNNER_APP_CLIENT_ID }}
       version-command: pnpm changeset:version
       publish-command: pnpm changeset:publish
       language: node
       language-version: 24
       prepare-command: pnpm build
-      # The `fingerprint` package already exists on npm, so a trusted publisher can be
-      # registered up front and the NPM_AUTH_TOKEN bootstrap publish is not needed.
       useTrustedPublishing: true
     secrets:
       APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
