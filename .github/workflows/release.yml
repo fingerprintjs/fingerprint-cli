@@ -21,7 +21,7 @@ jobs:
       publish-command: pnpm changeset:publish
       language: node
       language-version: 24
-      prepare-command: pnpm build
+      prepare-command: pnpm test
       useTrustedPublishing: true
     secrets:
       APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
