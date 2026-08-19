@@ -1,12 +1,28 @@
 {
   "name": "fingerprint",
   "version": "0.0.2",
-  "description": "Fingerprint.com CLI",
+  "description": "Add Fingerprint device intelligence to your app in one command",
+  "keywords": [
+    "fingerprint",
+    "cli",
+    "device intelligence",
+    "device fingerprint",
+    "identification",
+    "fraud",
+    "fraud detection",
+    "fraud prevention",
+    "bot detection"
+  ],
   "license": "MIT",
   "type": "module",
+  "author": "FingerprintJS, Inc (https://fingerprint.com)",
+  "homepage": "https://github.com/fingerprintjs/fingerprint-cli#readme",
+  "bugs": {
+    "url": "https://github.com/fingerprintjs/fingerprint-cli/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/fingerprintjs/fingerprint-cli"
+    "url": "git+https://github.com/fingerprintjs/fingerprint-cli.git"
   },
   "bin": {
     "fingerprint": "./dist/index.js"
