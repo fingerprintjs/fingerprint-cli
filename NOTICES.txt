@@ -1,0 +1,78 @@
+THIRD-PARTY NOTICES
+===================
+
+The Fingerprint CLI ("fingerprint") is licensed under the MIT License. See the
+LICENSE file for the full text.
+
+That MIT license covers the CLI's own source code only. It does not extend to
+the third-party dependencies listed below, which are distributed under their
+own terms. Dependencies are not bundled into the published package; npm
+installs them separately at install time. Each remains subject to its own
+license.
+
+
+1. Anthropic Claude Agent SDK — COMMERCIAL LICENSE, NOT MIT
+-----------------------------------------------------------
+
+The CLI uses @anthropic-ai/claude-agent-sdk for its agentic capabilities. This
+package is proprietary software and is NOT distributed under an open-source
+license:
+
+    © Anthropic PBC. All rights reserved. Use is subject to the Legal
+    Agreements outlined here:
+    https://code.claude.com/docs/en/legal-and-compliance
+
+This applies to the SDK and to the platform-specific native binaries it pulls
+in as optional dependencies:
+
+    @anthropic-ai/claude-agent-sdk
+    @anthropic-ai/claude-agent-sdk-darwin-arm64
+    @anthropic-ai/claude-agent-sdk-darwin-x64
+    @anthropic-ai/claude-agent-sdk-linux-arm64
+    @anthropic-ai/claude-agent-sdk-linux-arm64-musl
+    @anthropic-ai/claude-agent-sdk-linux-x64
+    @anthropic-ai/claude-agent-sdk-linux-x64-musl
+    @anthropic-ai/claude-agent-sdk-win32-arm64
+    @anthropic-ai/claude-agent-sdk-win32-x64
+
+Claude itself is served under Anthropic's commercial terms. Using this CLI's
+agentic features therefore requires accepting Anthropic's Legal Agreements,
+independently of the MIT license granted for the CLI.
+
+
+2. Permissively licensed dependencies
+--------------------------------------
+
+The remaining production dependencies are distributed under permissive
+open-source licenses.
+
+MIT License:
+    @anthropic-ai/sdk, @babel/runtime, @hono/node-server, @inquirer/ansi,
+    @inquirer/checkbox, @inquirer/confirm, @inquirer/core, @inquirer/editor,
+    @inquirer/expand, @inquirer/external-editor, @inquirer/figures,
+    @inquirer/input, @inquirer/number, @inquirer/password, @inquirer/prompts,
+    @inquirer/rawlist, @inquirer/search, @inquirer/select, @inquirer/type,
+    @modelcontextprotocol/sdk, @stablelib/base64, @types/node, ajv,
+    ajv-formats, bundle-name, chardet, commander, content-type, cors,
+    cross-spawn, default-browser, default-browser-id, define-lazy-prop,
+    eventsource, eventsource-parser, express, express-rate-limit,
+    fast-deep-equal, hono, iconv-lite, ip-address, is-docker,
+    is-inside-container, is-wsl, jose, json-schema-to-ts,
+    json-schema-traverse, object-assign, open, path-key, pkce-challenge,
+    raw-body, require-from-string, run-applescript, shebang-command,
+    shebang-regex, standardwebhooks, ts-algebra, vary, wsl-utils, zod
+
+ISC License:
+    isexe, which, zod-to-json-schema
+
+BSD 2-Clause License:
+    json-schema-typed
+
+BSD 3-Clause License:
+    fast-uri
+
+The Unlicense:
+    fast-sha256
+
+Full license texts for these packages are available in their respective
+directories under node_modules/ after installation, and on npm.
