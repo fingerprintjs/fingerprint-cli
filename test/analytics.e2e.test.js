@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -86,6 +88,56 @@ test('an invoked integrate is reported as invoked, not chained', async () => {
   assert.equal(started.body.properties.chained, false)
   assert.equal(run.body.properties.command, 'integrate')
   assert.equal(run.body.properties.cli_flags, 'yes')
+
+  await api.close()
+})
+
+test('an integrate that applies nothing reports why', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const empty = mkdtempSync(join(tmpdir(), 'fp-empty-'))
+  const res = await runCli(['integrate'], { home, cwd: empty })
+  assert.equal(res.status, 0, res.stderr)
+
+  const [skipped] = api.analyticsEvents()
+  assert.equal(skipped.body.event, 'cli_integrate_skipped')
+  assert.equal(skipped.body.properties.reason, 'no_apps_found')
+  assert.equal(skipped.body.properties.app_count, 0)
+
+  await api.close()
+})
+
+test('a repo we found apps in but recognised no framework is reported as such', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const repo = mkdtempSync(join(tmpdir(), 'fp-unknown-'))
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'x', dependencies: { lodash: '^4' } }))
+
+  const res = await runCli(['integrate'], { home, cwd: repo })
+  assert.equal(res.status, 0, res.stderr)
+
+  const [skipped] = api.analyticsEvents()
+  assert.equal(skipped.body.properties.reason, 'no_supported_framework')
+  assert.equal(skipped.body.properties.app_count, 1)
+
+  await api.close()
+})
+
+test('an analyze-only run is not counted as a dead end', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['integrate', '--analyze'], { home, cwd: makeRepo() })
+  assert.equal(res.status, 0, res.stderr)
+
+  const [skipped] = api.analyticsEvents()
+  assert.equal(skipped.body.properties.reason, 'analyze_only')
+  assert.equal(skipped.body.properties.frontend, 'react')
 
   await api.close()
 })

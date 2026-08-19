@@ -16,10 +16,10 @@ export function pinAuthForTracking(auth: AuthState | null): void {
   pinnedAuth = auth
 }
 
-// Context a command discovers mid-run that belongs on this run's events. The Management API
-// allowlists event names (cli_command_run, cli_auth_intent_selected, cli_integrate_started), so a
-// detail with no event of its own — which key type was asked for, say — rides on the events there
-// are. Properties are not allowlisted, so these pass through.
+// Context a command discovers mid-run that belongs on this run's events. A detail with no event of
+// its own — which key type was asked for, say — rides on the events there are. The Management API
+// allowlists properties per event, and strips unknown ones without erroring, so anything added here
+// needs adding there too or it vanishes silently.
 let runProperties: Record<string, unknown> = {}
 export function addRunProperties(properties: Record<string, unknown>): void {
   runProperties = { ...runProperties, ...properties }

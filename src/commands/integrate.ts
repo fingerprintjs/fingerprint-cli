@@ -26,14 +26,22 @@ export async function integrateCommand(
   // entirely — commander never dispatched them — so this is the one place the real integrate
   // count lives. The detected stack rides along: which frameworks people actually point this at
   // is what decides where the next curated skill goes. Framework/skill ids only — never paths.
+  const stack = {
+    chained: Boolean(opts.chained),
+    frontend: analysis.frontend?.framework ?? '',
+    backend: analysis.backend?.framework ?? '',
+    skills: analysis.skills.join(','),
+    monorepo: analysis.monorepo,
+    app_count: analysis.apps.length,
+  }
+
   if (willApply) {
-    void track('cli_integrate_started', {
-      chained: Boolean(opts.chained),
-      frontend: analysis.frontend?.framework ?? '',
-      backend: analysis.backend?.framework ?? '',
-      skills: analysis.skills.join(','),
-      monorepo: analysis.monorepo,
-      app_count: analysis.apps.length,
+    void track('cli_integrate_started', stack)
+  } else {
+    // Where onboarding dead-ends: signed up, chained into integrate, applied nothing.
+    void track('cli_integrate_skipped', {
+      ...stack,
+      reason: opts.analyze ? 'analyze_only' : analysis.apps.length ? 'no_supported_framework' : 'no_apps_found',
     })
   }
 
