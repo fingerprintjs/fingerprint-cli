@@ -108,8 +108,7 @@ Two consequences worth knowing:
 Already done for this repo, listed so it can be reproduced or debugged:
 
 - Repository is public (required by provenance).
-- Repo variables `APP_CLIENT_ID` and `RUNNER_APP_CLIENT_ID` — the client IDs of the privileged and
-  unprivileged GitHub Apps.
+- Repo variables `APP_ID` and `RUNNER_APP_ID` — the privileged and unprivileged GitHub Apps.
 - `APP_PRIVATE_KEY` as a secret on the **`production`** environment (this is what makes the approval
   gate meaningful), and `RUNNER_APP_PRIVATE_KEY` as a repo secret.
 - A trusted publisher registered on npmjs.com for the `fingerprint` package, pointing at
@@ -121,10 +120,10 @@ Credentials are provisioned by the DX team; npm ownership sits with the package 
 
 ## Troubleshooting
 
-**No release PR appeared, and it published straight away instead.** The `RUNNER_APP_CLIENT_ID` repo
-variable is unset. When it is empty the shared workflow skips the review-PR step entirely and runs
-version and publish in a single job, so a merge to `main` ships immediately. Set
-`RUNNER_APP_CLIENT_ID` to restore the two-step flow.
+**No release PR appeared, and it published straight away instead.** The `RUNNER_APP_ID` repo variable
+is unset. When it is empty the shared workflow skips the review-PR step entirely and runs version and
+publish in a single job, so a merge to `main` ships immediately. Set `RUNNER_APP_ID` to restore the
+two-step flow.
 
 **No release PR appeared, and nothing published.** The merged PR had no changeset. Add one in a
 follow-up PR to `main`.
