@@ -35,11 +35,13 @@ export async function integrateCommand(
     app_count: analysis.apps.length,
   }
 
+  // Awaited, not fired and forgotten: what follows blocks the event loop (a sync `git clone` for the
+  // skills cache, package installs), and a request that hasn't been written by then never goes out.
   if (willApply) {
-    void track('cli_integrate_started', stack)
+    await track('cli_integrate_started', stack)
   } else {
     // Where onboarding dead-ends: signed up, chained into integrate, applied nothing.
-    void track('cli_integrate_skipped', {
+    await track('cli_integrate_skipped', {
       ...stack,
       reason: opts.analyze ? 'analyze_only' : analysis.apps.length ? 'no_supported_framework' : 'no_apps_found',
     })

@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { ManagementClient } from '../api/management.js'
 import { getAuthState, type AuthState } from '../auth/tokenStore.js'
+import { debugLog } from '../utils/log-file.js'
 
-// Runs as the command exits, so this is how long a bad network delays the prompt.
+// How long a bad network can delay the run. The timer starts when track() is called, not when the
+// request goes out, so callers must await rather than fire and forget: a caller that starts blocking
+// work first burns the whole budget before the socket is ever written, and the event is lost with
+// nothing sent and nothing logged server-side.
 const TIMEOUT_MS = 1000
 
 // One id per process. A run emits several events — the command, the intent answer, the chained
@@ -51,7 +55,9 @@ export async function track(event: string, properties: Record<string, unknown> =
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
-  } catch {
-    // Never surface telemetry failures.
+  } catch (err) {
+    // Never surface telemetry failures to the user, but leave a trail: a dropped event is otherwise
+    // indistinguishable from one that was never fired.
+    debugLog(`analytics: dropped ${event} (${err instanceof Error ? err.message : String(err)})`)
   }
 }

@@ -40,7 +40,7 @@ async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   // After login lands, since there's no auth state to attribute it to before that. The bare entry
   // reaches login/signup through this answer, which `cli_command_run` can't show — it reports
   // `default` for the whole run.
-  if (chosen) void track('cli_auth_intent_selected', { intent })
+  if (chosen) await track('cli_auth_intent_selected', { intent })
   log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
