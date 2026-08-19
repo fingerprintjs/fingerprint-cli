@@ -1,0 +1,18 @@
+name: Preview changeset
+
+on: pull_request
+
+# The reusable workflow posts a sticky comment on the PR, and reusable workflows
+# inherit permissions from the caller.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  preview-changeset:
+    name: Preview changeset
+    uses: fingerprintjs/dx-team-toolkit/.github/workflows/preview-changeset-release.yml@v1
+    with:
+      pr-title: ${{ github.event.pull_request.title }}
+      node-version: '24'
+      changeset-command: pnpm changeset
