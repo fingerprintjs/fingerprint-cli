@@ -77,7 +77,23 @@ git tag matching the current `package.json` version. No changesets **and** no `v
 "this version was versioned but never shipped" — so it publishes and tags.
 
 That publish job is pinned to the repo's **`production` environment**, so it pauses for manual
-approval before it can reach npm. Approve it in the Actions run and it publishes to the `latest` tag.
+approval before it can reach npm. Approve it in the Actions run and it publishes to the active
+Changesets tag (`latest` for stable releases, or the prerelease tag while pre mode is active).
+
+### Current alpha phase
+
+The existing `fingerprint@0.0.2` is a placeholder and still owns npm's `latest` tag. While
+`.changeset/pre.json` is in pre mode with the `alpha` tag, releases publish as
+`0.1.0-alpha.x` and must be installed or run explicitly:
+
+```bash
+npx fingerprint@alpha
+```
+
+`npx fingerprint` continues to run the `0.0.2` placeholder during this phase. When `0.1.0` is ready
+to become the first stable release, open a dedicated PR that runs `pnpm changeset pre exit` and
+commits the resulting `.changeset/pre.json` change. Merge the generated stable release PR only after
+reviewing that it promotes the package to `0.1.0` and `latest`.
 
 Because the tag is what marks a version as shipped, deleting a release tag will cause that version to
 be published again on the next push to `main`. Don't delete release tags.

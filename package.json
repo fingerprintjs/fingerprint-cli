@@ -40,11 +40,12 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "postbuild": "chmod +x dist/index.js",
     "prepare": "npm run build",
     "start": "node dist/index.js",
-    "test": "tsc -p tsconfig.json && node --test",
+    "test": "npm run build && node --test",
     "changeset:version": "changeset version",
     "changeset:publish": "changeset publish"
   },
