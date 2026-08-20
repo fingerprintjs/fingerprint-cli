@@ -216,7 +216,8 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
     // Browser couldn't be opened automatically; the printed URL is the fallback.
   })
   if (intent === 'signup') {
-    log.info('Check your inbox and click the confirmation link, then finish setup in the browser.')
+    log.info('If you’re already signed in on your browser, you’ll be asked to log into that workspace.')
+    log.info('Otherwise, check your inbox and click the confirmation link, then finish setup in the browser.')
   }
   log.info('\nWaiting for you to finish in the browser. Please return here when you’re done...')
 
