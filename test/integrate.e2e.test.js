@@ -42,4 +42,12 @@ test('integrate --yes provisions keys and the agent applies the integration edit
   assert.ok(existsSync(target), `agent did not write ${target}\n${res.stdout}\n${res.stderr}`)
   assert.match(readFileSync(target, 'utf8'), /fingerprint integration applied/)
   assert.ok(gw.calls() >= 1, 'gateway was never called')
+
+  // Follow-up skills are installed for a future agent session and surfaced as the recommended next step.
+  assert.ok(existsSync(join(repo, '.claude', 'skills', 'fingerprint-proxy-integration', 'SKILL.md')))
+  assert.ok(existsSync(join(repo, '.claude', 'skills', 'fingerprint-get-started', 'SKILL.md')))
+  assert.match(res.stdout, /Protect the integration from ad blockers by setting up a custom subdomain/)
+  assert.match(res.stdout, /fingerprint-proxy-integration/)
+  assert.match(res.stdout, /fingerprint-get-started/)
+  assert.match(res.stdout, /\.claude\/skills\//)
 })
