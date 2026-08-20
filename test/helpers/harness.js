@@ -187,10 +187,16 @@ export function startGateway(writeTarget, writeContent) {
 }
 
 // A local skills checkout (pointed at via FINGERPRINT_SKILLS_DIR) with the two skills React+Express
-// resolves to. Empty `packages` so the post-agent installer is a no-op (no real npm install).
+// resolves to and the two next-step skills installed alongside them. Empty `packages` so the
+// post-agent installer is a no-op (no real npm install).
 export function makeSkillsDir() {
   const dir = mkdtempSync(join(tmpdir(), 'fp-skills-'))
-  for (const [id, role] of [['fingerprint-react', 'frontend'], ['fingerprint-node', 'backend']]) {
+  for (const [id, role] of [
+    ['fingerprint-react', 'frontend'],
+    ['fingerprint-node', 'backend'],
+    ['fingerprint-proxy-integration', 'enhancement'],
+    ['fingerprint-get-started', 'orchestrator'],
+  ]) {
     const s = join(dir, 'skills', id)
     mkdirSync(s, { recursive: true })
     writeFileSync(join(s, 'SKILL.md'), `# ${id}\nTest skill.\n`)

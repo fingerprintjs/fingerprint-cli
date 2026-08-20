@@ -22,6 +22,7 @@ import { debugLog } from '../utils/log-file.js'
 // mutating ones (Edit/Write) are gated separately so --interactive can prompt before each one.
 const READONLY_TOOLS = ['Read', 'Glob', 'Grep']
 const EDIT_TOOLS = ['Edit', 'Write']
+const NEXT_STEP_SKILLS = ['fingerprint-proxy-integration', 'fingerprint-get-started']
 
 // In interactive mode, prompt before each file edit; deny anything that isn't a known edit tool
 // (read-only tools are auto-allowed via allowedTools and never reach here, so a hit means something
@@ -221,9 +222,9 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
   const llm = await resolveLlmConfig()
   const ids = analysis.skills
 
-  // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
-  // rather than us stuffing their full text into the prompt every turn.
-  installSkills(analysis.root, ids)
+  // Install the current integration skills plus next-step guidance into .claude/skills/. The query
+  // below limits this run to `ids`, leaving the extra skills available for a future agent session.
+  installSkills(analysis.root, [...ids, ...NEXT_STEP_SKILLS])
   const metas = ids.map(skillMeta)
 
   log.step(`Applying ${ids.join(' + ')} in ${analysis.root}`)
@@ -236,14 +237,22 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
       cwd: analysis.root,
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
-      skills: ids, // load only the skills we installed, not any others already in the repo
+      skills: ids, // load only this run's integration skills, not next-step or pre-existing skills
       ...permissionOptions(),
     },
   })
 
   const ok = await consume(response, 'Setting up the integration')
 
-  if (ok) await installPackages(analysis, metas)
+  if (ok) {
+    await installPackages(analysis, metas)
+    log.step('Recommended next step')
+    log.info('Protect the integration from ad blockers by setting up a custom subdomain.')
+    log.info(
+      'The fingerprint-proxy-integration skill and full fingerprint-get-started orchestrator are now available\n' +
+        'in .claude/skills/ for your next AI agent session.'
+    )
+  }
   return ok
 }
 
