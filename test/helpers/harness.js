@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -142,6 +142,7 @@ export function startAuthServer({ deadTokenEndpoint = false } = {}) {
 // absolute file the agent will create; the test points FINGERPRINT_GATEWAY_URL at this.
 export function startGateway(writeTarget, writeContent) {
   let calls = 0
+  const requests = []
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
@@ -151,6 +152,7 @@ export function startGateway(writeTarget, writeContent) {
         return res.end('{}')
       }
       calls++
+      requests.push(body)
       // Drive off conversation content, not a call counter: the real run may make preamble calls, so
       // emit the Write on any turn that has no tool_result yet, then end once the write came back.
       const alreadyWrote = body.includes('tool_result')
@@ -181,21 +183,49 @@ export function startGateway(writeTarget, writeContent) {
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address()
-      resolve({ url: `http://127.0.0.1:${port}`, calls: () => calls, close: () => new Promise((r) => server.close(r)) })
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        calls: () => calls,
+        requests: () => requests,
+        close: () => new Promise((r) => server.close(r)),
+      })
     })
   })
 }
 
 // A local skills checkout (pointed at via FINGERPRINT_SKILLS_DIR) with the two skills React+Express
 // resolves to. Empty `packages` so the post-agent installer is a no-op (no real npm install).
-export function makeSkillsDir() {
+export function makeSkillsDir({ reactPackages = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fp-skills-'))
   for (const [id, role] of [['fingerprint-react', 'frontend'], ['fingerprint-node', 'backend']]) {
     const s = join(dir, 'skills', id)
     mkdirSync(s, { recursive: true })
     writeFileSync(join(s, 'SKILL.md'), `# ${id}\nTest skill.\n`)
-    writeFileSync(join(s, 'skill.json'), JSON.stringify({ id, role, packages: [] }))
+    const packages = id === 'fingerprint-react' ? reactPackages : []
+    writeFileSync(join(s, 'skill.json'), JSON.stringify({ id, role, packages }))
   }
+  return dir
+}
+
+// Dan's reported layout: a frontend-only Vite/React project at the workspace root, managed by
+// pnpm, with an existing Cloudflare config that belongs to the frontend deployment.
+export function makeFrontendOnlyPnpmRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'fp-react-pnpm-'))
+  mkdirSync(join(root, 'src'))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'web', dependencies: { react: '^19' } }))
+  writeFileSync(join(root, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
+  writeFileSync(join(root, 'pnpm-workspace.yaml'), "packages:\n  - '.'\n")
+  writeFileSync(join(root, 'wrangler.jsonc'), '{\n  "name": "frontend-only"\n}\n')
+  return root
+}
+
+// Deterministically reproduce pnpm refusing an install because a dependency's build script was
+// not approved, without executing any package scripts or reaching the registry.
+export function makePnpmIgnoredBuildsBin() {
+  const dir = mkdtempSync(join(tmpdir(), 'fp-bin-'))
+  const bin = join(dir, 'pnpm')
+  writeFileSync(bin, '#!/bin/sh\necho "ERR_PNPM_IGNORED_BUILDS Build scripts were ignored" >&2\nexit 1\n')
+  chmodSync(bin, 0o755)
   return dir
 }
 

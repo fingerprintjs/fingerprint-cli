@@ -1,7 +1,7 @@
 import { confirm } from '@inquirer/prompts'
-import { execFileSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
 import { provisionForRepo } from './provision.js'
@@ -67,13 +67,68 @@ const denyEnvReads: HookCallbackMatcher = {
 // Interactive mode: reads/web stay auto-allowed, but Edit/Write route through askBeforeEdit.
 // `extraReadonly` adds read-only tools that should also run without prompting (e.g. WebFetch).
 // Both modes carry the .env deny hook so a secret in .env never reaches the model.
-function permissionOptions(extraReadonly: string[] = []) {
+function permissionOptions(scopeGuard: EditScopeGuard, extraReadonly: string[] = []) {
   const readonly = [...READONLY_TOOLS, ...extraReadonly]
-  const hooks = { PreToolUse: [denyEnvReads] }
+  const hooks = { PreToolUse: [denyEnvReads, scopeGuard.matcher] }
   if (!isInteractive()) {
     return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
   }
   return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
+}
+
+// A frontend skill never needs to create server infrastructure. This hard guard backs up the task
+// prompt so a model cannot turn a frontend-only repo into an accidental Worker/backend. Existing
+// frontend source remains editable; only backend entry points and deployment configs are blocked.
+interface EditScopeGuard {
+  matcher: HookCallbackMatcher
+  wasViolated(): boolean
+}
+
+function restrictEditsToDetectedRoles(analysis: RepoAnalysis): EditScopeGuard {
+  const fullstack = analysis.apps.some((app) => app.role === 'fullstack')
+  const frontendOnly = Boolean(analysis.frontend) && !analysis.backend && !fullstack
+  let violated = false
+
+  return {
+    wasViolated: () => violated,
+    matcher: {
+      hooks: [
+        async (input) => {
+          if (!frontendOnly || input.hook_event_name !== 'PreToolUse') return {}
+          if (input.tool_name !== 'Edit' && input.tool_name !== 'Write') return {}
+
+          const i = (input.tool_input ?? {}) as { file_path?: string; path?: string }
+          const target = i.file_path ?? i.path ?? ''
+          if (!target) return {}
+
+          const absolute = isAbsolute(target) ? target : resolve(analysis.root, target)
+          const rel = relative(analysis.root, absolute).split(sep).join('/')
+          const file = basename(rel).toLowerCase()
+          const topLevelDir = rel.split('/')[0]?.toLowerCase()
+          const deploymentConfig = new Set([
+            'wrangler.toml',
+            'wrangler.json',
+            'wrangler.jsonc',
+            'serverless.yml',
+            'serverless.yaml',
+          ]).has(file)
+          const serverEntry = /^(worker|server)\.[cm]?[jt]sx?$/.test(file)
+          const backendDir = ['api', 'functions', 'server', 'workers'].includes(topLevelDir)
+          if (!deploymentConfig && !serverEntry && !backendDir) return {}
+
+          violated = true
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason:
+                'Only a frontend was detected. Do not create or modify backend, Worker, serverless, or deployment files; integrate the frontend only.',
+            },
+          }
+        },
+      ],
+    },
+  }
 }
 
 // Whichever side of an integration a repo covers. A fullstack framework (e.g. Next.js) and a
@@ -102,19 +157,23 @@ function resolveProjectDir(base: string, input: string): string | undefined {
 // repo). Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at;
 // it never assumes a particular layout.
 export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<void> {
-  await provisionAndApply(root, opts)
+  const outcome = await provisionAndApply(root, opts)
+  if (outcome === 'failed') process.exitCode = 1
+  if (outcome !== 'completed') return
   await offerOtherProjects(root, opts)
 }
 
+type ApplyOutcome = 'completed' | 'skipped' | 'failed'
+
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<void> {
+async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<ApplyOutcome> {
   log.step('Set up environment variables')
   const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
     log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
   }
-  await applyIntegration(root, opts)
+  return applyIntegration(root, opts)
 }
 
 // After integrating `root`, Fingerprint only delivers value once BOTH sides exist: the frontend
@@ -171,7 +230,9 @@ async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promis
       continue
     }
 
-    await provisionAndApply(dir, opts)
+    const outcome = await provisionAndApply(dir, opts)
+    if (outcome === 'failed') process.exitCode = 1
+    if (outcome !== 'completed') return
     for (const role of coverageOf(target)) covered.add(role)
   }
 }
@@ -179,7 +240,7 @@ async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promis
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent. Called per-repo by `integrateProject` (the main repo plus any follow-up
 // projects) so the flow is continuous: set up env → "integrate this repo?" → apply.
-async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<void> {
+async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<ApplyOutcome> {
   const analysis = analyzeRepo(root)
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
@@ -187,7 +248,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
   if (!analysis.skills.length) {
     if (!analysis.frontend && !analysis.backend) {
       log.info('No Fingerprint integration is available for this stack yet.')
-      return
+      return 'skipped'
     }
     const stack = [analysis.frontend?.framework, analysis.backend?.framework].filter(Boolean).join(' + ')
     log.warn(`No curated skill for this stack (${stack}).`)
@@ -198,21 +259,20 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
         message: 'Attempt an experimental, docs-based integration? (researches Fingerprint docs, then edits files)',
         default: true,
       }))
-    if (!proceed) return
+    if (!proceed) return 'skipped'
 
     log.step('Researching Fingerprint docs and applying integration')
-    await runAgentFromDocs(analysis)
-    return
+    return (await runAgentFromDocs(analysis)) ? 'completed' : 'failed'
   }
 
   const proceed =
     opts.yes ||
     autoYes() ||
     (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skills.join(' + ')})? (edits files)`, default: true }))
-  if (!proceed) return
+  if (!proceed) return 'skipped'
 
   log.step('Apply integration')
-  await runAgent(analysis)
+  return (await runAgent(analysis)) ? 'completed' : 'failed'
 }
 
 export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
@@ -220,6 +280,7 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
 
   const llm = await resolveLlmConfig()
   const ids = analysis.skills
+  const scopeGuard = restrictEditsToDetectedRoles(analysis)
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
   // rather than us stuffing their full text into the prompt every turn.
@@ -237,14 +298,21 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(),
+      ...permissionOptions(scopeGuard),
     },
   })
 
   const ok = await consume(response, 'Setting up the integration')
 
-  if (ok) await installPackages(analysis, metas)
-  return ok
+  if (!ok) return false
+  if (scopeGuard.wasViolated()) {
+    log.error('Integration stopped because the agent attempted to create backend or deployment files in a frontend-only project.')
+    return false
+  }
+
+  const installed = await installPackages(analysis, metas)
+  if (installed) log.success('Fingerprint integration completed.')
+  return installed
 }
 
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with
@@ -282,20 +350,44 @@ const SYSTEM_PROMPT = [
   '- Do NOT add dependencies or pin version numbers in package.json / requirements.txt. The CLI',
   '  installs the correct published versions itself; just write the app code that imports them.',
   '  ("v4" in a skill refers to the Fingerprint platform, not an npm package major version.)',
+  '- Only modify the detected app roles named in the task. Never invent a missing frontend,',
+  '  backend, server, worker, serverless function, or deployment configuration.',
   '- When done, briefly summarize the files you changed.',
 ].join('\n')
 
 function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
+  const fullstack = analysis.apps.some((app) => app.role === 'fullstack')
+
+  let integrationGoal: string[]
+  if ((analysis.frontend && analysis.backend) || fullstack) {
+    integrationGoal = [
+      "Protect the app's primary sensitive action (signup if present, else login): identify on the",
+      'client, send the event_id, and verify it server-side, blocking bots before completing.',
+    ]
+  } else if (analysis.frontend) {
+    integrationGoal = [
+      'Scope: frontend only. Add client-side identification to an existing primary action if one is',
+      'present, and capture its visitor_id and single-use event_id without inventing a new flow.',
+      'Do not create a backend, server, serverless function, or worker. Do not create or modify',
+      'deployment configuration such as wrangler.*. Server-side verification belongs to the separate',
+      'backend follow-up.',
+    ]
+  } else {
+    integrationGoal = [
+      'Scope: backend only. Add server-side event verification to the existing backend and its',
+      'existing sensitive action. Do not create a frontend or client application.',
+    ]
+  }
+
   return [
     'Integrate Fingerprint into this repository.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
     'Read and follow each named skill from .claude/skills/<id>/SKILL.md and apply it to the',
     'matching part of the app. The per-app .env files are already provisioned with the keys',
     '(frontend: the bundler-prefixed public key; backend: FINGERPRINT_SECRET_API_KEY).',
-    "Protect the app's primary sensitive action (signup if present, else login): identify on the",
-    'client, send the event_id, and verify it server-side, blocking bots before completing.',
+    ...integrationGoal,
     `Skills to apply (read each from .claude/skills/<id>/SKILL.md): ${ids.join(', ')}.`,
   ].join('\n')
 }
@@ -306,6 +398,7 @@ function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
 // reports the install command instead.
 export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean> {
   const llm = await resolveLlmConfig()
+  const scopeGuard = restrictEditsToDetectedRoles(analysis)
   const response = query({
     prompt: buildDocsTaskPrompt(analysis),
     options: {
@@ -313,11 +406,15 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean>
       env: llm.env,
       cwd: analysis.root,
       systemPrompt: DOCS_SYSTEM_PROMPT,
-      ...permissionOptions(['WebFetch', 'WebSearch']),
+      ...permissionOptions(scopeGuard, ['WebFetch', 'WebSearch']),
     },
   })
 
   const ok = await consume(response, 'Researching docs and applying the integration')
+  if (scopeGuard.wasViolated()) {
+    log.error('Integration stopped because the agent attempted to create backend or deployment files in a frontend-only project.')
+    return false
+  }
   if (ok) log.warn('Experimental integration applied from docs — review the changes and install any dependencies it listed.')
   return ok
 }
@@ -399,7 +496,7 @@ function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
       log.error(`Agent did not complete: ${msg.result ?? msg.subtype ?? 'unknown error'}`)
       return false
     }
-    log.success('Agent finished applying the integration.')
+    log.success('Agent finished editing the integration.')
     return true
   }
   return undefined
@@ -415,7 +512,8 @@ function summarizeToolInput(_name: string, input: any): string {
 
 // Install each skill's packages into the app that needs them, using that app's package
 // manager. Deterministic and host-side — the agent never gets a shell.
-async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Promise<void> {
+async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Promise<boolean> {
+  let installed = true
   const appForRole: Record<string, DetectedApp | undefined> = {
     frontend: analysis.frontend,
     backend: analysis.backend,
@@ -437,17 +535,56 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
       const ok = await confirm({ message: `Install ${pkgs.join(', ')} in ${app.rel}? (${bin} ${sub})`, default: true })
       if (!ok) {
         log.warn(`Skipped — install manually: ${bin} ${sub} ${pkgs.join(' ')} (in ${app.rel})`)
+        installed = false
         continue
       }
     }
     log.step(`Installing ${pkgs.join(', ')} in ${app.rel} (${bin})`)
-    try {
-      execFileSync(bin, [sub, ...pkgs], { cwd: app.dir, stdio: 'inherit' })
+    const result = await runPackageInstall(bin, [sub, ...pkgs], app.dir)
+    if (result.ok) {
       log.success(`Installed in ${app.rel}`)
-    } catch {
+      continue
+    }
+    if (bin === 'pnpm' && /ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/i.test(result.output)) {
+      log.warn(
+        `Install failed in ${app.rel} because pnpm blocked a dependency build script. ` +
+          `Review it with "pnpm approve-builds", approve only the expected package, then rerun: ${bin} ${sub} ${pkgs.join(' ')}`
+      )
+    } else {
       log.warn(`Install failed in ${app.rel} — run manually: ${bin} ${sub} ${pkgs.join(' ')}`)
     }
+    installed = false
   }
+  return installed
+}
+
+// Tee package-manager output to the terminal while retaining a copy for actionable error
+// classification. `stdio: inherit` streams nicely but discards the text Node needs to recognize
+// pnpm's ignored-builds failure.
+function runPackageInstall(bin: string, args: string[], cwd: string): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolveResult) => {
+    const child = spawn(bin, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = ''
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolveResult({ ok, output })
+    }
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+      process.stdout.write(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+      process.stderr.write(chunk)
+    })
+    child.on('error', (error) => {
+      output += error.message
+      finish(false)
+    })
+    child.on('close', (code) => finish(code === 0))
+  })
 }
 
 // Append @latest to a package spec that has no version. Scoped names start with '@', so a real
