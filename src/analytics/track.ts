@@ -9,6 +9,10 @@ import { debugLog } from '../utils/log-file.js'
 // nothing sent and nothing logged server-side.
 const TIMEOUT_MS = 1000
 
+// The events the Management API accepts without a key, mirroring its own allow-list. `integrate`
+// provisions keys, so it can never be one of them.
+const ANONYMOUS_EVENTS = new Set(['cli_run_started', 'cli_command_run', 'cli_auth_intent_selected'])
+
 // One id per process. A run emits several events — the command, the intent answer, the chained
 // integrate — and this is what stitches them back into a single invocation.
 const runId = randomUUID()
@@ -38,16 +42,34 @@ function cliFlags(): string {
   return [...new Set(names)].sort().join(',')
 }
 
-// Relayed through the Management API because the Amplitude key can't ship in the binary.
+// Honoured by every dev CLI that reports anything, and it matters more here than it would for a
+// signed-in-only tool: the events below now include people who have no account and never agreed to
+// anything. https://consoledonottrack.com
+function doNotTrack(): boolean {
+  const value = process.env.DO_NOT_TRACK
+  return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false'
+}
+
+// Relayed through the Management API because the Amplitude key can't ship in the binary. A run with
+// no key relays through the unauthenticated route instead of reporting nothing: the run that ends
+// without an account is the one the funnel has no other way to count. Both routes carry `run_id`,
+// which is what stitches the two halves of one run back together.
 export async function track(event: string, properties: Record<string, unknown> = {}): Promise<void> {
+  if (doNotTrack()) return
+
   const auth = pinnedAuth ?? getAuthState()
-  if (!auth?.managementApiKey) return
+  const authenticated = Boolean(auth?.managementApiKey)
+
+  // Only events that can happen before there is a workspace are accepted unauthenticated, and the
+  // Management API rejects the rest. Dropping them here keeps a guaranteed 400 off the wire.
+  if (!authenticated && !ANONYMOUS_EVENTS.has(event)) return
 
   try {
-    await new ManagementClient({
-      managementApiKey: auth.managementApiKey,
-      managementApiUrl: auth.managementApiUrl,
-    }).request('/analytics/events', {
+    const client = authenticated
+      ? new ManagementClient({ managementApiKey: auth!.managementApiKey, managementApiUrl: auth!.managementApiUrl })
+      : new ManagementClient({ anonymous: true })
+
+    await client.request(authenticated ? '/analytics/events' : '/analytics/anonymous-events', {
       method: 'POST',
       body: JSON.stringify({
         event,

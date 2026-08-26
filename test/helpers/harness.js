@@ -27,7 +27,8 @@ export function startManagementApi() {
       // POST /api-keys → mint a secret key (value only returned here).
       if (route === 'POST /api-keys') return ok({ id: 'key_sec', type: 'secret', status: 'enabled', token: 'sec_456' })
       // POST /analytics/events → the relay that forwards to Amplitude server-side.
-      if (route === 'POST /analytics/events') {
+      // POST /analytics/anonymous-events → the same relay for a run with no key yet.
+      if (route === 'POST /analytics/events' || route === 'POST /analytics/anonymous-events') {
         let parsed
         try {
           parsed = JSON.parse(body)
@@ -37,7 +38,7 @@ export function startManagementApi() {
           res.writeHead(400, { 'content-type': 'application/json' })
           return res.end(JSON.stringify({ error: { message: `invalid JSON: ${body}` } }))
         }
-        analyticsEvents.push({ body: parsed, authorization: req.headers.authorization })
+        analyticsEvents.push({ body: parsed, authorization: req.headers.authorization, path })
         res.writeHead(202)
         return res.end()
       }
@@ -215,7 +216,16 @@ export function runCli(args, { home, cwd, env = {} } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], {
       cwd,
-      env: { ...process.env, HOME: home ?? makeHome(), CI: '', ...env },
+      // A run with no auth state resolves the Management API from config, which defaults to
+      // production. Point it at a closed port so no test can ever reach the real API by forgetting
+      // to seed auth; the analytics tests override it with their fake.
+      env: {
+        ...process.env,
+        HOME: home ?? makeHome(),
+        CI: '',
+        FINGERPRINT_MANAGEMENT_API_URL: 'http://127.0.0.1:1',
+        ...env,
+      },
     })
     let stdout = ''
     let stderr = ''

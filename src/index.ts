@@ -40,11 +40,16 @@ let ranUnknownCommand = false
 // the action throws, which lost exactly the commands worth measuring: integrate fails often enough
 // in real use that `login` and `default` were going missing entirely.
 let invokedCommand: string | undefined
-program.hook('preAction', (_thisCommand, actionCommand) => {
+program.hook('preAction', async (_thisCommand, actionCommand) => {
   invokedCommand = actionCommand === program ? undefined : actionCommand.name()
+  // Before the action runs, so it lands whether or not the run ever reaches an account, and whether
+  // or not it finishes. `cli_command_run` only reports runs that settle, which misses the person who
+  // reads the prompt and closes the terminal.
+  await track('cli_run_started', { command: invokedCommand ?? 'default' })
 })
 
-// After the run settles, so `login` has written credentials by the time we look for a workspace.
+// After the run settles, so `login` has written credentials by the time we look for a workspace. A
+// run that never got them reports through the unauthenticated route instead of going unrecorded.
 async function reportRun(status: 'ok' | 'error'): Promise<void> {
   await track('cli_command_run', {
     command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),

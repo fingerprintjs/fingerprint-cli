@@ -27,11 +27,16 @@ export class ManagementApiError extends Error {
 export class ManagementClient {
   private readonly key: string
   private readonly baseUrl: string
+  private readonly anonymous: boolean
 
-  constructor(opts: { managementApiKey?: string; managementApiUrl?: string } = {}) {
+  // `anonymous` is for the handful of routes that accept no key at all. Sending `Bearer ` with an
+  // empty key would be rejected as a malformed token rather than read as "no caller", so the header
+  // has to be absent rather than empty.
+  constructor(opts: { managementApiKey?: string; managementApiUrl?: string; anonymous?: boolean } = {}) {
     const auth = getAuthState()
     this.key = opts.managementApiKey ?? auth?.managementApiKey ?? ''
     this.baseUrl = opts.managementApiUrl ?? auth?.managementApiUrl ?? resolveConfig().managementApiUrl
+    this.anonymous = opts.anonymous ?? false
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -43,7 +48,7 @@ export class ManagementClient {
         headers: {
           'Content-Type': 'application/json',
           'X-API-Version': API_VERSION,
-          Authorization: `Bearer ${this.key}`,
+          ...(this.anonymous ? {} : { Authorization: `Bearer ${this.key}` }),
           'User-Agent': 'fingerprint-cli/0.0.2',
           ...(init.headers ?? {}),
         },

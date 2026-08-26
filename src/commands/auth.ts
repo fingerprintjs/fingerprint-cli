@@ -36,11 +36,11 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
   const { intent, chosen } = await resolveIntent(opts.intent)
-  const result = await loginWithBrowser({ intent })
-  // After login lands, since there's no auth state to attribute it to before that. The bare entry
-  // reaches login/signup through this answer, which `cli_command_run` can't show — it reports
-  // `default` for the whole run.
+  // At the moment of the answer rather than after login returns. Waiting recorded the intent of
+  // people who finished and nobody else, which hid the drop-off this event exists to measure: the
+  // browser tab closed on the signup form, the login that errored.
   if (chosen) await track('cli_auth_intent_selected', { intent })
+  const result = await loginWithBrowser({ intent })
   log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
