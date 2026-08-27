@@ -207,8 +207,9 @@ export function makeSkillsDir({ reactPackages = [] } = {}) {
   return dir
 }
 
-// Reproduce the reported layout: a frontend-only Vite/React project at the workspace root,
-// managed by pnpm, with an existing Cloudflare config that belongs to the frontend deployment.
+// A frontend-only Vite/React fixture at the workspace root, managed by pnpm, with a Cloudflare
+// config that already belongs to the frontend deployment. The wrangler file is the trap: a
+// frontend-only run has to leave it alone instead of treating it as a backend to extend.
 export function makeFrontendOnlyPnpmRepo() {
   const root = mkdtempSync(join(tmpdir(), 'fp-react-pnpm-'))
   mkdirSync(join(root, 'src'))
