@@ -207,8 +207,8 @@ export function makeSkillsDir({ reactPackages = [] } = {}) {
   return dir
 }
 
-// Dan's reported layout: a frontend-only Vite/React project at the workspace root, managed by
-// pnpm, with an existing Cloudflare config that belongs to the frontend deployment.
+// Reproduce the reported layout: a frontend-only Vite/React project at the workspace root,
+// managed by pnpm, with an existing Cloudflare config that belongs to the frontend deployment.
 export function makeFrontendOnlyPnpmRepo() {
   const root = mkdtempSync(join(tmpdir(), 'fp-react-pnpm-'))
   mkdirSync(join(root, 'src'))
