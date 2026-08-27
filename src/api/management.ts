@@ -1,6 +1,7 @@
 import { getAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 import { debugLog } from '../utils/log-file.js'
+import { VERSION } from '../version.js'
 
 // Public Management API version header — required by the API (see fingerprint-mcp-server).
 const API_VERSION = '2025-11-20'
@@ -44,7 +45,7 @@ export class ManagementClient {
           'Content-Type': 'application/json',
           'X-API-Version': API_VERSION,
           Authorization: `Bearer ${this.key}`,
-          'User-Agent': 'fingerprint-cli/0.0.2',
+          'User-Agent': `fingerprint-cli/${VERSION}`,
           ...(init.headers ?? {}),
         },
       })
