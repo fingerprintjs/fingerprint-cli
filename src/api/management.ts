@@ -1,9 +1,27 @@
+import { readFileSync } from 'node:fs'
 import { getAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 import { debugLog } from '../utils/log-file.js'
 
 // Public Management API version header — required by the API (see fingerprint-mcp-server).
 const API_VERSION = '2025-11-20'
+
+// `src/api` and `dist/api` both sit two levels under the package root, so this resolves either way.
+// A hardcoded string here drifts from the published version the moment anyone forgets to bump it,
+// and the Management API reads this to tell CLI traffic apart and to report which version sent an
+// event.
+function packageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+      version?: string
+    }
+    return pkg.version ?? '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+
+const USER_AGENT = `fingerprint-cli/${packageVersion()}`
 
 interface ApiErrorBody {
   error?: { message?: string; code?: string }
@@ -49,7 +67,9 @@ export class ManagementClient {
           'Content-Type': 'application/json',
           'X-API-Version': API_VERSION,
           ...(this.anonymous ? {} : { Authorization: `Bearer ${this.key}` }),
-          'User-Agent': 'fingerprint-cli/0.0.2',
+          // Matched against on the routes that accept no key, alongside the User-Agent below.
+          'X-Fingerprint-Client': 'cli',
+          'User-Agent': USER_AGENT,
           ...(init.headers ?? {}),
         },
       })

@@ -168,6 +168,9 @@ test('logout reports with the credential it just dropped', async () => {
     ['cli_run_started', 'cli_command_run']
   )
   assert.equal(anonymous[0].authorization, undefined)
+  // No key to identify the caller on this route, so the Management API gates on these two instead.
+  assert.equal(anonymous[0].client, 'cli')
+  assert.match(anonymous[0].userAgent, /^fingerprint-cli\/\d+\.\d+\.\d+/)
 
   await api.close()
 })
