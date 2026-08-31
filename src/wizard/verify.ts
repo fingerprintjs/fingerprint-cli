@@ -241,20 +241,22 @@ export async function verifyIntegration(root: string, opts: { yes?: boolean; reu
   await awaitFirstEvent(Date.now() - START_SKEW_MS)
 }
 
-// Closing summary: what works now, and the Get Started steps that still stand between "installed"
-// and the full benefit. Text only — the remaining steps live in the dashboard and later flows.
+// Closing summary, mirroring the dashboard's Get Started page: the Quick start steps are the
+// focus (install → detailed insights → ad blockers); "Beyond the basics" is optional and listed
+// as such. Text only — the remaining steps live in the dashboard and later flows.
 export function printNextSteps(analysis: RepoAnalysis): void {
   const hasBackend = analysis.apps.some((a) => a.role === 'backend' || a.role === 'fullstack')
   log.step('Next steps — Get Started')
-  const steps = [
+  log.info('Quick start:')
+  log.info(
     hasBackend
-      ? undefined
-      : 'Verify events server-side before trusting sensitive actions — add your backend: fingerprint integrate --path <dir>',
-    'Protect your public API key with request filtering (dashboard → API Keys).',
-    'Explore Smart Signals on your events — bot detection, VPN, incognito, and more.',
-    'Automate protection with the Rules Engine (dashboard → Rules).',
-  ].filter((s): s is string => Boolean(s))
-  steps.forEach((step, i) => log.info(`  ${i + 1}. ${step}`))
+      ? '  • Access detailed insights — your backend verifies events server-side; explore the full Smart Signals set.'
+      : '  • Access detailed insights — verify events server-side: add your backend with fingerprint integrate --path <dir>'
+  )
+  log.info('  • Protect against ad blockers — serve the agent from your own domain (custom subdomain / proxy).')
+  log.line()
+  log.info(color.dim('Beyond the basics (optional): build your first rule (Rules Engine) · tag events with'))
+  log.info(color.dim('your data · protect your public API key (request filtering) · invite your team.'))
   log.line()
   log.kv('Dashboard', color.dim('https://dashboard.fingerprint.com'))
   log.kv('Docs', color.dim('https://docs.fingerprint.com'))
