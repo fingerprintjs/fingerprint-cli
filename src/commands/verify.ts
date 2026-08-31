@@ -1,12 +1,6 @@
 import { resolve } from 'node:path'
 import { analyzeRepo } from '../wizard/detect.js'
-import {
-  awaitFirstEvent,
-  checkEnvVarNames,
-  checkOnceForEvent,
-  printRunInstructions,
-  STANDALONE_LOOKBACK_MS,
-} from '../wizard/verify.js'
+import { awaitFirstEvent, checkEnvVarNames, printRunInstructions, STANDALONE_LOOKBACK_MS } from '../wizard/verify.js'
 import { getAuthState } from '../auth/tokenStore.js'
 import { log, printFailure } from '../wizard/log.js'
 import { isCi } from '../utils/ci.js'
@@ -36,10 +30,10 @@ export async function verifyCommand(opts: { path?: string } = {}) {
   // The app may already be running (or deployed), so look back a window rather than from "now".
   const since = Date.now() - STANDALONE_LOOKBACK_MS
 
-  // With a human on a live terminal, wait for the event; otherwise one immediate check so CI and
-  // scripts get a fast, unambiguous answer.
+  // With a human on a live terminal, wait for the event; otherwise one immediate check (timeout 0)
+  // so CI and scripts get a fast, unambiguous answer.
   const interactive = process.stdout.isTTY && !isCi()
-  const found = interactive ? await awaitFirstEvent(since) : await checkOnceForEvent(since)
+  const found = await awaitFirstEvent(since, interactive ? undefined : 0)
 
   if (found === undefined) {
     log.warn('This login carries no Server API key — check for events in the dashboard instead.')

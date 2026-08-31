@@ -22,18 +22,18 @@ const POLL_TIMEOUT_MS = 5 * 60 * 1000
 // Search slightly behind "now" so an event sent while the checks were printing still counts.
 const START_SKEW_MS = 60 * 1000
 // Standalone `fingerprint verify` looks further back: the app may already be running.
-const STANDALONE_LOOKBACK_MS = 10 * 60 * 1000
+export const STANDALONE_LOOKBACK_MS = 10 * 60 * 1000
 
 interface FoundEvent {
   visitorId?: string
   timestamp?: number
 }
 
-// One page of the Server API event search. `undefined` means the call itself failed (bad key,
-// network) — distinct from an empty page.
-async function searchEvents(secretKey: string, region: string, sinceMs: number): Promise<FoundEvent[] | undefined> {
+// The most recent identification event since `sinceMs`, or undefined when there is none (an
+// empty page, a bad key, and a network error all mean the same thing to a poll: keep waiting).
+async function searchFirstEvent(secretKey: string, region: string, sinceMs: number): Promise<FoundEvent | undefined> {
   const url = new URL(`${serverApiUrl(region)}/events/search`)
-  url.searchParams.set('limit', '10')
+  url.searchParams.set('limit', '1')
   url.searchParams.set('start', String(sinceMs))
   try {
     const res = await fetch(url, { headers: { 'Auth-API-Key': secretKey } })
@@ -41,10 +41,8 @@ async function searchEvents(secretKey: string, region: string, sinceMs: number):
     const body = (await res.json()) as {
       events?: Array<{ products?: { identification?: { data?: { visitorId?: string; timestamp?: number } } } }>
     }
-    return (body.events ?? []).map((e) => ({
-      visitorId: e.products?.identification?.data?.visitorId,
-      timestamp: e.products?.identification?.data?.timestamp,
-    }))
+    const data = body.events?.[0]?.products?.identification?.data
+    return body.events?.length ? { visitorId: data?.visitorId, timestamp: data?.timestamp } : undefined
   } catch {
     return undefined
   }
@@ -165,46 +163,25 @@ function printTimeoutCauses(region: string): void {
   log.info('  5. Non-Vite React setups: the CLI writes VITE_FINGERPRINT_PUBLIC_API_KEY; CRA/webpack apps use a different prefix and never see the key.')
 }
 
-// One immediate check for a recent event. Returns undefined when there's no key to check with.
-export async function checkOnceForEvent(sinceMs: number): Promise<boolean | undefined> {
+// Confirm an identification event since `sinceMs` actually reached Fingerprint. Polls until one
+// lands or `timeoutMs` passes; pass 0 to check exactly once (CI/scripts, where nobody is going to
+// start a dev server). Returns undefined when the login carries no Server API key to search with.
+export async function awaitFirstEvent(sinceMs: number, timeoutMs = POLL_TIMEOUT_MS): Promise<boolean | undefined> {
   const auth = getAuthState()
   if (!auth?.serverApiKey) return undefined
-  const events = await searchEvents(auth.serverApiKey, auth.region, sinceMs)
-  const hit = events?.[0]
-  if (!hit) {
-    addRunProperties({ first_event_received: false })
-    return false
-  }
-  reportEvent(hit)
-  return true
-}
-
-function reportEvent(hit: FoundEvent): void {
-  const ago = hit.timestamp ? Math.max(0, Math.round((Date.now() - hit.timestamp) / 1000)) : undefined
-  log.success(
-    `Identification received${hit.visitorId ? ` — visitor ${color.bold(hit.visitorId)}` : ''}${ago !== undefined ? color.dim(` (${ago}s ago)`) : ''}`
-  )
-  addRunProperties({ first_event_received: true, ...(ago !== undefined ? { first_event_latency_s: ago } : {}) })
-}
-
-// Live wait: poll the event search until the first identification lands or the timeout passes.
-// Callers guarantee a human is present (TTY, not CI) — this blocks on them starting the app.
-export async function awaitFirstEvent(sinceMs: number): Promise<boolean> {
-  const auth = getAuthState()
-  if (!auth?.serverApiKey) {
-    log.info('No Server API key from this login — load the app, then check for events in the dashboard.')
-    return false
-  }
-  const spinner = process.stdout.isTTY && !isCi() ? new Spinner() : null
+  const spinner = timeoutMs > 0 && process.stdout.isTTY && !isCi() ? new Spinner() : null
   spinner?.start('Waiting for your first identification event… start the app and load the page (Ctrl-C to stop waiting)')
-  const deadline = Date.now() + POLL_TIMEOUT_MS
+  const deadline = Date.now() + timeoutMs
   try {
     for (;;) {
-      const events = await searchEvents(auth.serverApiKey, auth.region, sinceMs)
-      const hit = events?.[0]
+      const hit = await searchFirstEvent(auth.serverApiKey, auth.region, sinceMs)
       if (hit) {
         spinner?.stop()
-        reportEvent(hit)
+        const ago = hit.timestamp ? Math.max(0, Math.round((Date.now() - hit.timestamp) / 1000)) : undefined
+        log.success(
+          `Identification received${hit.visitorId ? ` — visitor ${color.bold(hit.visitorId)}` : ''}${ago !== undefined ? color.dim(` (${ago}s ago)`) : ''}`
+        )
+        addRunProperties({ first_event_received: true, ...(ago !== undefined ? { first_event_latency_s: ago } : {}) })
         return true
       }
       if (Date.now() >= deadline) break
@@ -214,7 +191,7 @@ export async function awaitFirstEvent(sinceMs: number): Promise<boolean> {
     spinner?.stop()
   }
   addRunProperties({ first_event_received: false })
-  printTimeoutCauses(auth.region)
+  if (timeoutMs > 0) printTimeoutCauses(auth.region)
   return false
 }
 
@@ -238,7 +215,8 @@ export async function verifyIntegration(root: string, opts: { yes?: boolean; reu
     log.info('Confirm later with: fingerprint verify')
     return
   }
-  await awaitFirstEvent(Date.now() - START_SKEW_MS)
+  const got = await awaitFirstEvent(Date.now() - START_SKEW_MS)
+  if (got === undefined) log.info('No Server API key from this login — load the app, then check for events in the dashboard.')
 }
 
 // Closing summary, mirroring the dashboard's Get Started page: the Quick start steps are the
@@ -262,5 +240,3 @@ export function printNextSteps(analysis: RepoAnalysis): void {
   log.kv('Docs', color.dim('https://docs.fingerprint.com'))
   log.end()
 }
-
-export { STANDALONE_LOOKBACK_MS }
