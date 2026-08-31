@@ -5,6 +5,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
 import { provisionForRepo } from './provision.js'
+import { printNextSteps, verifyIntegration } from './verify.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { color } from '../utils/color.js'
@@ -107,21 +108,31 @@ function resolveProjectDir(base: string, input: string): string | undefined {
 // repo). Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at;
 // it never assumes a particular layout.
 export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
-  const outcome = await provisionAndApply(root, opts)
+  const { outcome, reusedSecretKey } = await provisionAndApply(root, opts)
   // After a failure, offering more repos would read as the run having succeeded here.
   if (outcome !== 'failed') await offerOtherProjects(root, opts)
+  // The applied integration only counts once an identification event actually lands — verify it,
+  // then close with the Get Started steps that remain. (Verification is workspace-level, so one
+  // pass at the end also covers repos added via offerOtherProjects.)
+  if (outcome === 'completed') {
+    await verifyIntegration(root, { yes: opts.yes, reusedSecretKey })
+    printNextSteps(analyzeRepo(root))
+  }
   return outcome
 }
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<IntegrateOutcome> {
+async function provisionAndApply(
+  root: string,
+  opts: { yes?: boolean }
+): Promise<{ outcome: IntegrateOutcome; reusedSecretKey?: string }> {
   log.step('Set up environment variables')
-  const { needsDotenv } = await provisionForRepo(root)
+  const { needsDotenv, reusedSecretKey } = await provisionForRepo(root)
   if (needsDotenv.length) {
     log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
   }
-  return applyIntegration(root, opts)
+  return { outcome: await applyIntegration(root, opts), reusedSecretKey }
 }
 
 // After integrating `root`, Fingerprint only delivers value once BOTH sides exist: the frontend

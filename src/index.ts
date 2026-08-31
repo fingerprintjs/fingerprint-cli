@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import { login, signup, startAuth, logout, whoami } from './commands/auth.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
+import { verifyCommand } from './commands/verify.js'
 import { getAuthState } from './auth/tokenStore.js'
 import { hasUsableSession } from './auth/refresh.js'
 import { setCiContext, isCi } from './utils/ci.js'
@@ -83,6 +84,12 @@ program
     return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes })
   })
 
+program
+  .command('verify')
+  .description('Confirm identification events are reaching your workspace')
+  .option('--path <dir>', 'repo to check (default: current directory)')
+  .action((opts) => verifyCommand({ path: opts.path }))
+
 // Default command: `fingerprint` with no subcommand. Route by where the user is so the whole
 // onboarding is one command (login → integrate, resuming from any point). Signup + workspace/region
 // selection all happen in the browser during login, so by the time we're authenticated the workspace
@@ -125,6 +132,7 @@ async function defaultCommand(unknownCommand?: string) {
   const commands: [string, string][] = [
     ['fingerprint', 'this guided setup, start to finish'],
     ['fingerprint integrate', 'add Fingerprint to the repo in this directory'],
+    ['fingerprint verify', 'confirm identification events are arriving'],
     ['fingerprint keys', 'print a public or secret API key'],
     ['fingerprint whoami', 'show the signed-in workspace'],
     ['fingerprint --help', 'every command and flag'],
