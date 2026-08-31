@@ -1,5 +1,5 @@
 import { confirm } from '@inquirer/prompts'
-import { execFileSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
@@ -76,6 +76,11 @@ function permissionOptions(extraReadonly: string[] = []) {
   return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
 }
 
+// How an integration run ended. `skipped` covers the user declining a prompt (the integration
+// itself, or an interactive install) — a choice, not a failure, so it keeps a zero exit code.
+// `failed` means the agent or a package install broke; the run must not claim success or exit 0.
+export type IntegrateOutcome = 'completed' | 'skipped' | 'failed'
+
 // Whichever side of an integration a repo covers. A fullstack framework (e.g. Next.js) and a
 // monorepo with both apps cover both; a standalone frontend or backend covers one.
 type IntegrationRole = 'frontend' | 'backend'
@@ -101,20 +106,22 @@ function resolveProjectDir(base: string, input: string): string | undefined {
 // offer to set Fingerprint up in other projects too (a separate frontend/backend, or any other
 // repo). Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at;
 // it never assumes a particular layout.
-export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<void> {
-  await provisionAndApply(root, opts)
-  await offerOtherProjects(root, opts)
+export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
+  const outcome = await provisionAndApply(root, opts)
+  // After a failure, offering more repos would read as the run having succeeded here.
+  if (outcome !== 'failed') await offerOtherProjects(root, opts)
+  return outcome
 }
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<void> {
+async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<IntegrateOutcome> {
   log.step('Set up environment variables')
   const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
     log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
   }
-  await applyIntegration(root, opts)
+  return applyIntegration(root, opts)
 }
 
 // After integrating `root`, Fingerprint only delivers value once BOTH sides exist: the frontend
@@ -179,7 +186,7 @@ async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promis
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent. Called per-repo by `integrateProject` (the main repo plus any follow-up
 // projects) so the flow is continuous: set up env → "integrate this repo?" → apply.
-async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<void> {
+async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
@@ -187,7 +194,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
   if (!analysis.skills.length) {
     if (!analysis.frontend && !analysis.backend) {
       log.info('No Fingerprint integration is available for this stack yet.')
-      return
+      return 'skipped'
     }
     const stack = [analysis.frontend?.framework, analysis.backend?.framework].filter(Boolean).join(' + ')
     log.warn(`No curated skill for this stack (${stack}).`)
@@ -198,24 +205,23 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
         message: 'Attempt an experimental, docs-based integration? (researches Fingerprint docs, then edits files)',
         default: true,
       }))
-    if (!proceed) return
+    if (!proceed) return 'skipped'
 
     log.step('Researching Fingerprint docs and applying integration')
-    await runAgentFromDocs(analysis)
-    return
+    return runAgentFromDocs(analysis)
   }
 
   const proceed =
     opts.yes ||
     autoYes() ||
     (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skills.join(' + ')})? (edits files)`, default: true }))
-  if (!proceed) return
+  if (!proceed) return 'skipped'
 
   log.step('Apply integration')
-  await runAgent(analysis)
+  return runAgent(analysis)
 }
 
-export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
+export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
@@ -242,9 +248,19 @@ export async function runAgent(analysis: RepoAnalysis): Promise<boolean> {
   })
 
   const ok = await consume(response, 'Setting up the integration')
+  if (!ok) {
+    process.exitCode = 1
+    return 'failed'
+  }
 
-  if (ok) await installPackages(analysis, metas)
-  return ok
+  const installed = await installPackages(analysis, metas)
+  if (installed === 'failed') {
+    log.warn('The code changes were applied, but package installs failed — the integration cannot run until they are installed (see above).')
+    process.exitCode = 1
+    return 'failed'
+  }
+  log.success('Agent finished applying the integration.')
+  return installed
 }
 
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with
@@ -304,7 +320,7 @@ function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
 // integrates based on the detected frameworks. Web tools are enabled so it can read the docs.
 // No deterministic package install (we have no skill metadata) — it edits the manifest and
 // reports the install command instead.
-export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean> {
+export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<IntegrateOutcome> {
   const llm = await resolveLlmConfig()
   const response = query({
     prompt: buildDocsTaskPrompt(analysis),
@@ -318,8 +334,13 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<boolean>
   })
 
   const ok = await consume(response, 'Researching docs and applying the integration')
-  if (ok) log.warn('Experimental integration applied from docs — review the changes and install any dependencies it listed.')
-  return ok
+  if (!ok) {
+    process.exitCode = 1
+    return 'failed'
+  }
+  log.success('Agent finished applying the integration.')
+  log.warn('Experimental integration applied from docs — review the changes and install any dependencies it listed.')
+  return 'completed'
 }
 
 const DOCS_SYSTEM_PROMPT = [
@@ -399,7 +420,8 @@ function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
       log.error(`Agent did not complete: ${msg.result ?? msg.subtype ?? 'unknown error'}`)
       return false
     }
-    log.success('Agent finished applying the integration.')
+    // The success line is printed by the caller once the package installs are also done —
+    // announcing it here would claim success before the install step can still fail.
     return true
   }
   return undefined
@@ -413,14 +435,41 @@ function summarizeToolInput(_name: string, input: any): string {
   return ''
 }
 
+// Run one package-manager install, streaming its output live while also retaining it — the
+// retained text is what lets the caller classify the failure (stdio:'inherit' would discard it).
+function runPackageInstall(bin: string, args: string[], cwd: string): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { cwd, stdio: ['inherit', 'pipe', 'pipe'] })
+    let output = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+      process.stdout.write(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+      process.stderr.write(chunk)
+    })
+    child.on('error', (err) => resolve({ ok: false, output: `${output}${err.message}` }))
+    child.on('close', (code) => resolve({ ok: code === 0, output }))
+  })
+}
+
+// pnpm refusing to run a dependency's build scripts until they're approved (blocks the install
+// with a non-zero exit; the fix is pnpm's approve-builds flow, not a retry).
+const PNPM_BLOCKED_BUILDS = /ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/i
+
 // Install each skill's packages into the app that needs them, using that app's package
 // manager. Deterministic and host-side — the agent never gets a shell.
-async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Promise<void> {
+// `failed` (an install broke) is distinct from `skipped` (the user declined an interactive
+// install — a choice, not a failure, so it must not fail the run).
+async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Promise<IntegrateOutcome> {
   const appForRole: Record<string, DetectedApp | undefined> = {
     frontend: analysis.frontend,
     backend: analysis.backend,
     fullstack: analysis.frontend ?? analysis.backend,
   }
+  let failed = false
+  let skipped = false
   for (const skill of skills) {
     if (skill.packages.length === 0) continue
     skill.packages.forEach(assertAllowedPackage)
@@ -437,17 +486,25 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
       const ok = await confirm({ message: `Install ${pkgs.join(', ')} in ${app.rel}? (${bin} ${sub})`, default: true })
       if (!ok) {
         log.warn(`Skipped — install manually: ${bin} ${sub} ${pkgs.join(' ')} (in ${app.rel})`)
+        skipped = true
         continue
       }
     }
     log.step(`Installing ${pkgs.join(', ')} in ${app.rel} (${bin})`)
-    try {
-      execFileSync(bin, [sub, ...pkgs], { cwd: app.dir, stdio: 'inherit' })
+    const result = await runPackageInstall(bin, [sub, ...pkgs], app.dir)
+    if (result.ok) {
       log.success(`Installed in ${app.rel}`)
-    } catch {
+    } else if (bin === 'pnpm' && PNPM_BLOCKED_BUILDS.test(result.output)) {
+      failed = true
+      log.warn(`pnpm blocked a dependency's build scripts in ${app.rel}. To fix it:`)
+      log.info(`  1. In ${app.rel}, run: pnpm approve-builds — and approve the listed package(s)`)
+      log.info(`  2. Re-run the install: ${bin} ${sub} ${pkgs.join(' ')}`)
+    } else {
+      failed = true
       log.warn(`Install failed in ${app.rel} — run manually: ${bin} ${sub} ${pkgs.join(' ')}`)
     }
   }
+  return failed ? 'failed' : skipped ? 'skipped' : 'completed'
 }
 
 // Append @latest to a package spec that has no version. Scoped names start with '@', so a real
