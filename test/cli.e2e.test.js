@@ -42,3 +42,10 @@ test('--help runs and lists commands', () => {
   assert.match(res.stdout, /Usage: fingerprint/)
   assert.match(res.stdout, /integrate/)
 })
+
+test('--version prints the package version', () => {
+  const res = runCli(['--version'])
+
+  assert.equal(res.status, 0)
+  assert.equal(res.stdout.trim(), VERSION)
+})
