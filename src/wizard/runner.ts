@@ -4,8 +4,8 @@ import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
-import { provisionForRepo } from './provision.js'
-import { printNextSteps, verifyIntegration } from './verify.js'
+import { conventionFor, provisionForRepo } from './provision.js'
+import { printClosingLinks, printNextSteps, verifyIntegration } from './verify.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { color } from '../utils/color.js'
@@ -112,11 +112,28 @@ export async function integrateProject(root: string, opts: { yes?: boolean } = {
   // After a failure, offering more repos would read as the run having succeeded here.
   if (outcome !== 'failed') await offerOtherProjects(root, opts)
   // The applied integration only counts once an identification event actually lands — verify it,
-  // then close with the Get Started steps that remain. (Verification is workspace-level, so one
-  // pass at the end also covers repos added via offerOtherProjects.)
+  // then continue the Get Started checklist (or print it, when there's no confirmed event to
+  // build on). Verification is workspace-level, so one pass at the end also covers repos added
+  // via offerOtherProjects.
   if (outcome === 'completed') {
-    await verifyIntegration(root, { yes: opts.yes, reusedSecretKey })
-    printNextSteps(analyzeRepo(root))
+    const analysis = analyzeRepo(root)
+    const confirmed = await verifyIntegration(root, { yes: opts.yes, reusedSecretKey })
+    // Only curated runs installed the orchestrator + dispatch skills the continuation needs; the
+    // docs fallback (and an unconfirmed event) gets the printed checklist instead. `confirmed`
+    // implies a human on a live TTY — the event wait only ever runs interactively.
+    let walked = false
+    if (confirmed && analysis.skills.length) {
+      const proceed = await confirm({
+        message: 'First event confirmed. Continue with the next Get Started steps now (rules, tagging, request filtering)?',
+        default: true,
+      })
+      if (proceed) {
+        log.step('Continue Get Started')
+        walked = await continueGetStarted(analysis)
+      }
+    }
+    if (walked) printClosingLinks()
+    else printNextSteps(analysis)
   }
   return outcome
 }
@@ -232,21 +249,34 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
   return runAgent(analysis)
 }
 
+// The Get Started orchestrator and the feature skills it dispatches to. fingerprint-proxy-
+// integration is deliberately excluded: the ad-blocker step stays printed dashboard guidance, and
+// the prompt tells the agent to explain it and move on if the checklist reaches it.
+const GET_STARTED_SKILL = 'fingerprint-get-started'
+const GET_STARTED_DISPATCH = [
+  'fingerprint-smart-signals',
+  'fingerprint-tagging',
+  'fingerprint-request-filtering',
+  'fingerprint-rules-engine',
+]
+
 export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
-  const ids = analysis.skills
+  // The orchestrator drives; the detected framework skills plus the dispatch set are what it can
+  // delegate to. Step selection and scope live in the skill, not in a hand-rolled prompt.
+  const ids = [GET_STARTED_SKILL, ...analysis.skills, ...GET_STARTED_DISPATCH]
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
   // rather than us stuffing their full text into the prompt every turn.
   installSkills(analysis.root, ids)
   const metas = ids.map(skillMeta)
 
-  log.step(`Applying ${ids.join(' + ')} in ${analysis.root}`)
+  log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
   const response = query({
-    prompt: buildTaskPrompt(analysis, ids),
+    prompt: buildQuickStartPrompt(analysis),
     options: {
       model: llm.model,
       env: llm.env,
@@ -254,7 +284,7 @@ export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(),
+      ...permissionOptions(['Skill']), // the orchestrator dispatches via the Skill tool
     },
   })
 
@@ -294,11 +324,14 @@ async function consume(response: unknown, initialMessage: string): Promise<boole
 }
 
 const SYSTEM_PROMPT = [
-  'You are the Fingerprint integration wizard. You add Fingerprint device intelligence to a',
-  "developer's app for fraud prevention.",
+  'You are the Fingerprint integration wizard, running the Fingerprint Get Started flow for a',
+  "developer's app.",
   '',
-  'The integration skills are installed under .claude/skills/. For each skill named in the task,',
-  'read .claude/skills/<id>/SKILL.md (and its snippets/) and follow it exactly.',
+  'The Get Started orchestrator and the skills it dispatches to are installed under',
+  '.claude/skills/. Read .claude/skills/fingerprint-get-started/SKILL.md and follow it: audit',
+  "what's already done, report the checklist, then apply the not-done steps that are in scope for",
+  'this run (the task says which). Read each dispatched skill from .claude/skills/<id>/SKILL.md',
+  'before applying it.',
   '',
   'Rules:',
   '- Make minimal, focused changes; match the existing code style.',
@@ -309,22 +342,58 @@ const SYSTEM_PROMPT = [
   '- Do NOT add dependencies or pin version numbers in package.json / requirements.txt. The CLI',
   '  installs the correct published versions itself; just write the app code that imports them.',
   '  ("v4" in a skill refers to the Fingerprint platform, not an npm package major version.)',
-  '- When done, briefly summarize the files you changed.',
+  '- Dashboard-only steps (rules, request filtering, ad-blocker protection): give the exact',
+  '  dashboard actions briefly, then move on — never stall on them. Skip the',
+  '  fingerprint-proxy-integration step entirely; just note it exists.',
+  '- Do not invent app surface: if the repo has no backend, no form, or no sensitive action,',
+  "  integrate what's actually there and say what's missing — never scaffold one.",
+  '- When done, briefly summarize the checklist status and the files you changed.',
 ].join('\n')
 
-function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
+// Scope the first run to the quick-start steps: identification (and server-side verification
+// where a backend exists). The later checklist steps only run after the first identification
+// event is confirmed received — evidence, not the agent's word (see integrateProject).
+function buildQuickStartPrompt(analysis: RepoAnalysis): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
+  const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
-    'Integrate Fingerprint into this repository.',
+    'Run the Fingerprint Get Started flow for this repository.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
-    'Read and follow each named skill from .claude/skills/<id>/SKILL.md and apply it to the',
-    'matching part of the app. The per-app .env files are already provisioned with the keys',
-    '(frontend: the bundler-prefixed public key; backend: FINGERPRINT_SECRET_API_KEY).',
-    "Protect the app's primary sensitive action (signup if present, else login): identify on the",
-    'client, send the event_id, and verify it server-side, blocking bots before completing.',
-    `Skills to apply (read each from .claude/skills/<id>/SKILL.md): ${ids.join(', ')}.`,
+    'The per-app .env files are already provisioned with the keys',
+    `(frontend: ${publicVar ?? 'a bundler-prefixed public key'}; backend: FINGERPRINT_SECRET_API_KEY).`,
+    'Scope for this run: audit first, then apply only the Quick start steps that the audit shows',
+    'are not done — (1) frontend identification via the matching frontend skill, and (2)',
+    'server-side verification where a backend exists. Do not start the later checklist steps in',
+    'this run; end by reporting the checklist status.',
   ].join('\n')
+}
+
+// The post-verification continuation: the first event is confirmed, so walk the remaining
+// checklist steps. The orchestrator's own audit keeps this idempotent — finished work is skipped.
+export async function continueGetStarted(analysis: RepoAnalysis): Promise<boolean> {
+  const llm = await resolveLlmConfig()
+  const response = query({
+    prompt: [
+      'Continue the Fingerprint Get Started flow. The Quick start steps are applied and the first',
+      'identification event was confirmed received.',
+      'Walk the remaining checklist steps in order — build your first rule',
+      '(fingerprint-rules-engine), tag events with your data (fingerprint-tagging), protect the',
+      'public API key (fingerprint-request-filtering). Audit before each step and skip finished',
+      'work. Apply code changes where a skill calls for them; for dashboard-only parts give the',
+      'exact dashboard actions. Skip the ad-blocker/proxy step — briefly note it and move on.',
+    ].join('\n'),
+    options: {
+      model: llm.model,
+      env: llm.env,
+      cwd: analysis.root,
+      systemPrompt: SYSTEM_PROMPT,
+      settingSources: ['project'],
+      skills: [GET_STARTED_SKILL, ...GET_STARTED_DISPATCH],
+      ...permissionOptions(['Skill']),
+    },
+  })
+  return consume(response, 'Continuing the Get Started steps')
 }
 
 // Fallback for stacks with no curated skill: the agent researches Fingerprint's docs and

@@ -32,8 +32,10 @@ You do not need an Anthropic API key — the CLI routes its model calls through 
    verify it against the Fingerprint API, and block bots before the action completes.
 5. **Offers to set up the other side** — a separate frontend or backend, or another repo.
 6. **Verifies it works**: checks the integration references the right keys, tells you how to run
-   the app, and waits to confirm your first identification event actually reaches Fingerprint —
-   then points you at the remaining Get Started steps.
+   the app, and waits to confirm your first identification event actually reaches Fingerprint.
+7. **Walks the rest of Get Started**: once your first event is confirmed, it offers to continue —
+   rules, event tagging, request filtering — applying code where code helps and giving you the
+   exact dashboard actions where it doesn't.
 
 Nothing is applied without your confirmation, and every change lands in your working tree for you to
 review and commit.

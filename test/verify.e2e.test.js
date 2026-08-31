@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   startManagementApi,
@@ -94,7 +94,7 @@ test('run instructions name the app’s own dev command', async () => {
   assert.match(res.stdout, /npm run dev/)
 })
 
-test('the run ends by naming the remaining get-started steps, installing nothing new', async () => {
+test('the run ends by naming the remaining get-started steps', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
@@ -106,9 +106,7 @@ test('the run ends by naming the remaining get-started steps, installing nothing
   assert.equal(res.status, 0, res.stderr)
   assert.match(res.stdout, /request filtering/i)
   assert.match(res.stdout, /Smart Signals/)
-  // Text only — no skills beyond the two the integration itself installed.
-  const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
-  assert.deepEqual(installed, ['fingerprint-node', 'fingerprint-react'])
+  // Which skills the integration installs is asserted in get-started.e2e.test.js.
 })
 
 test('fingerprint verify confirms a received identification event', async () => {

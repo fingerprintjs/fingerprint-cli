@@ -198,7 +198,9 @@ export async function awaitFirstEvent(sinceMs: number, timeoutMs = POLL_TIMEOUT_
 // The integrate flow's verification step: static checks, run instructions, then — when a human is
 // present — the live wait for the first event. Non-interactive runs (CI, --yes, piped output) have
 // nobody to start a dev server, so they get the manual pointer instead of a poll.
-export async function verifyIntegration(root: string, opts: { yes?: boolean; reusedSecretKey?: string } = {}): Promise<void> {
+// Returns whether the first identification event was actually confirmed — the flow only advances
+// past the quick-start steps on evidence, never on the agent's word.
+export async function verifyIntegration(root: string, opts: { yes?: boolean; reusedSecretKey?: string } = {}): Promise<boolean> {
   const analysis = analyzeRepo(root)
   const auth = getAuthState()
   log.step('Verify the integration')
@@ -208,15 +210,16 @@ export async function verifyIntegration(root: string, opts: { yes?: boolean; reu
 
   if (isCi() || opts.yes || autoYes() || !process.stdout.isTTY) {
     log.info('When the app is running, confirm the first event with: fingerprint verify')
-    return
+    return false
   }
   const wait = await confirm({ message: 'Wait here and confirm your first identification event now?', default: true })
   if (!wait) {
     log.info('Confirm later with: fingerprint verify')
-    return
+    return false
   }
   const got = await awaitFirstEvent(Date.now() - START_SKEW_MS)
   if (got === undefined) log.info('No Server API key from this login — load the app, then check for events in the dashboard.')
+  return got === true
 }
 
 // Closing summary, mirroring the dashboard's Get Started page: the Quick start steps are the
@@ -235,6 +238,12 @@ export function printNextSteps(analysis: RepoAnalysis): void {
   log.line()
   log.info(color.dim('Beyond the basics (optional): build your first rule (Rules Engine) · tag events with'))
   log.info(color.dim('your data · protect your public API key (request filtering) · invite your team.'))
+  printClosingLinks()
+}
+
+// Shared run ending — also used when the Get Started continuation walked the steps itself and a
+// second "next steps" list would only repeat them.
+export function printClosingLinks(): void {
   log.line()
   log.kv('Dashboard', color.dim('https://dashboard.fingerprint.com'))
   log.kv('Docs', color.dim('https://docs.fingerprint.com'))
