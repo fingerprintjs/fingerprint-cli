@@ -82,6 +82,6 @@ test('without a confirmed event the run does not advance past quick start', asyn
   // Non-interactive → no event poll → no confirmation → the continuation must not start; the run
   // points at manual verification and prints the remaining checklist instead.
   assert.match(res.stdout, /fingerprint verify/)
-  assert.ok(!res.stdout.includes('Continue Get Started'), res.stdout)
+  assert.ok(!res.stdout.includes('Finish the Quick start'), res.stdout)
   assert.match(res.stdout, /request filtering/i)
 })

@@ -124,11 +124,11 @@ export async function integrateProject(root: string, opts: { yes?: boolean } = {
     let walked = false
     if (confirmed && analysis.skills.length) {
       const proceed = await confirm({
-        message: 'First event confirmed. Continue with the next Get Started steps now (rules, tagging, request filtering)?',
+        message: 'First event confirmed. Finish the Quick start now (detailed insights, ad-blocker protection)?',
         default: true,
       })
       if (proceed) {
-        log.step('Continue Get Started')
+        log.step('Finish the Quick start')
         walked = await continueGetStarted(analysis)
       }
     }
@@ -369,19 +369,24 @@ function buildQuickStartPrompt(analysis: RepoAnalysis): string {
   ].join('\n')
 }
 
-// The post-verification continuation: the first event is confirmed, so walk the remaining
-// checklist steps. The orchestrator's own audit keeps this idempotent — finished work is skipped.
+// The post-verification continuation: the first event is confirmed (Quick start step 1), so
+// finish the Quick start — that's the focus. The "Beyond the basics" steps are optional and only
+// get named, never walked unprompted. The orchestrator's own audit keeps this idempotent.
 export async function continueGetStarted(analysis: RepoAnalysis): Promise<boolean> {
   const llm = await resolveLlmConfig()
   const response = query({
     prompt: [
-      'Continue the Fingerprint Get Started flow. The Quick start steps are applied and the first',
-      'identification event was confirmed received.',
-      'Walk the remaining checklist steps in order — build your first rule',
-      '(fingerprint-rules-engine), tag events with your data (fingerprint-tagging), protect the',
-      'public API key (fingerprint-request-filtering). Audit before each step and skip finished',
-      'work. Apply code changes where a skill calls for them; for dashboard-only parts give the',
-      'exact dashboard actions. Skip the ad-blocker/proxy step — briefly note it and move on.',
+      'Continue the Fingerprint Get Started flow. Quick start step 1 (install Fingerprint) is done —',
+      'the first identification event was confirmed received.',
+      'Finish the remaining Quick start steps, in order:',
+      '  2. Access detailed insights about a visitor — server-side verification and the full signal',
+      '     set (fingerprint-node / fingerprint-python if not yet applied, then',
+      '     fingerprint-smart-signals). Audit first; skip what is already done.',
+      '  3. Protect against ad blockers — no code in this run: briefly explain the custom subdomain',
+      '     / proxy options and where to set them up (dashboard + docs), then move on.',
+      'The "Beyond the basics" steps (build your first rule, tag events, protect the public API key,',
+      'invite your team) are optional — do NOT walk them now. End by reporting the Quick start',
+      'status and listing those optional steps in one or two lines.',
     ].join('\n'),
     options: {
       model: llm.model,
@@ -389,11 +394,11 @@ export async function continueGetStarted(analysis: RepoAnalysis): Promise<boolea
       cwd: analysis.root,
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'],
-      skills: [GET_STARTED_SKILL, ...GET_STARTED_DISPATCH],
+      skills: [GET_STARTED_SKILL, ...analysis.skills, ...GET_STARTED_DISPATCH],
       ...permissionOptions(['Skill']),
     },
   })
-  return consume(response, 'Continuing the Get Started steps')
+  return consume(response, 'Finishing the Quick start steps')
 }
 
 // Fallback for stacks with no curated skill: the agent researches Fingerprint's docs and
