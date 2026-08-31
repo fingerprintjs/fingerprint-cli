@@ -78,6 +78,21 @@ export function resolveConfig(region?: string): RuntimeConfig {
   }
 }
 
+// Server (Events) API base per workspace region — used host-side for verification (key probe +
+// first-event search); the secret key never leaves the machine. Overridable via
+// FINGERPRINT_SERVER_API_URL (tests, staging).
+export function serverApiUrl(region: string): string {
+  if (process.env.FINGERPRINT_SERVER_API_URL) return process.env.FINGERPRINT_SERVER_API_URL
+  switch (region) {
+    case 'eu':
+      return 'https://eu.api.fpjs.io'
+    case 'ap':
+      return 'https://ap.api.fpjs.io'
+    default:
+      return 'https://api.fpjs.io'
+  }
+}
+
 // Server region codes accepted by POST /subscriptions/start (mirrors the dashboard's REGIONS).
 export type RegionCode = 'use1' | 'euc1' | 'aps1'
 

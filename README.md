@@ -31,6 +31,9 @@ You do not need an Anthropic API key — the CLI routes its model calls through 
 4. **Writes the integration**: identify the visitor in the browser, send the event to your server,
    verify it against the Fingerprint API, and block bots before the action completes.
 5. **Offers to set up the other side** — a separate frontend or backend, or another repo.
+6. **Verifies it works**: checks the integration references the right keys, tells you how to run
+   the app, and waits to confirm your first identification event actually reaches Fingerprint —
+   then points you at the remaining Get Started steps.
 
 Nothing is applied without your confirmation, and every change lands in your working tree for you to
 review and commit.
@@ -52,6 +55,7 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 | --- | --- |
 | `fingerprint` | The guided setup, start to finish: sign in, then integrate |
 | `fingerprint integrate` | Add Fingerprint to the repo in the current directory |
+| `fingerprint verify` | Confirm identification events are reaching your workspace (exit 0 when one arrived, 1 when not — scriptable) |
 | `fingerprint keys [public\|secret]` | Print an API key for your workspace (prompts if omitted) |
 | `fingerprint login` / `signup` | Sign in or create an account through the browser |
 | `fingerprint whoami` | Show the signed-in workspace |
@@ -115,9 +119,10 @@ Run with `--verbose` to see the same detail live in your terminal.
 
 ## Telemetry
 
-After you sign in, the CLI reports which commands you run and which frameworks were detected, so we
-know which integrations to improve. It does not collect your code, file contents, file paths, or API
-keys. Nothing is reported before you sign in.
+After you sign in, the CLI reports which commands you run, which frameworks were detected, and
+whether the integration completed and received its first identification event, so we know which
+integrations to improve. It does not collect your code, file contents, file paths, or API keys.
+Nothing is reported before you sign in.
 
 ## Support
 

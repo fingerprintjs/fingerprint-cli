@@ -18,7 +18,7 @@ interface EnvConvention {
   needsDotenv?: boolean
 }
 
-function conventionFor(app: DetectedApp): EnvConvention {
+export function conventionFor(app: DetectedApp): EnvConvention {
   switch (app.framework) {
     // Fullstack single-repo frameworks: both keys + both region vars in one auto-loaded file.
     case 'next':
@@ -134,9 +134,12 @@ function ensureGitignored(root: string, files: string[]): { added: string[]; ext
 }
 
 // What provisioning discovered for the downstream integration step. `needsDotenv` is the set of
-// backends that must load .env at runtime.
+// backends that must load .env at runtime. `reusedSecretKey` is set when the secret came from a
+// pre-existing .env rather than the login bundle — the one case where it can belong to another
+// workspace/region, so verification probes it (host-side only; it never reaches the agent).
 export interface ProvisionResult {
   needsDotenv: DetectedApp[]
+  reusedSecretKey?: string
 }
 
 // Provision real workspace keys into the right per-app .env files, host-side (never via the
@@ -159,6 +162,7 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   if (publicKey) log.info('Using existing Public API key.')
 
   let secretKey: string | undefined
+  let reusedSecretKey: string | undefined
   if (secretApps.length) {
     // Reuse a secret already provisioned into a backend env; otherwise use the Server API key from the
     // login bundle. The CLI never mints keys itself.
@@ -167,8 +171,10 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
       secretKey = readEnvVar(join(app.dir, conv.file), conv.secretVar!)
       if (secretKey) break
     }
-    if (secretKey) log.info('Reusing existing Secret API key from env.')
-    else if (auth.serverApiKey) {
+    if (secretKey) {
+      log.info('Reusing existing Secret API key from env.')
+      reusedSecretKey = secretKey
+    } else if (auth.serverApiKey) {
       secretKey = auth.serverApiKey
       log.info('Using Server API key from login.')
     } else {
@@ -199,5 +205,5 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   if (added.length) log.success(`Added to .gitignore: ${added.join(', ')}`)
   for (const file of external) log.warn(`${file} is outside this repo — add it to that project's .gitignore manually.`)
 
-  return { needsDotenv }
+  return { needsDotenv, reusedSecretKey }
 }

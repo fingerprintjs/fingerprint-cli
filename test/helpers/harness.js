@@ -57,6 +57,43 @@ export function startManagementApi() {
   })
 }
 
+// A fake Server (Events) API: just GET /events/search, which verification uses for the reused-key
+// probe and the first-event check. `events` is what a valid key sees; keys in `badKeys` get the
+// 403 a key from another workspace/region would get. Point FINGERPRINT_SERVER_API_URL here.
+export function startServerApi({ events = [], badKeys = [] } = {}) {
+  const requests = []
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (req.method === 'GET' && url.pathname === '/events/search') {
+      const key = req.headers['auth-api-key']
+      requests.push({ key, query: Object.fromEntries(url.searchParams) })
+      if (!key || badKeys.includes(key)) {
+        res.writeHead(403, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ error: { code: 'TokenNotFound', message: 'API key not found' } }))
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ events }))
+    }
+    res.writeHead(404, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: { message: `no route: ${req.method} ${url.pathname}` } }))
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address()
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        requests: () => requests,
+        close: () => new Promise((r) => server.close(r)),
+      })
+    })
+  })
+}
+
+// A minimal identification event the way /events/search returns them.
+export function identificationEvent(visitorId, timestamp = Date.now()) {
+  return { products: { identification: { data: { visitorId, timestamp } } } }
+}
+
 // Isolated $HOME so the CLI's auth state can't pick up a real `fingerprint login` on this machine.
 export function makeHome() {
   return mkdtempSync(join(tmpdir(), 'fp-home-'))
