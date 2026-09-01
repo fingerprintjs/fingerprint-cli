@@ -1,4 +1,5 @@
 import { banner, color, isColorEnabled } from './color.js'
+import { VERSION } from '../version.js'
 
 // Plain strings (not a template literal) so `/`, `\`, and `` ` `` in the art stay literal.
 const BANNER = `
@@ -46,7 +47,7 @@ function colorizeLine(line: string, lineIndex: number): string {
   return out
 }
 
-const BOTTOM_LABEL = ' v0.1.0 '
+const BOTTOM_LABEL = ` v${VERSION} `
 const PAD = 3 // spaces on each side of the art
 
 export function printFiglet(): void {
@@ -72,7 +73,7 @@ export function printFiglet(): void {
     return `${' '.repeat(PAD)}${art}${' '.repeat(PAD)}`
   })
 
-  // ╰─                   v0.1.0 ─╯
+  // ╰─                   v<package version> ─╯
   const bottomGap = Math.max(1, innerWidth - BOTTOM_LABEL.length - 4)
   const bottom = color.dim(`╰─${' '.repeat(bottomGap)}${BOTTOM_LABEL}─╯`)
 

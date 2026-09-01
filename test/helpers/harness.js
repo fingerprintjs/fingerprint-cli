@@ -37,7 +37,11 @@ export function startManagementApi() {
           res.writeHead(400, { 'content-type': 'application/json' })
           return res.end(JSON.stringify({ error: { message: `invalid JSON: ${body}` } }))
         }
-        analyticsEvents.push({ body: parsed, authorization: req.headers.authorization })
+        analyticsEvents.push({
+          body: parsed,
+          authorization: req.headers.authorization,
+          userAgent: req.headers['user-agent'],
+        })
         res.writeHead(202)
         return res.end()
       }

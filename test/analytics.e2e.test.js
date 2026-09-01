@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
+import { VERSION } from '../dist/version.js'
 
 import {
   makeHome,
@@ -55,6 +56,7 @@ test('an authenticated command reports which command ran', async () => {
   assert.deepEqual(properties, { command: 'whoami', cli_flags: '', status: 'ok' })
   assert.match(run_id, /^[0-9a-f-]{36}$/)
   assert.equal(events[0].authorization, 'Bearer mgmt_key_1')
+  assert.equal(events[0].userAgent, `fingerprint-cli/${VERSION}`)
 
   await api.close()
 })

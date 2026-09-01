@@ -5,6 +5,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { VERSION } from '../dist/version.js'
 
 // End-to-end against the BUILT CLI (dist/index.js), treated as a black box. These run with no
 // network and no credentials: they exercise the non-interactive (`--ci`) guardrails, whose whole
@@ -31,6 +32,7 @@ test('--ci with no auth fails fast instead of hanging', () => {
   // Non-interactive runs surface a clear next step and exit non-zero rather than prompting.
   assert.notEqual(res.status, 0)
   assert.match(res.stderr + res.stdout, /Not authenticated/i)
+  assert.match(res.stdout, new RegExp(`v${VERSION.replaceAll('.', '\\.')}`))
 })
 
 test('--help runs and lists commands', () => {
@@ -39,4 +41,11 @@ test('--help runs and lists commands', () => {
   assert.equal(res.status, 0)
   assert.match(res.stdout, /Usage: fingerprint/)
   assert.match(res.stdout, /integrate/)
+})
+
+test('--version prints the package version', () => {
+  const res = runCli(['--version'])
+
+  assert.equal(res.status, 0)
+  assert.equal(res.stdout.trim(), VERSION)
 })

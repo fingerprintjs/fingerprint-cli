@@ -11,9 +11,10 @@ import { setInteractive } from './utils/interactive.js'
 import { color } from './utils/color.js'
 import { printFiglet } from './utils/figlet.js'
 import { track } from './analytics/track.js'
+import { VERSION } from './version.js'
 
 const program = new Command()
-program.name('fingerprint').description('Fingerprint CLI dashboard companion')
+program.name('fingerprint').description('Fingerprint CLI dashboard companion').version(VERSION)
 
 // Global flags shared by every command, used for headless/CI runs.
 program
