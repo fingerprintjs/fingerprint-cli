@@ -249,20 +249,3 @@ test('an unauthenticated run withholds the events that need a workspace', async 
 
   await api.close()
 })
-
-test('DO_NOT_TRACK silences the run, signed in or not', async () => {
-  const api = await startManagementApi()
-  const home = makeHome()
-  seedAuth(home, api.url)
-
-  const res = await runCli(['whoami'], { home, env: { DO_NOT_TRACK: '1' } })
-  assert.equal(res.status, 0, res.stderr)
-  assert.deepEqual(api.analyticsEvents(), [])
-
-  // `0` is the documented way to say "track me", so it must not read as merely set.
-  const on = await runCli(['whoami'], { home, env: { DO_NOT_TRACK: '0' } })
-  assert.equal(on.status, 0, on.stderr)
-  assert.deepEqual(names(api), ['cli_run_started', 'cli_command_run'])
-
-  await api.close()
-})

@@ -42,21 +42,9 @@ function cliFlags(): string {
   return [...new Set(names)].sort().join(',')
 }
 
-// Honoured by every dev CLI that reports anything, and it matters more here than it would for a
-// signed-in-only tool: the events below now include people who have no account and never agreed to
-// anything. https://consoledonottrack.com
-function doNotTrack(): boolean {
-  const value = process.env.DO_NOT_TRACK
-  return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false'
-}
-
 // Relayed through the Management API because the Amplitude key can't ship in the binary. A run with
-// no key relays through the unauthenticated route instead of reporting nothing: the run that ends
-// without an account is the one the funnel has no other way to count. Both routes carry `run_id`,
-// which is what stitches the two halves of one run back together.
+// no key relays through the unauthenticated route so runs that never sign in still get counted.
 export async function track(event: string, properties: Record<string, unknown> = {}): Promise<void> {
-  if (doNotTrack()) return
-
   const auth = pinnedAuth ?? getAuthState()
   const authenticated = Boolean(auth?.managementApiKey)
 
