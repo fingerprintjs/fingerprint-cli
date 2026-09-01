@@ -3,13 +3,10 @@ import { getAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 import { debugLog } from '../utils/log-file.js'
 
-// Public Management API version header — required by the API (see fingerprint-mcp-server).
+// Required by the Management API (see fingerprint-mcp-server).
 const API_VERSION = '2025-11-20'
 
-// `src/api` and `dist/api` both sit two levels under the package root, so this resolves either way.
-// A hardcoded string here drifts from the published version the moment anyone forgets to bump it,
-// and the Management API reads this to tell CLI traffic apart and to report which version sent an
-// event.
+// `../../package.json` resolves from both `src/api` and `dist/api`.
 function packageVersion(): string {
   try {
     const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
@@ -38,18 +35,13 @@ export class ManagementApiError extends Error {
   }
 }
 
-// Thin client for the public Management API (management-api.fpjs.io). Authenticates with the
-// workspace-scoped Management API key minted during browser login; the key already carries the
-// workspace scope, so callers never pass a workspace/subscription id. Responses are wrapped in a
-// `{ data }` envelope — callers read `.data`.
 export class ManagementClient {
   private readonly key: string
   private readonly baseUrl: string
   private readonly anonymous: boolean
 
-  // `anonymous` is for the handful of routes that accept no key at all. Sending `Bearer ` with an
-  // empty key would be rejected as a malformed token rather than read as "no caller", so the header
-  // has to be absent rather than empty.
+  // `anonymous` omits the Authorization header entirely: an empty `Bearer ` reads as a malformed
+  // token, not as "no caller".
   constructor(opts: { managementApiKey?: string; managementApiUrl?: string; anonymous?: boolean } = {}) {
     const auth = getAuthState()
     this.key = opts.managementApiKey ?? auth?.managementApiKey ?? ''
@@ -67,16 +59,14 @@ export class ManagementClient {
           'Content-Type': 'application/json',
           'X-API-Version': API_VERSION,
           ...(this.anonymous ? {} : { Authorization: `Bearer ${this.key}` }),
-          // Matched against on the routes that accept no key, alongside the User-Agent below.
+          // Signals the CLI on the keyless routes, alongside the User-Agent.
           'X-Fingerprint-Client': 'cli',
           'User-Agent': USER_AGENT,
           ...(init.headers ?? {}),
         },
       })
     } catch (e) {
-      // DNS/connect/TLS failures reject with Node's bare `TypeError: fetch failed`, which reaches the
-      // user with no URL and nothing to act on. Name the host we couldn't reach, and keep the original
-      // cause in the debug log for diagnosis.
+      // fetch rejects with a bare `TypeError: fetch failed`; name the host so the error is actionable.
       debugLog(`Management API request to ${url.href} failed: ${e instanceof Error ? e.message : String(e)}`)
       throw new ManagementApiError(`Couldn’t reach the Management API at ${url.origin}. Check your connection.`)
     }
