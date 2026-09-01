@@ -2,4 +2,4 @@
 "fingerprint": patch
 ---
 
-Improve signup guidance and post-integration next steps, recover from pnpm package build approval failures, and report the installed CLI version consistently.
+Report the installed CLI version consistently (banner, --version, and User-Agent header) by sourcing it from package.json at runtime.
