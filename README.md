@@ -28,9 +28,13 @@ You do not need an Anthropic API key — the CLI routes its model calls through 
 2. **Analyzes your repo** to find the frontend and backend frameworks you're using.
 3. **Provisions API keys** for your workspace and writes them to the right `.env` file, with the
    variable names your framework expects. New env files are added to `.gitignore` automatically.
-4. **Writes the integration**: identify the visitor in the browser, send the event to your server,
-   verify it against the Fingerprint API, and block bots before the action completes.
+4. **Writes the integration**, following the Fingerprint Get Started checklist: it audits what's
+   already in place, then applies the Quick start steps that are missing — identify the visitor in
+   the browser, and where you have a backend, send the event to your server and verify it against
+   the Fingerprint API. It works with the app you have rather than inventing a backend or a form.
 5. **Offers to set up the other side** — a separate frontend or backend, or another repo.
+6. **Reports the checklist** — which Get Started steps are done and which remain (detailed
+   insights via the Server API, ad-blocker protection, rules, tagging, request filtering).
 
 Nothing is applied without your confirmation, and every change lands in your working tree for you to
 review and commit.

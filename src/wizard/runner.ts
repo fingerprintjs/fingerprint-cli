@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
-import { provisionForRepo } from './provision.js'
+import { conventionFor, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { color } from '../utils/color.js'
@@ -221,21 +221,27 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
   return runAgent(analysis)
 }
 
+// The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
+// the detected framework skills for the steps that are not done — step selection and scope live
+// there, not in a hand-rolled prompt.
+const GET_STARTED_SKILL = 'fingerprint-get-started'
+
 export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
-  const ids = analysis.skills
+  // The orchestrator drives; the detected framework skills are what it can delegate to.
+  const ids = [GET_STARTED_SKILL, ...analysis.skills]
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
   // rather than us stuffing their full text into the prompt every turn.
   installSkills(analysis.root, ids)
   const metas = ids.map(skillMeta)
 
-  log.step(`Applying ${ids.join(' + ')} in ${analysis.root}`)
+  log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
   const response = query({
-    prompt: buildTaskPrompt(analysis, ids),
+    prompt: buildQuickStartPrompt(analysis),
     options: {
       model: llm.model,
       env: llm.env,
@@ -243,7 +249,7 @@ export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(),
+      ...permissionOptions(['Skill']), // the orchestrator dispatches via the Skill tool
     },
   })
 
@@ -283,11 +289,14 @@ async function consume(response: unknown, initialMessage: string): Promise<boole
 }
 
 const SYSTEM_PROMPT = [
-  'You are the Fingerprint integration wizard. You add Fingerprint device intelligence to a',
-  "developer's app for fraud prevention.",
+  'You are the Fingerprint integration wizard, running the Fingerprint Get Started flow for a',
+  "developer's app.",
   '',
-  'The integration skills are installed under .claude/skills/. For each skill named in the task,',
-  'read .claude/skills/<id>/SKILL.md (and its snippets/) and follow it exactly.',
+  'The Get Started orchestrator and the skills it dispatches to are installed under',
+  '.claude/skills/. Read .claude/skills/fingerprint-get-started/SKILL.md and follow it: audit',
+  "what's already done, report the checklist, then apply the not-done steps that are in scope for",
+  'this run (the task says which). Read each dispatched skill from .claude/skills/<id>/SKILL.md',
+  'before applying it.',
   '',
   'Rules:',
   '- Make minimal, focused changes; match the existing code style.',
@@ -298,21 +307,28 @@ const SYSTEM_PROMPT = [
   '- Do NOT add dependencies or pin version numbers in package.json / requirements.txt. The CLI',
   '  installs the correct published versions itself; just write the app code that imports them.',
   '  ("v4" in a skill refers to the Fingerprint platform, not an npm package major version.)',
-  '- When done, briefly summarize the files you changed.',
+  '- Do not invent app surface: if the repo has no backend, no form, or no sensitive action,',
+  "  integrate what's actually there and say what's missing — never scaffold one.",
+  '- When done, briefly summarize the checklist status and the files you changed.',
 ].join('\n')
 
-function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
+// Scope the run to the quick-start steps: identification, and server-side verification where a
+// backend exists. The later checklist steps (Smart Signals, ad blockers, and everything beyond the
+// basics) are only named in the closing checklist — they belong after the first identification
+// event has actually landed, which nothing in this run can confirm yet.
+function buildQuickStartPrompt(analysis: RepoAnalysis): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
+  const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
-    'Integrate Fingerprint into this repository.',
+    'Run the Fingerprint Get Started flow for this repository.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
-    'Read and follow each named skill from .claude/skills/<id>/SKILL.md and apply it to the',
-    'matching part of the app. The per-app .env files are already provisioned with the keys',
-    '(frontend: the bundler-prefixed public key; backend: FINGERPRINT_SECRET_API_KEY).',
-    "Protect the app's primary sensitive action (signup if present, else login): identify on the",
-    'client, send the event_id, and verify it server-side, blocking bots before completing.',
-    `Skills to apply (read each from .claude/skills/<id>/SKILL.md): ${ids.join(', ')}.`,
+    'The per-app .env files are already provisioned with the keys',
+    `(frontend: ${publicVar ?? 'a bundler-prefixed public key'}; backend: FINGERPRINT_SECRET_API_KEY).`,
+    'Scope for this run: audit first, then apply only the Quick start steps that the audit shows',
+    'are not done — (1) frontend identification via the matching frontend skill, and (2)',
+    'server-side verification where a backend exists. Do not start the later checklist steps in',
+    'this run; end by reporting the checklist status, so the developer knows what remains.',
   ].join('\n')
 }
 
