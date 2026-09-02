@@ -11,9 +11,10 @@ import { setInteractive } from './utils/interactive.js'
 import { color } from './utils/color.js'
 import { printFiglet } from './utils/figlet.js'
 import { track } from './analytics/track.js'
+import { VERSION } from './version.js'
 
 const program = new Command()
-program.name('fingerprint').description('Fingerprint CLI dashboard companion')
+program.name('fingerprint').description('Fingerprint CLI dashboard companion').version(VERSION)
 
 // Global flags shared by every command, used for headless/CI runs.
 program
@@ -112,11 +113,12 @@ async function defaultCommand(unknownCommand?: string) {
   console.log()
   console.log(color.brand('   Welcome to the Fingerprint CLI.'))
   console.log()
-  console.log(color.dim('   Fingerprint gives every visitor a device identifier that survives cleared'))
-  console.log(color.dim('   cookies, new sessions, and incognito, so you can tell real users from bots.'))
+  console.log(color.dim('   Fingerprint identifies returning browsers and devices with a stable'))
+  console.log(color.dim('   visitor ID. Smart Signals add device intelligence to help detect bots'))
+  console.log(color.dim('   and suspicious activity.'))
   console.log()
-  console.log(color.dim('   This CLI sets it up end to end. It detects your stack, provisions API keys'))
-  console.log(color.dim('   for your workspace, and writes the integration into your code.'))
+  console.log(color.dim('   This CLI sets up Fingerprint end to end. It detects your stack, provisions'))
+  console.log(color.dim('   API keys, and writes the integration into your code.'))
   console.log()
   // A stored key isn't a live session, so check the token too: otherwise an expired login announces
   // "Signed in" a few lines above the sign-in-required failure it's about to hit.

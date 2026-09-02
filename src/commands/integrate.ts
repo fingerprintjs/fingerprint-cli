@@ -67,8 +67,8 @@ export async function integrateCommand(
     return
   }
 
-  // Provision keys + apply the integration for this repo, then offer to set up other projects
-  // (a separate frontend/backend, or any other repo) based on what this one covers.
+  // Provision keys + apply the integration for this repo, then offer the missing half of the
+  // stack (if any) and point at the skills plugin for the rest of Get Started.
   await integrateProject(root, { yes: opts.yes })
 }
 

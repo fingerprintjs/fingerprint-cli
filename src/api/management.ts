@@ -1,24 +1,10 @@
-import { readFileSync } from 'node:fs'
 import { getAuthState } from '../auth/tokenStore.js'
 import { resolveConfig } from '../config/config.js'
 import { debugLog } from '../utils/log-file.js'
+import { VERSION } from '../version.js'
 
 // Required by the Management API (see fingerprint-mcp-server).
 const API_VERSION = '2025-11-20'
-
-// `../../package.json` resolves from both `src/api` and `dist/api`.
-function packageVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
-      version?: string
-    }
-    return pkg.version ?? '0.0.0'
-  } catch {
-    return '0.0.0'
-  }
-}
-
-const USER_AGENT = `fingerprint-cli/${packageVersion()}`
 
 interface ApiErrorBody {
   error?: { message?: string; code?: string }
@@ -61,7 +47,7 @@ export class ManagementClient {
           ...(this.anonymous ? {} : { Authorization: `Bearer ${this.key}` }),
           // Signals the CLI on the keyless routes, alongside the User-Agent.
           'X-Fingerprint-Client': 'cli',
-          'User-Agent': USER_AGENT,
+          'User-Agent': `fingerprint-cli/${VERSION}`,
           ...(init.headers ?? {}),
         },
       })

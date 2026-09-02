@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { VERSION } from '../dist/version.js'
 
 import {
   makeHome,
@@ -59,6 +60,7 @@ test('an authenticated command reports which command ran', async () => {
   assert.deepEqual(properties, { command: 'whoami', cli_flags: '', status: 'ok' })
   assert.match(run_id, /^[0-9a-f-]{36}$/)
   assert.equal(run.authorization, 'Bearer mgmt_key_1')
+  assert.equal(run.userAgent, `fingerprint-cli/${VERSION}`)
   // A signed-in run has a key from the first event onward, so nothing takes the anonymous route.
   assert.deepEqual(new Set(api.analyticsEvents().map((e) => e.path)), new Set(['/analytics/events']))
 
