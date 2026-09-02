@@ -191,14 +191,15 @@ export function startGateway(writeTarget, writeContent) {
 }
 
 // A local skills checkout (pointed at via FINGERPRINT_SKILLS_DIR) with the two skills React+Express
-// resolves to. Empty `packages` so the post-agent installer is a no-op (no real npm install).
-export function makeSkillsDir() {
+// resolves to. `packages` (keyed by skill id) defaults empty so the post-agent installer is a
+// no-op; install-failure tests pass real names and a fake package manager on PATH.
+export function makeSkillsDir(packages = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fp-skills-'))
   for (const [id, role] of [['fingerprint-react', 'frontend'], ['fingerprint-node', 'backend']]) {
     const s = join(dir, 'skills', id)
     mkdirSync(s, { recursive: true })
     writeFileSync(join(s, 'SKILL.md'), `# ${id}\nTest skill.\n`)
-    writeFileSync(join(s, 'skill.json'), JSON.stringify({ id, role, packages: [] }))
+    writeFileSync(join(s, 'skill.json'), JSON.stringify({ id, role, packages: packages[id] ?? [] }))
   }
   return dir
 }
@@ -215,7 +216,10 @@ export function makeRepo() {
 
 // Async (not spawnSync): the fake servers run in this same process, so the event loop must stay
 // free to answer the child's HTTP requests while it runs — spawnSync would deadlock.
-export function runCli(args, { home, cwd, env = {} } = {}) {
+// `respond` scripts interactive prompts: [{ when: /pattern/, send: 'n\n' }, ...] — each entry
+// fires once, in order, when its pattern appears on stdout (writing all answers up front doesn't
+// work: the first prompt's key listener would swallow the buffered input meant for the next one).
+export function runCli(args, { home, cwd, env = {}, respond } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], {
       cwd,
@@ -223,13 +227,20 @@ export function runCli(args, { home, cwd, env = {} } = {}) {
     })
     let stdout = ''
     let stderr = ''
-    child.stdout.on('data', (d) => (stdout += d))
+    const pending = respond ? [...respond] : []
+    child.stdout.on('data', (d) => {
+      stdout += d
+      while (pending.length && pending[0].when.test(stdout)) {
+        const { send } = pending.shift()
+        child.stdin.write(send)
+      }
+    })
     child.stderr.on('data', (d) => (stderr += d))
     const timer = setTimeout(() => child.kill('SIGKILL'), 30_000)
     child.on('close', (status, signal) => {
       clearTimeout(timer)
       resolve({ status, signal, stdout, stderr })
     })
-    child.stdin.end('')
+    if (!respond) child.stdin.end('')
   })
 }

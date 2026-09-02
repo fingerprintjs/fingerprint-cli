@@ -4,7 +4,7 @@ import { getFreshAccessToken, withoutLoginHint } from '../auth/refresh.js'
 import { integrateProject } from '../wizard/runner.js'
 import { log, printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
-import { track } from '../analytics/track.js'
+import { addRunProperties, track } from '../analytics/track.js'
 
 export async function integrateCommand(
   opts: { path?: string; analyze?: boolean; yes?: boolean; skipHeading?: boolean; chained?: boolean } = {}
@@ -59,7 +59,10 @@ export async function integrateCommand(
 
   // Provision keys + apply the integration for this repo, then offer the missing half of the
   // stack (if any) and point at the skills plugin for the rest of Get Started.
-  await integrateProject(root, { yes: opts.yes })
+  const outcome = await integrateProject(root, { yes: opts.yes })
+  // Rides cli_command_run (new event names need a Management API allowlist entry; properties
+  // don't) — the completion pair to cli_integrate_started.
+  addRunProperties({ integrate_status: outcome })
 }
 
 // Settle the session before anything provisions keys or edits files, refreshing the access token if
