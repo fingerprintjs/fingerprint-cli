@@ -1,5 +1,12 @@
 # fingerprint
 
+## 0.1.0-alpha.3
+
+### Patch Changes
+
+- Report runs that never sign in, so the onboarding funnel has a denominator. A run with no key
+  relays through the Management API's unauthenticated analytics route instead of reporting nothing. ([9cb76b9](https://github.com/fingerprintjs/fingerprint-cli/commit/9cb76b9c1a3b4e98d1d3e654d4361cb25d33ed05))
+
 ## 0.1.0-alpha.2
 
 ### Patch Changes
