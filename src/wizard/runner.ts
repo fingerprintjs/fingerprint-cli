@@ -1,11 +1,9 @@
 import { confirm } from '@inquirer/prompts'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
+import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { conventionFor, provisionForRepo } from './provision.js'
-import { printNextSteps } from './next-steps.js'
+import { printHowToVerify } from './closing.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { color } from '../utils/color.js'
@@ -13,7 +11,6 @@ import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
 import { assertAllowedPackage, installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes, isCi } from '../utils/ci.js'
-import { text } from '../utils/prompt.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
@@ -82,39 +79,15 @@ function permissionOptions(extraReadonly: string[] = []) {
 // `failed` means the agent or a package install broke; the run must not claim success or exit 0.
 export type IntegrateOutcome = 'completed' | 'skipped' | 'failed'
 
-// Whichever side of an integration a repo covers. A fullstack framework (e.g. Next.js) and a
-// monorepo with both apps cover both; a standalone frontend or backend covers one.
-type IntegrationRole = 'frontend' | 'backend'
-
-function coverageOf(a: RepoAnalysis): IntegrationRole[] {
-  const fullstack = a.apps.some((x) => x.role === 'fullstack')
-  const roles: IntegrationRole[] = []
-  if (fullstack || a.frontend) roles.push('frontend')
-  if (fullstack || a.backend) roles.push('backend')
-  return roles
-}
-
-// Resolve a user-typed project path to an existing directory. Frontend/backend repos are usually
-// siblings, so a relative name is tried both under `base` and one level up; absolute paths are
-// used as-is. Returns the resolved dir, or undefined if none exists.
-function resolveProjectDir(base: string, input: string): string | undefined {
-  const candidates = isAbsolute(input) ? [input] : [resolve(base, input), resolve(base, '..', input)]
-  return candidates.find((c) => existsSync(c))
-}
-
-// Top-level integration flow for a single command invocation: provision env keys + apply the
-// integration for `root`, then — based on what `root` covers — explain what's still missing and
-// offer to set Fingerprint up in other projects too (a separate frontend/backend, or any other
-// repo). Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at;
-// it never assumes a particular layout.
+// Top-level integration flow for a single command invocation: provision env keys, apply the
+// integration for `root`, then tell the user how to verify it. Shared by
+// `integrate` and the onboarding chain. Runs in whatever repo it's pointed at; it never assumes a
+// particular layout.
 export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
   const outcome = await provisionAndApply(root, opts)
-  // Only a completed run has something to lead on from. After a decline or a failure, next steps
-  // and "another project?" would both read as the run having succeeded here.
-  if (outcome === 'completed') {
-    printNextSteps(analyzeRepo(root))
-    await offerOtherProjects(root, opts)
-  }
+  // Only a completed run has something to verify; after a decline or a failure this would read as
+  // the run having succeeded here.
+  if (outcome === 'completed') printHowToVerify(analyzeRepo(root))
   return outcome
 }
 
@@ -129,60 +102,8 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
   return applyIntegration(root, opts)
 }
 
-// After integrating `root`, Fingerprint only delivers value once BOTH sides exist: the frontend
-// identifies visitors and sends an event, and the backend verifies it server-side before trusting
-// the action. The next-steps summary has just said which side is missing, so this only asks; keep
-// offering other repos until they decline. Skipped in CI / with --yes (no human to point at a repo).
-async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promise<void> {
-  if (isCi() || opts.yes || autoYes()) return
-
-  const covered = new Set<IntegrationRole>(coverageOf(analyzeRepo(root)))
-
-  for (;;) {
-    const hasFrontend = covered.has('frontend')
-    const hasBackend = covered.has('backend')
-
-    let message: string
-    let example: string
-    let suggest = true
-    if (hasFrontend && !hasBackend) {
-      message = 'Add the Server API step now — point me to your backend project?'
-      example = '../api'
-    } else if (hasBackend && !hasFrontend) {
-      message = 'Add identification now — point me to your frontend project?'
-      example = '../web'
-    } else {
-      message = 'Set up Fingerprint in another project too?'
-      example = '../other-app'
-      suggest = false // both sides covered — don't nudge, just offer
-    }
-
-    const proceed = await confirm({ message, default: suggest })
-    if (!proceed) return
-
-    const input = await text(`Path to the project (e.g. ${example}) — blank to skip`)
-    if (!input.trim()) return
-    const dir = resolveProjectDir(root, input.trim())
-    if (!dir) {
-      log.warn(`No directory found at "${input.trim()}".`)
-      continue
-    }
-
-    const target = analyzeRepo(dir)
-    printAnalysis(target)
-    if (!target.skills.length && !target.frontend && !target.backend) {
-      log.warn('No supported app detected there — skipping.')
-      continue
-    }
-
-    await provisionAndApply(dir, opts)
-    for (const role of coverageOf(target)) covered.add(role)
-  }
-}
-
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
-// then run the agent. Called per-repo by `integrateProject` (the main repo plus any follow-up
-// projects) so the flow is continuous: set up env → "integrate this repo?" → apply.
+// then run the agent, so the flow is continuous: set up env → "integrate this repo?" → apply.
 async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
@@ -286,38 +207,23 @@ async function consume(response: unknown, initialMessage: string): Promise<boole
 }
 
 const SYSTEM_PROMPT = [
-  'You are the Fingerprint integration wizard, running the Fingerprint Get Started flow for a',
-  "developer's app.",
-  '',
-  'The Get Started orchestrator and the skills it dispatches to are installed under',
-  '.claude/skills/. Read .claude/skills/fingerprint-get-started/SKILL.md and follow it: audit',
-  "what's already done, report the checklist, then apply the not-done steps that are in scope for",
-  'this run (the task says which). Read each dispatched skill from .claude/skills/<id>/SKILL.md',
-  'before applying it.',
+  'You are the Fingerprint integration wizard. Follow .claude/skills/fingerprint-get-started/SKILL.md;',
+  'the skills it dispatches to are installed alongside it under .claude/skills/.',
   '',
   'Rules:',
   '- Make minimal, focused changes; match the existing code style.',
   '- The secret key is server-side only; never reference it in frontend code.',
   '- Do NOT read or print .env. Reference keys by env-var name only.',
-  '- Only edit code. Do not install packages or run shell commands, and do not tell the user to',
-  '  install anything — the CLI installs the required packages automatically after you finish.',
-  '- Do NOT add dependencies or pin version numbers in package.json / requirements.txt. The CLI',
-  '  installs the correct published versions itself; just write the app code that imports them.',
-  '  ("v4" in a skill refers to the Fingerprint platform, not an npm package major version.)',
+  '- Only edit application code. Do not run shell commands, install packages, or touch package',
+  '  manifests, lockfiles or package-manager config — the CLI installs the required packages itself',
+  '  after you finish. ("v4" in a skill is the Fingerprint platform, not an npm major version.)',
   '- Do not invent app surface: if the repo has no backend, no form, or no sensitive action,',
   "  integrate what's actually there and say what's missing — never scaffold one.",
-  '- Do not edit package-manager configuration (lockfiles, pnpm-workspace.yaml, .npmrc) — approving',
-  '  build scripts is the developer\'s decision.',
-  '- Checklist terminology follows the dashboard: Quick start = (1) install, (2) detailed insights',
-  '  via the Server API, (3) ad blockers; everything else is "Beyond the basics".',
-  '- Do NOT tell the user how to run or verify the app, or what to do next — the CLI prints that',
-  '  after it has installed the packages. End with the checklist status and the files you changed.',
 ].join('\n')
 
-// Scope the run to the quick-start steps: identification, and server-side verification where a
-// backend exists. The later checklist steps (Smart Signals, ad blockers, and everything beyond the
-// basics) are only named in the closing checklist — they belong after the first identification
-// event has actually landed, which nothing in this run can confirm yet.
+// Scope the run to the Quick start steps. The later checklist steps belong after the first
+// identification event has landed, which nothing in this run can confirm — the dashboard's Get
+// Started page takes over from there.
 function buildQuickStartPrompt(analysis: RepoAnalysis): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
@@ -325,12 +231,10 @@ function buildQuickStartPrompt(analysis: RepoAnalysis): string {
   return [
     'Run the Fingerprint Get Started flow for this repository.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
-    'The per-app .env files are already provisioned with the keys',
-    `(frontend: ${publicVar ?? 'a bundler-prefixed public key'}; backend: FINGERPRINT_SECRET_API_KEY).`,
-    'Scope for this run: audit first, then apply only the Quick start steps that the audit shows',
-    'are not done — (1) frontend identification via the matching frontend skill, and (2)',
-    'server-side verification where a backend exists. Do not start the later checklist steps in',
-    'this run; end by reporting the checklist status, so the developer knows what remains.',
+    'The .env files are already provisioned: the public key is in',
+    `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+    'Scope: Quick start step 1 (frontend identification) and step 2 (server-side verification, only',
+    'where a backend exists). Skip whatever the audit shows is already in place; do not start later steps.',
   ].join('\n')
 }
 

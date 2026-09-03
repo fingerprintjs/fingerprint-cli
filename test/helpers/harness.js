@@ -213,7 +213,7 @@ export function makeRepo() {
   const root = mkdtempSync(join(tmpdir(), 'fp-repo-'))
   mkdirSync(join(root, 'web'))
   mkdirSync(join(root, 'api'))
-  writeFileSync(join(root, 'web', 'package.json'), JSON.stringify({ name: 'web', dependencies: { react: '^18' } }))
+  writeFileSync(join(root, 'web', 'package.json'), JSON.stringify({ name: 'web', scripts: { dev: 'vite' }, dependencies: { react: '^18' } }))
   writeFileSync(join(root, 'api', 'package.json'), JSON.stringify({ name: 'api', dependencies: { express: '^4' } }))
   return root
 }
