@@ -5,6 +5,7 @@
     "fingerprint": "0.0.2"
   },
   "changesets": [
+    "anonymous-analytics",
     "olive-pandas-repeat",
     "tidy-crabs-refuse",
     "warm-tools-smile"
