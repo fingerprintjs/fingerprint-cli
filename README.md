@@ -33,8 +33,8 @@ You do not need an Anthropic API key — the CLI routes its model calls through 
    the browser, and where you have a backend, send the event to your server and verify it against
    the Fingerprint API. It works with the app you have rather than inventing a backend or a form.
 5. **Offers to set up the other side** — a separate frontend or backend, or another repo.
-6. **Reports the checklist** — which Get Started steps are done and which remain (detailed
-   insights via the Server API, ad-blocker protection, rules, tagging, request filtering).
+6. **Tells you what's next**: how to run the app and see your first event in the dashboard, then
+   the Server API step for detailed insights, and the rest of the Get Started checklist.
 
 Nothing is applied without your confirmation, and every change lands in your working tree for you to
 review and commit.

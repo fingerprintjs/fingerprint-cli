@@ -5,6 +5,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
 import { conventionFor, provisionForRepo } from './provision.js'
+import { printNextSteps } from './next-steps.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { color } from '../utils/color.js'
@@ -108,8 +109,12 @@ function resolveProjectDir(base: string, input: string): string | undefined {
 // it never assumes a particular layout.
 export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
   const outcome = await provisionAndApply(root, opts)
-  // After a failure, offering more repos would read as the run having succeeded here.
-  if (outcome !== 'failed') await offerOtherProjects(root, opts)
+  // Only a completed run has something to lead on from. After a decline or a failure, next steps
+  // and "another project?" would both read as the run having succeeded here.
+  if (outcome === 'completed') {
+    printNextSteps(analyzeRepo(root))
+    await offerOtherProjects(root, opts)
+  }
   return outcome
 }
 
@@ -126,8 +131,8 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 
 // After integrating `root`, Fingerprint only delivers value once BOTH sides exist: the frontend
 // identifies visitors and sends an event, and the backend verifies it server-side before trusting
-// the action. So guide the user toward whatever side is still missing, and keep offering to set up
-// other repos until they decline. Skipped in CI / with --yes (no human to point at the next repo).
+// the action. The next-steps summary has just said which side is missing, so this only asks; keep
+// offering other repos until they decline. Skipped in CI / with --yes (no human to point at a repo).
 async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promise<void> {
   if (isCi() || opts.yes || autoYes()) return
 
@@ -141,18 +146,10 @@ async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promis
     let example: string
     let suggest = true
     if (hasFrontend && !hasBackend) {
-      log.info(
-        'Your frontend can now identify visitors — but Fingerprint only stops fraud once a backend\n' +
-          'verifies those events server-side. Want to set it up in your backend too?'
-      )
-      message = 'Point me to your backend project?'
+      message = 'Add the Server API step now — point me to your backend project?'
       example = '../api'
     } else if (hasBackend && !hasFrontend) {
-      log.info(
-        'Your backend can now verify Fingerprint events — but it needs a frontend to identify\n' +
-          'visitors and send the event data. Want to set it up in your frontend too?'
-      )
-      message = 'Point me to your frontend project?'
+      message = 'Add identification now — point me to your frontend project?'
       example = '../web'
     } else {
       message = 'Set up Fingerprint in another project too?'
@@ -309,7 +306,12 @@ const SYSTEM_PROMPT = [
   '  ("v4" in a skill refers to the Fingerprint platform, not an npm package major version.)',
   '- Do not invent app surface: if the repo has no backend, no form, or no sensitive action,',
   "  integrate what's actually there and say what's missing — never scaffold one.",
-  '- When done, briefly summarize the checklist status and the files you changed.',
+  '- Do not edit package-manager configuration (lockfiles, pnpm-workspace.yaml, .npmrc) — approving',
+  '  build scripts is the developer\'s decision.',
+  '- Checklist terminology follows the dashboard: Quick start = (1) install, (2) detailed insights',
+  '  via the Server API, (3) ad blockers; everything else is "Beyond the basics".',
+  '- Do NOT tell the user how to run or verify the app, or what to do next — the CLI prints that',
+  '  after it has installed the packages. End with the checklist status and the files you changed.',
 ].join('\n')
 
 // Scope the run to the quick-start steps: identification, and server-side verification where a

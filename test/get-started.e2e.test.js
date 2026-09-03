@@ -40,4 +40,10 @@ test('integrate installs the orchestrator with the framework skills and scopes t
   assert.match(requests, /fingerprint-get-started/)
   assert.match(requests, /Quick start/)
   assert.doesNotMatch(requests, /signup if present, else login/)
+  // The CLI, not the agent, leads the user on: run the app, check the first event, then the
+  // Server API step. The old "your frontend can now identify visitors" nudge is gone.
+  assert.match(res.stdout, /Next steps/)
+  assert.match(res.stdout, /Events/)
+  assert.match(res.stdout, /Server API/)
+  assert.doesNotMatch(res.stdout, /can now identify/)
 })
