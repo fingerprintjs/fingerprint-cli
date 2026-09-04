@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -57,6 +57,20 @@ function skillSrc(id: string): string {
 export function skillMeta(id: string): SkillMeta {
   const meta = JSON.parse(readFileSync(join(skillSrc(id), 'skill.json'), 'utf8'))
   return { id, role: meta.role, packages: meta.packages ?? [] }
+}
+
+// The feature skills the Get Started orchestrator dispatches to for the later checklist steps
+// (proxy, rules, tagging, ...), tagged `category: "get-started"` in their skill.json. Installed
+// alongside it so every step it names can actually be applied.
+export function getStartedSkills(): string[] {
+  const dir = join(skillsDir(), 'skills')
+  return readdirSync(dir).filter((id) => {
+    try {
+      return JSON.parse(readFileSync(join(dir, id, 'skill.json'), 'utf8')).category === 'get-started'
+    } catch {
+      return false
+    }
+  })
 }
 
 // The skills repo is an external supply chain, and its `packages` are handed to a host-side

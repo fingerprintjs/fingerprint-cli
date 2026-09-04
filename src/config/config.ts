@@ -17,8 +17,6 @@ interface EnvironmentUrls {
   // Public OAuth client id registered in WorkOS for the CLI (PKCE, loopback redirect). Per-environment
   // because WorkOS clients are per-environment. Overridable via FINGERPRINT_OAUTH_CLIENT_ID.
   oauthClientId: string
-  // The dashboard the user signs in to; the CLI links to its Get Started page at the end of a run.
-  dashboardUrl: string
 }
 
 // Each environment bundles the URLs that must move together. Defaults to production; set
@@ -30,14 +28,12 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
     gatewayUrl: 'https://llm-gateway.fpjs.io',
     oauthIssuer: 'https://mcpauth.fingerprint.com',
     oauthClientId: 'client_01KYHSG8DC4YHTJGWRADHBZ24D',
-    dashboardUrl: 'https://dashboard.fingerprint.com',
   },
   staging: {
     managementApiUrl: 'https://public-mgmtapi.fpjs.sh',
     gatewayUrl: 'https://llm-gateway.fpjs.sh',
     oauthIssuer: 'https://scientific-cat-58-staging.authkit.app',
     oauthClientId: 'client_01KYHMB30PPDR66CWY8BKVTZRX',
-    dashboardUrl: 'https://dashboard.fpjs.sh',
   },
 }
 
@@ -66,7 +62,6 @@ export interface RuntimeConfig {
   gatewayUrl: string
   oauthIssuer: string
   oauthClientId: string
-  dashboardUrl: string
   region: Region
 }
 
@@ -79,7 +74,6 @@ export function resolveConfig(region?: string): RuntimeConfig {
     gatewayUrl: process.env.FINGERPRINT_GATEWAY_URL ?? env.gatewayUrl,
     oauthIssuer: process.env.FINGERPRINT_OAUTH_ISSUER ?? env.oauthIssuer,
     oauthClientId: process.env.FINGERPRINT_OAUTH_CLIENT_ID ?? env.oauthClientId,
-    dashboardUrl: process.env.FINGERPRINT_DASHBOARD_URL ?? env.dashboardUrl,
     region: resolvedRegion,
   }
 }
