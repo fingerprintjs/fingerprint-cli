@@ -1,5 +1,16 @@
 # fingerprint
 
+## 0.1.0-alpha.4
+
+### Minor Changes
+
+- The integration is now driven by the `fingerprint-get-started` orchestrator skill instead of a fixed hand-written target: the agent audits what's already done, applies only the Quick start steps that are missing (frontend identification, and server-side verification where a backend exists), and never invents a backend or a form the repo doesn't have. The run then ends with how to verify — the repo's own dev command and a link to your Get Started page in the dashboard, which marks step 1 complete when the first event arrives — and nothing else: no checklist of its own, no claims about which step is done, and no "set up the other side / another project?" prompt. ([3e25d52](https://github.com/fingerprintjs/fingerprint-cli/commit/3e25d52b53313d6cf9a389d5017d5912bf20daf5))
+
+### Patch Changes
+
+- pnpm no longer fails the run over blocked install scripts. On pnpm 10.5+ the CLI approves the build scripts of the packages it installs (`--allow-build`), so the install just succeeds; on older pnpm 10 the package is reported as installed with its optional scripts skipped, instead of as a failed integration. ([6a52063](https://github.com/fingerprintjs/fingerprint-cli/commit/6a52063516e705f5fd23dbd389b9b8af4040bb26))
+- The Get Started skill drives the integration run, one checklist step at a time. The agent completes one step (the first not done on the first run, then the one you pick), tells you how to verify it, and stops; only its final message is shown, with the working commentary kept in the debug log. The CLI then asks you to test the step and choose what's next: server-side verification (asking where the backend is if it lives in another repo), the custom subdomain, or the remaining steps. The feature skills the orchestrator dispatches to (proxy, rules, tagging, request filtering, smart signals) are installed alongside it so every step it names can be applied. ([6a52063](https://github.com/fingerprintjs/fingerprint-cli/commit/6a52063516e705f5fd23dbd389b9b8af4040bb26))
+
 ## 0.1.0-alpha.3
 
 ### Patch Changes
