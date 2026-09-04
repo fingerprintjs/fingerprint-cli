@@ -1,18 +1,16 @@
-import { confirm } from '@inquirer/prompts'
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { confirm, input, select } from '@inquirer/prompts'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, printAnalysis, DetectedApp, RepoAnalysis } from './detect.js'
-import { provisionForRepo } from './provision.js'
+import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
+import { conventionFor, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
-import { color } from '../utils/color.js'
 import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
-import { assertAllowedPackage, installSkills, skillMeta, SkillMeta } from './skills.js'
+import { assertAllowedPackage, getStartedSkills, installSkills, skillMeta, SkillMeta } from './skills.js'
 import { autoYes, isCi } from '../utils/ci.js'
-import { text } from '../utils/prompt.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
@@ -81,36 +79,89 @@ function permissionOptions(extraReadonly: string[] = []) {
 // `failed` means the agent or a package install broke; the run must not claim success or exit 0.
 export type IntegrateOutcome = 'completed' | 'skipped' | 'failed'
 
-// Whichever side of an integration a repo covers. A fullstack framework (e.g. Next.js) and a
-// monorepo with both apps cover both; a standalone frontend or backend covers one.
-type IntegrationRole = 'frontend' | 'backend'
-
-function coverageOf(a: RepoAnalysis): IntegrationRole[] {
-  const fullstack = a.apps.some((x) => x.role === 'fullstack')
-  const roles: IntegrationRole[] = []
-  if (fullstack || a.frontend) roles.push('frontend')
-  if (fullstack || a.backend) roles.push('backend')
-  return roles
-}
-
-// Resolve a user-typed project path to an existing directory. Frontend/backend repos are usually
-// siblings, so a relative name is tried both under `base` and one level up; absolute paths are
-// used as-is. Returns the resolved dir, or undefined if none exists.
-function resolveProjectDir(base: string, input: string): string | undefined {
-  const candidates = isAbsolute(input) ? [input] : [resolve(base, input), resolve(base, '..', input)]
-  return candidates.find((c) => existsSync(c))
-}
-
-// Top-level integration flow for a single command invocation: provision env keys + apply the
-// integration for `root`, then — based on what `root` covers — explain what's still missing and
-// offer to set Fingerprint up in other projects too (a separate frontend/backend, or any other
-// repo). Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at;
-// it never assumes a particular layout.
+// Top-level integration flow for a single command invocation: provision env keys, apply one Get
+// Started step for `root`, then keep going one step at a time for as long as the user says so.
+// Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at; it never
+// assumes a particular layout. The CLI adds no closing guidance of its own — the Get Started skill
+// the agent follows already tells the user how to verify each step.
 export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
-  const outcome = await provisionAndApply(root, opts)
-  // After a failure, offering more repos would read as the run having succeeded here.
-  if (outcome !== 'failed') await offerOtherProjects(root, opts)
+  let outcome = await provisionAndApply(root, opts)
+  // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
+  // checklist ran dry.
+  if (opts.yes || autoYes()) return outcome
+
+  // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
+  // is behind us it drops out of the menu.
+  const done = new Set<NextStep>()
+  while (outcome === 'completed') {
+    const analysis = analyzeRepo(root)
+    if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
+    const next = await askNextStep(done)
+    if (next === 'stop') break
+    // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
+    if (next !== 'more') done.add(next)
+    // Server-side verification is the one step that may live in another repo.
+    if (next === 'server' && !analysis.backend) {
+      const backend = await askBackendPath()
+      if (backend) outcome = await provisionAndApply(backend, opts)
+      continue
+    }
+    outcome = await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
+  }
   return outcome
+}
+
+// The steps the CLI can offer after one lands. `step` is what the agent is told to do; `more` has
+// none, so the agent's audit picks the next not-done step (rules, tagging, request filtering, ...).
+type NextStep = 'server' | 'proxy' | 'more'
+const NEXT_STEPS: Record<NextStep, { name: string; step?: string }> = {
+  server: {
+    name: 'Set up server-side verification to get more signals',
+    step: 'Quick start step 2 — access detailed insights: verify the event server-side with the Server API',
+  },
+  proxy: {
+    name: 'Protect against ad blockers with a custom subdomain',
+    step: 'Quick start step 3 — protect against ad blockers: custom subdomain / proxy integration',
+  },
+  more: { name: 'Continue with the remaining steps (rules, tagging, request filtering)' },
+}
+
+// The user sets the pace: test the step that just landed, then pick the next one. The quick-start
+// steps are offered by name; the rest only once those are behind us, so nothing is skipped ahead.
+async function askNextStep(done: Set<NextStep>): Promise<NextStep | 'stop'> {
+  const quickStartDone = done.has('server') && done.has('proxy')
+  const offered = (Object.keys(NEXT_STEPS) as NextStep[]).filter((s) => !done.has(s) && (s !== 'more' || quickStartDone))
+  log.line()
+  log.info('Test this step now — start your dev server and check the result described above — then choose what to do next.')
+  return select<NextStep | 'stop'>({
+    message: "What's next?",
+    choices: [
+      ...offered.map((s) => ({ name: NEXT_STEPS[s].name, value: s })),
+      { name: 'Stop here for now (run fingerprint again to continue later)', value: 'stop' },
+    ],
+  })
+}
+
+// Where the backend lives, or undefined to skip the step. Relative paths resolve from the shell's
+// cwd, like --path.
+async function askBackendPath(): Promise<string | undefined> {
+  const path = (await input({ message: 'Server-side verification needs a backend. Path to your backend repo (Enter to skip):' })).trim()
+  return path ? resolve(path) : undefined
+}
+
+// Step 2 is already in place when the backend depends on the Fingerprint server SDK.
+function hasServerSdk(app: DetectedApp): boolean {
+  try {
+    if (app.language === 'python') {
+      return ['requirements.txt', 'pyproject.toml'].some(
+        (f) => existsSync(join(app.dir, f)) && readFileSync(join(app.dir, f), 'utf8').includes('fingerprint-server-sdk')
+      )
+    }
+    const pkg = JSON.parse(readFileSync(join(app.dir, 'package.json'), 'utf8'))
+    return Boolean(pkg.dependencies?.['@fingerprint/node-sdk'])
+  } catch {
+    return false
+  }
 }
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
@@ -124,69 +175,10 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
   return applyIntegration(root, opts)
 }
 
-// After integrating `root`, Fingerprint only delivers value once BOTH sides exist: the frontend
-// identifies visitors and sends an event, and the backend verifies it server-side before trusting
-// the action. So guide the user toward whatever side is still missing, and keep offering to set up
-// other repos until they decline. Skipped in CI / with --yes (no human to point at the next repo).
-async function offerOtherProjects(root: string, opts: { yes?: boolean }): Promise<void> {
-  if (isCi() || opts.yes || autoYes()) return
-
-  const covered = new Set<IntegrationRole>(coverageOf(analyzeRepo(root)))
-
-  for (;;) {
-    const hasFrontend = covered.has('frontend')
-    const hasBackend = covered.has('backend')
-
-    let message: string
-    let example: string
-    let suggest = true
-    if (hasFrontend && !hasBackend) {
-      log.info(
-        'Your frontend can now identify visitors — but Fingerprint only stops fraud once a backend\n' +
-          'verifies those events server-side. Want to set it up in your backend too?'
-      )
-      message = 'Point me to your backend project?'
-      example = '../api'
-    } else if (hasBackend && !hasFrontend) {
-      log.info(
-        'Your backend can now verify Fingerprint events — but it needs a frontend to identify\n' +
-          'visitors and send the event data. Want to set it up in your frontend too?'
-      )
-      message = 'Point me to your frontend project?'
-      example = '../web'
-    } else {
-      message = 'Set up Fingerprint in another project too?'
-      example = '../other-app'
-      suggest = false // both sides covered — don't nudge, just offer
-    }
-
-    const proceed = await confirm({ message, default: suggest })
-    if (!proceed) return
-
-    const input = await text(`Path to the project (e.g. ${example}) — blank to skip`)
-    if (!input.trim()) return
-    const dir = resolveProjectDir(root, input.trim())
-    if (!dir) {
-      log.warn(`No directory found at "${input.trim()}".`)
-      continue
-    }
-
-    const target = analyzeRepo(dir)
-    printAnalysis(target)
-    if (!target.skills.length && !target.frontend && !target.backend) {
-      log.warn('No supported app detected there — skipping.')
-      continue
-    }
-
-    await provisionAndApply(dir, opts)
-    for (const role of coverageOf(target)) covered.add(role)
-  }
-}
-
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
-// then run the agent. Called per-repo by `integrateProject` (the main repo plus any follow-up
-// projects) so the flow is continuous: set up env → "integrate this repo?" → apply.
-async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
+// then run the agent, so the flow is continuous: set up env → "integrate this repo?" → apply.
+// `step` names one checklist step for the agent to do; without it the agent's audit picks.
+async function applyIntegration(root: string, opts: { yes?: boolean; step?: string } = {}): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
@@ -218,24 +210,31 @@ async function applyIntegration(root: string, opts: { yes?: boolean } = {}): Pro
   if (!proceed) return 'skipped'
 
   log.step('Apply integration')
-  return runAgent(analysis)
+  return runAgent(analysis, opts.step)
 }
 
-export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome> {
+// The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
+// the framework and feature skills for the steps that are not done — which steps, in what order,
+// and how to verify each live there, not in a hand-rolled prompt.
+const GET_STARTED_SKILL = 'fingerprint-get-started'
+
+export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
-  const ids = analysis.skills
+  // The orchestrator drives; the detected framework skills and the feature skills for the later
+  // checklist steps are what it can delegate to.
+  const ids = [GET_STARTED_SKILL, ...analysis.skills, ...getStartedSkills()]
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
   // rather than us stuffing their full text into the prompt every turn.
   installSkills(analysis.root, ids)
   const metas = ids.map(skillMeta)
 
-  log.step(`Applying ${ids.join(' + ')} in ${analysis.root}`)
+  log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
   const response = query({
-    prompt: buildTaskPrompt(analysis, ids),
+    prompt: buildGetStartedPrompt(analysis, step),
     options: {
       model: llm.model,
       env: llm.env,
@@ -243,17 +242,20 @@ export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(),
+      ...permissionOptions(['Skill']), // the orchestrator dispatches via the Skill tool
     },
   })
 
-  const ok = await consume(response, 'Setting up the integration')
-  if (!ok) {
+  const run = await consume(response, 'Setting up the integration')
+  if (!run.ok) {
     process.exitCode = 1
     return 'failed'
   }
 
   const installed = await installPackages(analysis, metas)
+  // The agent's final message — what changed and how to verify it — goes after the install output,
+  // so it is what the user is reading when asked what to do next.
+  if (run.text) log.info(renderMarkdown(run.text))
   if (installed === 'failed') {
     log.warn('The code changes were applied, but package installs failed — the integration cannot run until they are installed (see above).')
     process.exitCode = 1
@@ -266,53 +268,59 @@ export async function runAgent(analysis: RepoAnalysis): Promise<IntegrateOutcome
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with
 // the current high-level activity (the per-step tool calls are hidden); verbose mode, `--ci`, and
 // non-TTY (piped/redirected) contexts skip the spinner — its multi-line redraw only works on a live
-// TTY — and rely on the streamed/teed log lines instead.
-async function consume(response: unknown, initialMessage: string): Promise<boolean> {
+// TTY — and rely on the streamed/teed log lines instead. `text` is the agent's final message, for
+// the caller to print once its own output (package installs) is done; unset when --verbose already
+// streamed it.
+type AgentRun = { ok: boolean; text?: string }
+
+async function consume(response: unknown, initialMessage: string): Promise<AgentRun> {
   const spinner = !isVerbose() && process.stdout.isTTY && !isCi() ? new Spinner() : null
   spinner?.start(initialMessage)
-  let ok = false
+  let run: AgentRun = { ok: false }
   try {
     for await (const msg of response as AsyncIterable<any>) {
-      const status = handleMessage(msg, spinner)
-      if (status !== undefined) ok = status
+      const result = handleMessage(msg, spinner)
+      if (result) run = result
     }
   } finally {
     spinner?.stop()
   }
-  return ok
+  return run
 }
 
 const SYSTEM_PROMPT = [
-  'You are the Fingerprint integration wizard. You add Fingerprint device intelligence to a',
-  "developer's app for fraud prevention.",
-  '',
-  'The integration skills are installed under .claude/skills/. For each skill named in the task,',
-  'read .claude/skills/<id>/SKILL.md (and its snippets/) and follow it exactly.',
+  'You are the Fingerprint integration wizard. Follow .claude/skills/fingerprint-get-started/SKILL.md;',
+  'the skills it dispatches to are installed alongside it under .claude/skills/.',
   '',
   'Rules:',
   '- Make minimal, focused changes; match the existing code style.',
   '- The secret key is server-side only; never reference it in frontend code.',
   '- Do NOT read or print .env. Reference keys by env-var name only.',
-  '- Only edit code. Do not install packages or run shell commands, and do not tell the user to',
-  '  install anything — the CLI installs the required packages automatically after you finish.',
-  '- Do NOT add dependencies or pin version numbers in package.json / requirements.txt. The CLI',
-  '  installs the correct published versions itself; just write the app code that imports them.',
-  '  ("v4" in a skill refers to the Fingerprint platform, not an npm package major version.)',
-  '- When done, briefly summarize the files you changed.',
+  '- Only edit application code. Do not run shell commands, install packages, or touch package',
+  '  manifests, lockfiles or package-manager config — the CLI installs the required packages itself',
+  '  after you finish. ("v4" in a skill is the Fingerprint platform, not an npm major version.)',
+  '- Do not invent app surface: if the repo has no backend, no form, or no sensitive action,',
+  "  integrate what's actually there and say what's missing — never scaffold one.",
 ].join('\n')
 
-function buildTaskPrompt(analysis: RepoAnalysis, ids: string[]): string {
+// One checklist step per agent run: the one the user picked (`step`), or — on the first run — the
+// first the audit shows is not done (install if Fingerprint isn't in the app yet, ...). How to do
+// and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
+// agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
+// the CLI's stack detection, and where the provisioned keys live (it may not open .env).
+function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
+  const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
-    'Integrate Fingerprint into this repository.',
+    step
+      ? `Run the Fingerprint Get Started flow for this repository. Do only this step: ${step}.`
+      : 'Run the Fingerprint Get Started flow for this repository, one step at a time: do only the first not-done checklist step this repo can do.',
+    'Tell the user how to verify it, then stop. Do not announce or suggest what the next step is —',
+    'the CLI asks the user about that.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
-    'Read and follow each named skill from .claude/skills/<id>/SKILL.md and apply it to the',
-    'matching part of the app. The per-app .env files are already provisioned with the keys',
-    '(frontend: the bundler-prefixed public key; backend: FINGERPRINT_SECRET_API_KEY).',
-    "Protect the app's primary sensitive action (signup if present, else login): identify on the",
-    'client, send the event_id, and verify it server-side, blocking bots before completing.',
-    `Skills to apply (read each from .claude/skills/<id>/SKILL.md): ${ids.join(', ')}.`,
+    'The .env files are already provisioned: the public key is in',
+    `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
   ].join('\n')
 }
 
@@ -333,11 +341,12 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<Integrat
     },
   })
 
-  const ok = await consume(response, 'Researching docs and applying the integration')
-  if (!ok) {
+  const run = await consume(response, 'Researching docs and applying the integration')
+  if (!run.ok) {
     process.exitCode = 1
     return 'failed'
   }
+  if (run.text) log.info(renderMarkdown(run.text))
   log.success('Agent finished applying the integration.')
   log.warn('Experimental integration applied from docs — review the changes and install any dependencies it listed.')
   return 'completed'
@@ -382,21 +391,19 @@ function buildDocsTaskPrompt(analysis: RepoAnalysis): string {
   ].join('\n')
 }
 
-// Returns true/false on a final result message, undefined otherwise. When a spinner is active
-// (default mode), the agent's narration prints above the live line and tool calls just update the
-// high-level activity message; otherwise behavior is unchanged.
-function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
+// Returns the run outcome on a final result message, undefined otherwise. Tool calls update the
+// spinner's high-level activity (default mode) or stream as lines (--verbose).
+function handleMessage(msg: any, spinner: Spinner | null): AgentRun | undefined {
   if (msg.type === 'assistant') {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'text' && block.text?.trim()) {
         const text = block.text.trim()
-        // Rendered for the console, raw for the debug log — a log file full of escape codes is worse
-        // to read than the markdown was. Railed per line, the way `log.info` does it: a multi-line
-        // block prefixed once leaves every line after the first hanging off the rail.
-        if (spinner) {
-          for (const line of renderMarkdown(text).split('\n')) spinner.print(`${color.dim('│')} ${line}`)
-          debugLog(`info  ${text}`)
-        } else log.info(renderMarkdown(text))
+        // The agent's running commentary ("let me read…", audit notes, subagent reports) is for the
+        // agent, not the user. Only --verbose streams it; otherwise it goes to the debug log (raw —
+        // a log full of escape codes reads worse than the markdown) and the user sees the final
+        // message alone, returned on the result below.
+        if (isVerbose()) log.info(renderMarkdown(text))
+        else debugLog(`info  ${text}`)
       }
       // Per-step tool calls (Read/Glob/Edit/...) are noisy; only stream them to the console with
       // --verbose. Otherwise update the spinner's high-level activity, and always tee the call to
@@ -418,11 +425,14 @@ function handleMessage(msg: any, spinner: Spinner | null): boolean | undefined {
     // A result can carry subtype:'success' yet is_error:true (e.g. an API 429) — check both.
     if (msg.is_error || (msg.subtype && msg.subtype !== 'success')) {
       log.error(`Agent did not complete: ${msg.result ?? msg.subtype ?? 'unknown error'}`)
-      return false
+      return { ok: false }
     }
-    // The success line is printed by the caller once the package installs are also done —
-    // announcing it here would claim success before the install step can still fail.
-    return true
+    // The final message is the one thing the user sees from the agent: what changed and how to
+    // verify it. The caller prints it (after its package installs); --verbose already streamed it
+    // as the last assistant block. The success line is the caller's too — announcing it here would
+    // claim success before the install step can still fail.
+    const text = typeof msg.result === 'string' ? msg.result.trim() : ''
+    return { ok: true, text: !isVerbose() && text ? text : undefined }
   }
   return undefined
 }
@@ -454,8 +464,24 @@ function runPackageInstall(bin: string, args: string[], cwd: string): Promise<{ 
   })
 }
 
-// pnpm refusing to run a dependency's build scripts until they're approved (blocks the install
-// with a non-zero exit; the fix is pnpm's approve-builds flow, not a retry).
+// pnpm 10 refuses to run a dependency's install scripts until they're approved, and exits 1 even
+// though the package itself was installed. From 10.5, `--allow-build=<name>` approves named packages
+// on the same `add` and pnpm persists the approval. The CLI only ever installs Fingerprint's own
+// packages and known peers (assertAllowedPackage), so approving exactly those is the tool vouching
+// for its own vendor, not for arbitrary code. Older pnpm gets no flag and hits PNPM_BLOCKED_BUILDS.
+function pnpmAllowBuildFlags(cwd: string, pkgs: string[]): string[] {
+  try {
+    const version = execFileSync('pnpm', ['--version'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 })
+    const [major, minor] = version.trim().split('.').map(Number)
+    if (!(major > 10 || (major === 10 && minor >= 5))) return []
+  } catch {
+    return []
+  }
+  return pkgs.map((p) => `--allow-build=${bareName(p)}`)
+}
+
+// The package's install scripts were skipped (pnpm < 10.5, or an approval the flag couldn't give).
+// The package is installed and works without them for everything the CLI installs.
 const PNPM_BLOCKED_BUILDS = /ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/i
 
 // Install each skill's packages into the app that needs them, using that app's package
@@ -491,14 +517,13 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
       }
     }
     log.step(`Installing ${pkgs.join(', ')} in ${app.rel} (${bin})`)
-    const result = await runPackageInstall(bin, [sub, ...pkgs], app.dir)
+    const flags = bin === 'pnpm' ? pnpmAllowBuildFlags(app.dir, pkgs) : []
+    const result = await runPackageInstall(bin, [sub, ...flags, ...pkgs], app.dir)
     if (result.ok) {
       log.success(`Installed in ${app.rel}`)
     } else if (bin === 'pnpm' && PNPM_BLOCKED_BUILDS.test(result.output)) {
-      failed = true
-      log.warn(`pnpm blocked a dependency's build scripts in ${app.rel}. To fix it:`)
-      log.info(`  1. In ${app.rel}, run: pnpm approve-builds — and approve the listed package(s)`)
-      log.info(`  2. Re-run the install: ${bin} ${sub} ${pkgs.join(' ')}`)
+      log.success(`Installed in ${app.rel} — pnpm skipped the package's install scripts (optional).`)
+      log.info(`  To run them: in ${app.rel}, pnpm approve-builds, then ${bin} ${sub} ${pkgs.join(' ')}`)
     } else {
       failed = true
       log.warn(`Install failed in ${app.rel} — run manually: ${bin} ${sub} ${pkgs.join(' ')}`)
@@ -507,8 +532,14 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
   return failed ? 'failed' : skipped ? 'skipped' : 'completed'
 }
 
-// Append @latest to a package spec that has no version. Scoped names start with '@', so a real
-// version specifier is an '@' anywhere after the first character (e.g. '@fingerprint/react@^4').
+// Scoped names start with '@', so a real version specifier is an '@' anywhere after the first
+// character (e.g. '@fingerprint/react@^4').
+function bareName(pkg: string): string {
+  const at = pkg.lastIndexOf('@')
+  return at > 0 ? pkg.slice(0, at) : pkg
+}
+
+// Append @latest to a package spec that has no version.
 function pinLatest(pkg: string): string {
   return pkg.lastIndexOf('@') > 0 ? pkg : `${pkg}@latest`
 }

@@ -17,7 +17,7 @@ export class Spinner {
   // Redrawing in place (`\r`, `\x1b[K`) only means anything on a live TTY: piped, redirected, or CI
   // output takes those escapes literally. Callers are expected to skip the spinner there and log
   // plain lines instead (see runner.consume); this guard keeps a caller that forgets from corrupting
-  // the stream. `print()` still appends its line, so the agent's narration survives either way.
+  // the stream.
   private readonly live = Boolean(process.stdout.isTTY) && !isCi()
 
   start(message: string): void {
@@ -39,13 +39,6 @@ export class Spinner {
   setMessage(message: string): void {
     this.message = message
     if (this.painted) this.paint()
-  }
-
-  // Print a line above the live line without leaving artifacts.
-  print(line: string): void {
-    this.clear()
-    process.stdout.write(line + '\n')
-    this.paint()
   }
 
   stop(): void {

@@ -18,7 +18,7 @@ interface EnvConvention {
   needsDotenv?: boolean
 }
 
-function conventionFor(app: DetectedApp): EnvConvention {
+export function conventionFor(app: DetectedApp): EnvConvention {
   switch (app.framework) {
     // Fullstack single-repo frameworks: both keys + both region vars in one auto-loaded file.
     case 'next':

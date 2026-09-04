@@ -149,6 +149,7 @@ export function startAuthServer({ deadTokenEndpoint = false } = {}) {
 // absolute file the agent will create; the test points FINGERPRINT_GATEWAY_URL at this.
 export function startGateway(writeTarget, writeContent) {
   let calls = 0
+  const bodies = []
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
@@ -158,6 +159,7 @@ export function startGateway(writeTarget, writeContent) {
         return res.end('{}')
       }
       calls++
+      bodies.push(body)
       // Drive off conversation content, not a call counter: the real run may make preamble calls, so
       // emit the Write on any turn that has no tool_result yet, then end once the write came back.
       const alreadyWrote = body.includes('tool_result')
@@ -188,17 +190,23 @@ export function startGateway(writeTarget, writeContent) {
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address()
-      resolve({ url: `http://127.0.0.1:${port}`, calls: () => calls, close: () => new Promise((r) => server.close(r)) })
+      resolve({ url: `http://127.0.0.1:${port}`, calls: () => calls, bodies: () => bodies, close: () => new Promise((r) => server.close(r)) })
     })
   })
 }
 
-// A local skills checkout (pointed at via FINGERPRINT_SKILLS_DIR) with the two skills React+Express
-// resolves to. `packages` (keyed by skill id) defaults empty so the post-agent installer is a
-// no-op; install-failure tests pass real names and a fake package manager on PATH.
+// A local skills checkout (pointed at via FINGERPRINT_SKILLS_DIR) with the skills the React+Express
+// flow resolves to: the two framework skills plus the get-started orchestrator that drives them.
+// `packages` (keyed by skill id) defaults empty so the post-agent installer is a no-op;
+// install-failure tests pass real names and a fake package manager on PATH.
 export function makeSkillsDir(packages = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fp-skills-'))
-  for (const [id, role] of [['fingerprint-react', 'frontend'], ['fingerprint-node', 'backend']]) {
+  const skills = [
+    ['fingerprint-react', 'frontend'],
+    ['fingerprint-node', 'backend'],
+    ['fingerprint-get-started', 'orchestrator'],
+  ]
+  for (const [id, role] of skills) {
     const s = join(dir, 'skills', id)
     mkdirSync(s, { recursive: true })
     writeFileSync(join(s, 'SKILL.md'), `# ${id}\nTest skill.\n`)
@@ -212,7 +220,7 @@ export function makeRepo() {
   const root = mkdtempSync(join(tmpdir(), 'fp-repo-'))
   mkdirSync(join(root, 'web'))
   mkdirSync(join(root, 'api'))
-  writeFileSync(join(root, 'web', 'package.json'), JSON.stringify({ name: 'web', dependencies: { react: '^18' } }))
+  writeFileSync(join(root, 'web', 'package.json'), JSON.stringify({ name: 'web', scripts: { dev: 'vite' }, dependencies: { react: '^18' } }))
   writeFileSync(join(root, 'api', 'package.json'), JSON.stringify({ name: 'api', dependencies: { express: '^4' } }))
   return root
 }
