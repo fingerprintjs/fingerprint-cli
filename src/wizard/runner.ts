@@ -98,7 +98,8 @@ export async function integrateProject(root: string, opts: { yes?: boolean } = {
     if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
     const next = await askNextStep(done)
     if (next === 'stop') break
-    done.add(next)
+    // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
+    if (next !== 'more') done.add(next)
     // Server-side verification is the one step that may live in another repo.
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
