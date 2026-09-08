@@ -12,6 +12,10 @@ export interface DetectedApp {
   role: AppRole
   language: 'ts' | 'js' | 'python' | 'unknown'
   framework?: string // 'react' | 'next' | 'vue' | 'express' | 'fastify' | 'nest' | 'flask' | 'fastapi' | 'django' | ...
+  // The server half's framework, when this app has one. A single manifest can hold both halves
+  // (react + express), and `framework` reports the frontend one — so this is what decides the
+  // backend skill. Equal to `framework` for a backend-only app; unset for a frontend-only one.
+  backendFramework?: string
   packageManager?: 'npm' | 'pnpm' | 'yarn' | 'bun' | 'pip' | 'poetry' | 'unknown'
 }
 
@@ -109,7 +113,7 @@ function classifyNodeApp(dir: string, rel: string): DetectedApp {
 
   const language = existsSync(join(dir, 'tsconfig.json')) || deps.typescript ? 'ts' : 'js'
 
-  return { dir, rel, role, language, framework, packageManager: detectPackageManager(dir) }
+  return { dir, rel, role, language, framework, backendFramework: backend, packageManager: detectPackageManager(dir) }
 }
 
 function classifyPythonApp(dir: string, rel: string): DetectedApp | undefined {
@@ -129,6 +133,7 @@ function classifyPythonApp(dir: string, rel: string): DetectedApp | undefined {
     role: framework ? 'backend' : 'unknown',
     language: 'python',
     framework,
+    backendFramework: framework,
     packageManager: pyproject ? 'poetry' : 'pip',
   }
 }
@@ -218,7 +223,8 @@ function resolveSkills(frontend?: DetectedApp, backend?: DetectedApp): string[] 
 
   const ids: string[] = []
   if (feFw && FRONTEND_SKILLS[feFw]) ids.push(FRONTEND_SKILLS[feFw])
-  if (backend?.framework && BACKEND_SKILLS[backend.framework]) ids.push(BACKEND_SKILLS[backend.framework])
+  const beFw = backend?.backendFramework
+  if (beFw && BACKEND_SKILLS[beFw]) ids.push(BACKEND_SKILLS[beFw])
   return ids
 }
 
@@ -226,7 +232,13 @@ export function analyzeRepo(root: string = process.cwd()): RepoAnalysis {
   const apps = findApps(root)
 
   const frontend = apps.find((a) => a.role === 'frontend') ?? apps.find((a) => a.role === 'fullstack')
-  const backend = apps.find((a) => a.role === 'backend')
+  // Which app owns the server half. Usually its own package, but one manifest can hold both halves
+  // — either two dependencies (react + express) or a framework that ships its own server (Next.js)
+  // — and then the backend is the very same app as the frontend, not a missing one.
+  const backend =
+    apps.find((a) => a.role === 'backend') ??
+    apps.find((a) => a.role === 'fullstack' && a.backendFramework) ??
+    (frontend?.framework && FULLSTACK_SKILLS[frontend.framework] ? frontend : undefined)
 
   const monorepo =
     apps.length > 1 ||
@@ -248,6 +260,13 @@ const LANG_LABEL: Record<DetectedApp['language'], string> = {
   js: 'JavaScript',
   python: 'Python',
   unknown: 'unknown',
+}
+
+// What to call an app's server half. When one manifest holds both halves, `framework` reports the
+// frontend one, so the backend name lives in `backendFramework`; a framework that is its own server
+// (Next.js) has none and is named by `framework`.
+export function backendLabel(app: DetectedApp): string {
+  return app.backendFramework ?? app.framework ?? 'app'
 }
 
 function displayPath(p: string): string {
@@ -299,7 +318,7 @@ export function printAnalysis(a: RepoAnalysis): void {
   )
   log.kv(
     'Backend',
-    a.backend ? `${color.cyan(a.backend.framework ?? 'app')} ${color.dim(`(${a.backend.rel})`)}` : color.dim('not found')
+    a.backend ? `${color.cyan(backendLabel(a.backend))} ${color.dim(`(${a.backend.rel})`)}` : color.dim('not found')
   )
   if (a.skills.length) {
     log.line()
