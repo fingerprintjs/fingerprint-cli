@@ -251,3 +251,18 @@ test('an unauthenticated run withholds the events that need a workspace', async 
 
   await api.close()
 })
+
+test('FINGERPRINT_DISABLE_ANALYTICS suppresses every event', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  // `npm test` sets this for the whole suite so a test that spawns the CLI without redirecting the
+  // Management API cannot post to production; the harness clears it, so opt back in explicitly.
+  const res = await runCli(['whoami'], { home, env: { FINGERPRINT_DISABLE_ANALYTICS: '1' } })
+  assert.equal(res.status, 0, res.stderr)
+
+  assert.deepEqual(names(api), [])
+
+  await api.close()
+})

@@ -15,9 +15,17 @@ const CLI = fileURLToPath(new URL('../dist/index.js', import.meta.url))
 // Run the CLI with an isolated HOME so it can't pick up a real `fingerprint login` from the dev's
 // machine (auth state lives at $HOME/.config/fingerprint/auth.json). `timeout` is the real assertion
 // here: if a prompt ever blocks on stdin in --ci mode, spawnSync kills it and `signal` is set.
+// FINGERPRINT_MANAGEMENT_API_URL mirrors test/helpers/harness.js: an unauthenticated run resolves
+// the Management API from config, which defaults to production, so a bare `--ci` run would post a
+// real anonymous analytics event on every CI build. Point it at a closed port instead.
 function runCli(args, { home } = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
-    env: { ...process.env, HOME: home ?? mkdtempSync(join(tmpdir(), 'fp-home-')), CI: '' },
+    env: {
+      ...process.env,
+      HOME: home ?? mkdtempSync(join(tmpdir(), 'fp-home-')),
+      CI: '',
+      FINGERPRINT_MANAGEMENT_API_URL: 'http://127.0.0.1:1',
+    },
     encoding: 'utf8',
     input: '', // closed, non-TTY stdin — a hung prompt would read EOF or block
     timeout: 15_000,
