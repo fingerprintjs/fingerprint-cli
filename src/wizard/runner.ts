@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
-import { conventionFor, provisionForRepo } from './provision.js'
+import { conventionFor, ProvisionResult, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
@@ -78,6 +78,9 @@ function permissionOptions(extraReadonly: string[] = []) {
 // itself, or an interactive install) — a choice, not a failure, so it keeps a zero exit code.
 // `failed` means the agent or a package install broke; the run must not claim success or exit 0.
 export type IntegrateOutcome = 'completed' | 'skipped' | 'failed'
+
+// Key + region for an app that has no env file to read them from (see provision.ts).
+type InlineValues = NonNullable<ProvisionResult['inline']>
 
 // Top-level integration flow for a single command invocation: provision env keys, apply one Get
 // Started step for `root`, then keep going one step at a time for as long as the user says so.
@@ -168,17 +171,20 @@ function hasServerSdk(app: DetectedApp): boolean {
 // secret never reaches the agent; see provision.ts.)
 async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<IntegrateOutcome> {
   log.step('Set up environment variables')
-  const { needsDotenv } = await provisionForRepo(root)
+  const { needsDotenv, inline } = await provisionForRepo(root)
   if (needsDotenv.length) {
     log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
   }
-  return applyIntegration(root, opts)
+  return applyIntegration(root, { ...opts, inline })
 }
 
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent, so the flow is continuous: set up env → "integrate this repo?" → apply.
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
-async function applyIntegration(root: string, opts: { yes?: boolean; step?: string } = {}): Promise<IntegrateOutcome> {
+async function applyIntegration(
+  root: string,
+  opts: { yes?: boolean; step?: string; inline?: InlineValues } = {}
+): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
@@ -210,7 +216,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
   if (!proceed) return 'skipped'
 
   log.step('Apply integration')
-  return runAgent(analysis, opts.step)
+  return runAgent(analysis, opts.step, opts.inline)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -218,7 +224,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
 // and how to verify each live there, not in a hand-rolled prompt.
 const GET_STARTED_SKILL = 'fingerprint-get-started'
 
-export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<IntegrateOutcome> {
+export async function runAgent(analysis: RepoAnalysis, step?: string, inline?: InlineValues): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
@@ -234,7 +240,7 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
   log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step),
+    prompt: buildGetStartedPrompt(analysis, step, inline),
     options: {
       model: llm.model,
       env: llm.env,
@@ -308,7 +314,7 @@ const SYSTEM_PROMPT = [
 // and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
 // agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
 // the CLI's stack detection, and where the provisioned keys live (it may not open .env).
-function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
+function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, inline?: InlineValues): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
@@ -319,8 +325,19 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
     'Tell the user how to verify it, then stop. Do not announce or suggest what the next step is —',
     'the CLI asks the user about that.',
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
-    'The .env files are already provisioned: the public key is in',
-    `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+    // A static site has no env file to point at, so the values go in the prompt instead — telling
+    // it to read a bundler-prefixed variable that nothing defines is what leaves `undefined` in
+    // the page.
+    ...(inline
+      ? [
+          'This app has no build step and no env vars. Write these values directly into the code',
+          `(both are public and ship in the page source): public API key ${inline.publicKey ?? '<unavailable>'},`,
+          `region '${inline.region}'.`,
+        ]
+      : [
+          'The .env files are already provisioned: the public key is in',
+          `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+        ]),
   ].join('\n')
 }
 
@@ -501,12 +518,19 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
     skill.packages.forEach(assertAllowedPackage)
     const app = appForRole[skill.role] ?? analysis.frontend ?? analysis.backend
     if (!app) continue
+    const jsPm = !['pip', 'poetry'].includes(app.packageManager ?? '')
+    // A static site has no manifest to install into: the JS Agent skill loads the agent from the
+    // CDN there, and an npm install would create the package.json (and node_modules) the project
+    // deliberately doesn't have.
+    if (jsPm && !existsSync(join(app.dir, 'package.json'))) {
+      log.info(`No package.json in ${app.rel} — skipping install; the agent loads from the CDN instead.`)
+      continue
+    }
     const [bin, sub] = installCommand(app.packageManager)
     // The CLI owns dependency versions. For npm-family managers, pin unversioned packages to
     // @latest so the install ignores any (possibly wrong) range the agent wrote into package.json
     // and rewrites it to the real published version. pip/poetry don't use @latest syntax and
     // install latest by name anyway, so leave their packages untouched.
-    const jsPm = !['pip', 'poetry'].includes(app.packageManager ?? '')
     const pkgs = jsPm ? skill.packages.map(pinLatest) : skill.packages
     if (isInteractive()) {
       const ok = await confirm({ message: `Install ${pkgs.join(', ')} in ${app.rel}? (${bin} ${sub})`, default: true })
