@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { analyzeRepo, printAnalysis } from '../wizard/detect.js'
+import { analyzeRepo, backendLabel, printAnalysis } from '../wizard/detect.js'
 import { getFreshAccessToken, withoutLoginHint } from '../auth/refresh.js'
 import { integrateProject } from '../wizard/runner.js'
 import { log, printFailure } from '../wizard/log.js'
@@ -29,7 +29,7 @@ export async function integrateCommand(
   const stack = {
     chained: Boolean(opts.chained),
     frontend: analysis.frontend?.framework ?? '',
-    backend: analysis.backend?.framework ?? '',
+    backend: analysis.backend ? backendLabel(analysis.backend) : '',
     skills: analysis.skills.join(','),
     monorepo: analysis.monorepo,
     app_count: analysis.apps.length,
