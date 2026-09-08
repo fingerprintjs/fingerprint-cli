@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
+import { analyzeRepo, backendLabel, DetectedApp, RepoAnalysis } from './detect.js'
 import { conventionFor, ProvisionResult, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
@@ -194,7 +194,9 @@ async function applyIntegration(
       log.info('No Fingerprint integration is available for this stack yet.')
       return 'skipped'
     }
-    const stack = [analysis.frontend?.framework, analysis.backend?.framework].filter(Boolean).join(' + ')
+    const stack = [analysis.frontend?.framework, analysis.backend && backendLabel(analysis.backend)]
+      .filter(Boolean)
+      .join(' + ')
     log.warn(`No curated skill for this stack (${stack}).`)
     const proceed =
       opts.yes ||
@@ -309,14 +311,26 @@ const SYSTEM_PROMPT = [
   "  integrate what's actually there and say what's missing — never scaffold one.",
 ].join('\n')
 
+// The detected stack, as one phrase. One manifest can be both halves (react + express, or a
+// framework that is its own server) — saying "frontend X and backend X at the same path" reads as
+// two apps, so name it as one and let the agent look in a single place.
+function describeStack(analysis: RepoAnalysis): string {
+  const { frontend, backend } = analysis
+  if (frontend && frontend === backend) {
+    const halves = [frontend.framework, frontend.backendFramework].filter((f, i, all) => f && all.indexOf(f) === i)
+    return `one app at ./${frontend.rel} serving both halves (${halves.join(' + ')})`
+  }
+  const fe = frontend ? `frontend (${frontend.framework}) at ./${frontend.rel}` : null
+  const be = backend ? `backend (${backendLabel(backend)}) at ./${backend.rel}` : null
+  return [fe, be].filter(Boolean).join(' and ')
+}
+
 // One checklist step per agent run: the one the user picked (`step`), or — on the first run — the
 // first the audit shows is not done (install if Fingerprint isn't in the app yet, ...). How to do
 // and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
 // agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
 // the CLI's stack detection, and where the provisioned keys live (it may not open .env).
 function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, inline?: InlineValues): string {
-  const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
-  const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
     step
@@ -324,7 +338,7 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, inline?: I
       : 'Run the Fingerprint Get Started flow for this repository, one step at a time: do only the first not-done checklist step this repo can do.',
     'Tell the user how to verify it, then stop. Do not announce or suggest what the next step is —',
     'the CLI asks the user about that.',
-    `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
+    `Detected: ${describeStack(analysis)}.`,
     // A static site has no env file to point at, so the values go in the prompt instead — telling
     // it to read a bundler-prefixed variable that nothing defines is what leaves `undefined` in
     // the page.
@@ -397,7 +411,7 @@ function buildDocsTaskPrompt(analysis: RepoAnalysis): string {
     ? `frontend: ${analysis.frontend.framework} (${analysis.frontend.language}) at ./${analysis.frontend.rel}`
     : null
   const be = analysis.backend
-    ? `backend: ${analysis.backend.framework} (${analysis.backend.language}) at ./${analysis.backend.rel}`
+    ? `backend: ${backendLabel(analysis.backend)} (${analysis.backend.language}) at ./${analysis.backend.rel}`
     : null
   return [
     'Integrate Fingerprint device intelligence into this repository by researching the docs.',
