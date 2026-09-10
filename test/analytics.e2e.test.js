@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VERSION } from '../dist/version.js'
+import { resolveConfig } from '../dist/config/config.js'
 
 import {
   makeHome,
@@ -250,4 +251,11 @@ test('an unauthenticated run withholds the events that need a workspace', async 
   assert.ok(!names(api).includes('cli_integrate_started'))
 
   await api.close()
+})
+
+// `npm test` runs in the test environment, so a spawn helper that forgets an override can't leak.
+test('the suite resolves no real service', () => {
+  const { managementApiUrl, gatewayUrl } = resolveConfig()
+  assert.match(managementApiUrl, /127\.0\.0\.1/)
+  assert.match(gatewayUrl, /127\.0\.0\.1/)
 })

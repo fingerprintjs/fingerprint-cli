@@ -234,14 +234,12 @@ export function runCli(args, { home, cwd, env = {}, respond } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], {
       cwd,
-      // A run with no auth state resolves the Management API from config, which defaults to
-      // production. Point it at a closed port so no test can ever reach the real API by forgetting
-      // to seed auth; the analytics tests override it with their fake.
+      // FINGERPRINT_ENV=test comes through process.env, so a run with no auth state resolves the
+      // closed ports from config; tests that need a fake pass its url in `env`.
       env: {
         ...process.env,
         HOME: home ?? makeHome(),
         CI: '',
-        FINGERPRINT_MANAGEMENT_API_URL: 'http://127.0.0.1:1',
         ...env,
       },
     })
