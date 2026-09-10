@@ -242,9 +242,6 @@ export function runCli(args, { home, cwd, env = {}, respond } = {}) {
         HOME: home ?? makeHome(),
         CI: '',
         FINGERPRINT_MANAGEMENT_API_URL: 'http://127.0.0.1:1',
-        // `npm test` disables analytics suite-wide; re-enable it here, where the API URL above
-        // (or a per-test override) keeps every event pointed at a fake.
-        FINGERPRINT_DISABLE_ANALYTICS: '',
         ...env,
       },
     })

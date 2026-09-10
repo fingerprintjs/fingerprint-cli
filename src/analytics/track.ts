@@ -32,11 +32,6 @@ function cliFlags(): string {
 }
 
 export async function track(event: string, properties: Record<string, unknown> = {}): Promise<void> {
-  // Set by `npm test` for the whole suite, so a test that spawns the CLI without pointing the
-  // Management API somewhere harmless still cannot reach production. The analytics tests, which
-  // assert on delivered events, clear it in test/helpers/harness.js.
-  if (process.env.FINGERPRINT_DISABLE_ANALYTICS) return
-
   const auth = pinnedAuth ?? getAuthState()
   const authenticated = Boolean(auth?.managementApiKey)
 

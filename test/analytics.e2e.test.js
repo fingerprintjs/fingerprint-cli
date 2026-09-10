@@ -252,17 +252,10 @@ test('an unauthenticated run withholds the events that need a workspace', async 
   await api.close()
 })
 
-test('FINGERPRINT_DISABLE_ANALYTICS suppresses every event', async () => {
-  const api = await startManagementApi()
-  const home = makeHome()
-  seedAuth(home, api.url)
-
-  // `npm test` sets this for the whole suite so a test that spawns the CLI without redirecting the
-  // Management API cannot post to production; the harness clears it, so opt back in explicitly.
-  const res = await runCli(['whoami'], { home, env: { FINGERPRINT_DISABLE_ANALYTICS: '1' } })
-  assert.equal(res.status, 0, res.stderr)
-
-  assert.deepEqual(names(api), [])
-
-  await api.close()
+// Analytics has no endpoint of its own — every event posts to the Management API — so pointing that
+// API at a closed port is what keeps the suite off production. `npm test` sets it for the whole
+// suite, which is the backstop for a spawn helper that forgets its own override; this asserts the
+// backstop is actually in place. Fails under a bare `node --test`, which is the point: run `npm test`.
+test('the suite runs with the Management API pinned away from production', () => {
+  assert.equal(process.env.FINGERPRINT_MANAGEMENT_API_URL, 'http://127.0.0.1:1')
 })
