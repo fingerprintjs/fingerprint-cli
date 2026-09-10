@@ -1,5 +1,5 @@
 export type Region = 'us' | 'eu' | 'ap'
-export type Environment = 'production' | 'staging'
+export type Environment = 'production' | 'staging' | 'test'
 
 interface EnvironmentUrls {
   // Public Management API the CLI drives with its workspace-scoped Management API key (create/list
@@ -34,6 +34,13 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
     gatewayUrl: 'https://llm-gateway.fpjs.sh',
     oauthIssuer: 'https://scientific-cat-58-staging.authkit.app',
     oauthClientId: 'client_01KYHMB30PPDR66CWY8BKVTZRX',
+  },
+  // Closed ports: the test suite reaches no real service by forgetting to point one at a fake.
+  test: {
+    managementApiUrl: 'http://127.0.0.1:1',
+    gatewayUrl: 'http://127.0.0.1:1',
+    oauthIssuer: 'http://127.0.0.1:1',
+    oauthClientId: 'client_test',
   },
 }
 

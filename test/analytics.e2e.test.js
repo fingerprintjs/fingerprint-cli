@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VERSION } from '../dist/version.js'
+import { resolveConfig } from '../dist/config/config.js'
 
 import {
   makeHome,
@@ -252,7 +253,9 @@ test('an unauthenticated run withholds the events that need a workspace', async 
   await api.close()
 })
 
-// `npm test` sets this suite-wide, so a spawn helper that forgets its own override can't leak.
-test('the suite runs with the Management API pinned away from production', () => {
-  assert.equal(process.env.FINGERPRINT_MANAGEMENT_API_URL, 'http://127.0.0.1:1')
+// `npm test` runs in the test environment, so a spawn helper that forgets an override can't leak.
+test('the suite resolves no real service', () => {
+  const { managementApiUrl, gatewayUrl } = resolveConfig()
+  assert.match(managementApiUrl, /127\.0\.0\.1/)
+  assert.match(gatewayUrl, /127\.0\.0\.1/)
 })
