@@ -252,10 +252,7 @@ test('an unauthenticated run withholds the events that need a workspace', async 
   await api.close()
 })
 
-// Analytics has no endpoint of its own — every event posts to the Management API — so pointing that
-// API at a closed port is what keeps the suite off production. `npm test` sets it for the whole
-// suite, which is the backstop for a spawn helper that forgets its own override; this asserts the
-// backstop is actually in place. Fails under a bare `node --test`, which is the point: run `npm test`.
+// `npm test` sets this suite-wide, so a spawn helper that forgets its own override can't leak.
 test('the suite runs with the Management API pinned away from production', () => {
   assert.equal(process.env.FINGERPRINT_MANAGEMENT_API_URL, 'http://127.0.0.1:1')
 })
