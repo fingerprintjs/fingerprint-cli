@@ -36,6 +36,24 @@ const FRONTEND_FRAMEWORKS: Record<string, string> = {
   react: 'react', // keep last: many meta-frameworks also depend on react
 }
 
+// Browser libraries with no Fingerprint SDK of their own — they all integrate the JS Agent
+// directly. Checked only after FRONTEND_FRAMEWORKS: an app may use jQuery alongside React, and the
+// framework SDK is the better fit whenever there is one.
+const VANILLA_FRONTEND_LIBRARIES: Record<string, string> = {
+  'solid-js': 'solid',
+  lit: 'lit',
+  alpinejs: 'alpine',
+  'htmx.org': 'htmx',
+  jquery: 'jquery',
+}
+
+// An HTML entry point is what makes a package a browser app rather than a Node one (Vite requires
+// `index.html` at the app root; webpack/parcel templates conventionally sit in src/). Only
+// consulted when no framework dependency matched, so a framework app is never called vanilla.
+// `public/index.html` is deliberately not here: it's as often a Node server's static directory as
+// it is a bundler template, and misreading a backend as a frontend is the costlier mistake.
+const HTML_ENTRIES = [['index.html'], ['src', 'index.html']]
+
 const BACKEND_FRAMEWORKS: Record<string, string> = {
   '@nestjs/core': 'nest',
   express: 'express',
@@ -61,12 +79,21 @@ function pickFramework(deps: Record<string, string>, table: Record<string, strin
   return undefined
 }
 
+function hasHtmlEntry(dir: string): boolean {
+  return HTML_ENTRIES.some((parts) => existsSync(join(dir, ...parts)))
+}
+
 // Classify a single directory that contains a package.json.
 function classifyNodeApp(dir: string, rel: string): DetectedApp {
   const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
   const deps: Record<string, string> = { ...pkg.dependencies, ...pkg.devDependencies }
 
-  const frontend = pickFramework(deps, FRONTEND_FRAMEWORKS)
+  // A browser app with no framework SDK is still a supported stack ('vanilla' → the JS Agent
+  // skill), so fall back to the HTML entry point rather than reporting the app as unknown.
+  const frontend =
+    pickFramework(deps, FRONTEND_FRAMEWORKS) ??
+    pickFramework(deps, VANILLA_FRONTEND_LIBRARIES) ??
+    (hasHtmlEntry(dir) ? 'vanilla' : undefined)
   const backend = pickFramework(deps, BACKEND_FRAMEWORKS)
 
   let role: AppRole = 'unknown'
@@ -106,21 +133,35 @@ function classifyPythonApp(dir: string, rel: string): DetectedApp | undefined {
   }
 }
 
+// A static site: an HTML page with no manifest of any kind — no build step, no package manager, so
+// no env vars either (the public key is inlined in the agent's CDN import URL; see provision.ts).
+function classifyStaticApp(dir: string, rel: string): DetectedApp | undefined {
+  if (!existsSync(join(dir, 'index.html'))) return undefined
+  return { dir, rel, role: 'frontend', language: 'js', framework: 'html' }
+}
+
 // Walk the repo to depth 2 (skipping noise dirs) collecting app manifests.
 function findApps(root: string): DetectedApp[] {
   const apps: DetectedApp[] = []
 
-  const visit = (dir: string, depth: number) => {
+  // `insideApp` is set once an app has been found at or above `dir`, so a bare index.html below it
+  // (a React app's public/index.html, a build template) isn't mistaken for a second, static app.
+  const visit = (dir: string, depth: number, insideApp: boolean) => {
     const rel = dir === root ? '.' : dir.slice(root.length + 1)
+    let found = insideApp
     if (existsSync(join(dir, 'package.json'))) {
       try {
         apps.push(classifyNodeApp(dir, rel))
+        found = true
       } catch {
         /* unreadable/invalid package.json — skip */
       }
     } else {
-      const py = classifyPythonApp(dir, rel)
-      if (py) apps.push(py)
+      const app = classifyPythonApp(dir, rel) ?? (insideApp ? undefined : classifyStaticApp(dir, rel))
+      if (app) {
+        apps.push(app)
+        found = true
+      }
     }
 
     if (depth >= 2) return
@@ -128,14 +169,14 @@ function findApps(root: string): DetectedApp[] {
       if (IGNORE_DIRS.has(entry) || entry.startsWith('.')) continue
       const child = join(dir, entry)
       try {
-        if (statSync(child).isDirectory()) visit(child, depth + 1)
+        if (statSync(child).isDirectory()) visit(child, depth + 1, found)
       } catch {
         /* ignore */
       }
     }
   }
 
-  visit(root, 0)
+  visit(root, 0, false)
   return apps
 }
 
@@ -145,6 +186,14 @@ const FRONTEND_SKILLS: Record<string, string> = {
   vue: 'fingerprint-vue',
   angular: 'fingerprint-angular',
   svelte: 'fingerprint-svelte',
+  // No framework SDK — one skill covers them all, since they use the JS Agent directly.
+  vanilla: 'fingerprint-javascript',
+  html: 'fingerprint-javascript',
+  solid: 'fingerprint-javascript',
+  lit: 'fingerprint-javascript',
+  alpine: 'fingerprint-javascript',
+  htmx: 'fingerprint-javascript',
+  jquery: 'fingerprint-javascript',
 }
 const BACKEND_SKILLS: Record<string, string> = {
   express: 'fingerprint-node',
