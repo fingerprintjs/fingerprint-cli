@@ -7,6 +7,7 @@ import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
 import { debugLog } from '../utils/log-file.js'
 import { saveAuthState } from './tokenStore.js'
+import { NotAuthenticatedError } from './notAuthenticated.js'
 
 // Browser login is OAuth 2.0 Authorization Code + PKCE against WorkOS AuthKit — the same engine the
 // MCP integration uses. The CLI is a public OAuth client: it starts a loopback server, opens the
@@ -224,7 +225,9 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   try {
     const code = await waitForCode.catch((e: Error) => {
       if (e.message === 'timeout') {
-        throw new Error(`Timed out after ${Math.round(timeoutMs / 60000)} minutes. Run \`fingerprint ${intent}\` again.`)
+        throw new NotAuthenticatedError(
+          `Timed out after ${Math.round(timeoutMs / 60000)} minutes. Run \`fingerprint ${intent}\` again.`
+        )
       }
       throw e
     })

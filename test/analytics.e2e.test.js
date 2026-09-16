@@ -8,11 +8,13 @@ import { VERSION } from '../dist/version.js'
 import { resolveConfig } from '../dist/config/config.js'
 
 import {
+  expiredJwt,
   makeHome,
   makeRepo,
   makeSkillsDir,
   runCli,
   seedAuth,
+  startAuthServer,
   startGateway,
   startManagementApi,
 } from './helpers/harness.js'
@@ -219,6 +221,69 @@ test('a command that fails still reports, with status error', async () => {
   )
 
   srv.close()
+})
+
+test('a run that stops because nobody is signed in reports unauthenticated, not error', async () => {
+  const api = await startManagementApi()
+
+  // Fresh home, so `whoami` finds no credential and exits before it does anything.
+  const res = await runCli(['whoami'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1)
+
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'unauthenticated')
+
+  await api.close()
+})
+
+test('an integrate that gives up for want of a session reports unauthenticated, not error', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['integrate'], {
+    home: makeHome(),
+    cwd: makeRepo(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
+  })
+  assert.equal(res.status, 1)
+
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'unauthenticated')
+
+  await api.close()
+})
+
+test('an expired session with nothing left to refresh reports unauthenticated, not error', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url, { accessToken: expiredJwt() })
+
+  const res = await runCli(['integrate'], { home, cwd: makeRepo(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1)
+
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'unauthenticated')
+
+  await api.close()
+})
+
+test('a login service that is down is reported as an error, not as a dead session', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url, { accessToken: expiredJwt(), refreshToken: 'rt_outage' })
+  const auth = await startAuthServer()
+
+  const res = await runCli(['integrate'], {
+    home,
+    cwd: makeRepo(),
+    env: {
+      FINGERPRINT_MANAGEMENT_API_URL: api.url,
+      FINGERPRINT_OAUTH_ISSUER: auth.url,
+      FINGERPRINT_OAUTH_CLIENT_ID: 'client_test',
+    },
+  })
+  await auth.close()
+  assert.equal(res.status, 1)
+
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
+
+  await api.close()
 })
 
 test('an unauthenticated run reports through the anonymous route, with no key attached', async () => {

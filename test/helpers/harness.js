@@ -130,6 +130,7 @@ export function startAuthServer({ deadTokenEndpoint = false } = {}) {
         const params = Object.fromEntries(new URLSearchParams(body))
         grants.push(params)
         if (params.refresh_token === 'rt_dead') return json(400, { error: 'invalid_grant' })
+        if (params.refresh_token === 'rt_outage') return json(503, { error: 'service_unavailable' })
         // Rotate the refresh token on every use, like the real server does.
         return json(200, { access_token: liveJwt(), refresh_token: 'rt_rotated', expires_in: 3600 })
       }

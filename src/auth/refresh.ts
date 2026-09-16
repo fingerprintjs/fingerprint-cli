@@ -2,6 +2,7 @@ import { resolveConfig } from '../config/config.js'
 import { debugLog } from '../utils/log-file.js'
 import { decodeJwtPayload, discoverEndpoints, type TokenResponse } from './browserLogin.js'
 import { getAuthState, updateAuthState } from './tokenStore.js'
+import { NotAuthenticatedError } from './notAuthenticated.js'
 
 // The access token from login is short-lived, so "am I logged in?" can't just mean "is there a file on
 // disk?". This module is the single place that hands out a token known to still be good: it checks the
@@ -54,9 +55,9 @@ export function hasUsableSession(): boolean {
 // Returns an access token that is valid now, refreshing it first if needed.
 export async function getFreshAccessToken(): Promise<string> {
   const auth = getAuthState()
-  if (!auth?.accessToken) throw new Error(LOGGED_OUT)
+  if (!auth?.accessToken) throw new NotAuthenticatedError(LOGGED_OUT)
   if (!isSpent(auth.accessToken)) return auth.accessToken
-  if (!auth.refreshToken) throw new Error(SESSION_EXPIRED)
+  if (!auth.refreshToken) throw new NotAuthenticatedError(SESSION_EXPIRED)
 
   const cfg = resolveConfig()
   const { token_endpoint } = await discoverEndpoints(cfg.oauthIssuer)
@@ -79,7 +80,8 @@ export async function getFreshAccessToken(): Promise<string> {
   // in again. Same outcome for any other failure here, so keep one message.
   if (!res.ok) {
     debugLog(`token refresh failed: HTTP ${res.status}`)
-    throw new Error(SESSION_EXPIRED)
+    if (res.status >= 500) throw new Error(SESSION_EXPIRED)
+    throw new NotAuthenticatedError(SESSION_EXPIRED)
   }
 
   const token = (await res.json()) as TokenResponse

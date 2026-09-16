@@ -5,6 +5,7 @@ import { integrateProject } from '../wizard/runner.js'
 import { log, printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
 import { addRunProperties, track } from '../analytics/track.js'
+import { NotAuthenticatedError, markUnauthenticated } from '../auth/notAuthenticated.js'
 
 export async function integrateCommand(
   opts: { path?: string; analyze?: boolean; yes?: boolean; skipHeading?: boolean; chained?: boolean } = {}
@@ -88,6 +89,7 @@ async function settleSession(): Promise<boolean> {
     // Report the specific reason — missing session, expired session, or an unreachable login service,
     // which is a network problem no amount of logging in will fix.
     const message = err instanceof Error ? err.message : String(err)
+    if (err instanceof NotAuthenticatedError) markUnauthenticated()
     printFailure({
       title: 'Can’t start the integration',
       reason: `${withoutLoginHint(message)}\nApplying provisions API keys for your workspace, so it needs a live session.`,

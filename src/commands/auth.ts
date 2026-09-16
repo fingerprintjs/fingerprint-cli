@@ -6,6 +6,7 @@ import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
 import { integrateCommand } from './integrate.js'
 import { pinAuthForTracking, track } from '../analytics/track.js'
+import { NotAuthenticatedError } from '../auth/notAuthenticated.js'
 
 type Intent = 'login' | 'signup'
 
@@ -64,7 +65,7 @@ export const startAuth = (opts: { chain?: boolean } = {}) => authenticate(opts)
 export async function ensureAuth(): Promise<void> {
   if (getAuthState()?.managementApiKey) return
   await startAuth({ chain: false })
-  if (!getAuthState()?.managementApiKey) throw new Error('Authentication required.')
+  if (!getAuthState()?.managementApiKey) throw new NotAuthenticatedError('Authentication required.')
 }
 
 // The CLI stores only a workspace-scoped Management API key, not a session, so logout just drops the
@@ -80,7 +81,7 @@ export function logout() {
 
 export function whoami() {
   const auth = getAuthState()
-  if (!auth?.managementApiKey) throw new Error('Not logged in')
+  if (!auth?.managementApiKey) throw new NotAuthenticatedError('Not logged in')
   console.log(`${color.dim('subscription')}  ${color.bold(auth.workspaceId)}`)
   console.log(`${color.dim('region')}        ${color.bold(auth.region)}`)
   // Written only by logins that got an email claim, so older state and issuers without it stay quiet.

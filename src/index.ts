@@ -11,6 +11,7 @@ import { setInteractive } from './utils/interactive.js'
 import { color } from './utils/color.js'
 import { printFiglet } from './utils/figlet.js'
 import { track } from './analytics/track.js'
+import { NotAuthenticatedError, markUnauthenticated, ranUnauthenticated } from './auth/notAuthenticated.js'
 import { VERSION } from './version.js'
 
 const program = new Command()
@@ -51,7 +52,7 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 
 // After the run settles, so `login` has written credentials by the time we look for a workspace. A
 // run that never got them reports through the unauthenticated route instead of going unrecorded.
-async function reportRun(status: 'ok' | 'error'): Promise<void> {
+async function reportRun(status: 'ok' | 'error' | 'unauthenticated'): Promise<void> {
   await track('cli_command_run', {
     command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
     status,
@@ -143,7 +144,7 @@ async function defaultCommand(unknownCommand?: string) {
   console.log()
 
   if (!auth?.managementApiKey) {
-    if (isCi()) throw new Error('Not authenticated. Run `fingerprint login` first.')
+    if (isCi()) throw new NotAuthenticatedError('Not authenticated. Run `fingerprint login` first.')
     // Ask whether they have an account (login vs signup), then run browser auth for both new and
     // returning users (signup + onboarding happen in the browser) and chain straight into integrate.
     await startAuth()
@@ -198,11 +199,16 @@ function editDistance(a: string, b: string): number {
   return dp[a.length][b.length]
 }
 
+function failureStatus(): 'error' | 'unauthenticated' {
+  return ranUnauthenticated() ? 'unauthenticated' : 'error'
+}
+
 program
   .parseAsync()
-  .then(() => reportRun(process.exitCode ? 'error' : 'ok'))
+  .then(() => reportRun(process.exitCode ? failureStatus() : 'ok'))
   .catch(async (err) => {
     console.error(err.message)
     process.exitCode = 1
-    await reportRun('error')
+    if (err instanceof NotAuthenticatedError) markUnauthenticated()
+    await reportRun(failureStatus())
   })
