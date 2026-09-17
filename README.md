@@ -54,6 +54,11 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 | `fingerprint` | The guided setup, start to finish: sign in, then integrate |
 | `fingerprint integrate` | Add Fingerprint to the repo in the current directory |
 | `fingerprint keys [public\|secret]` | Print an API key for your workspace (prompts if omitted) |
+| `fingerprint subdomains create <hostname>` | Register a custom subdomain and print its DNS records |
+| `fingerprint subdomains list` | List custom subdomains and their status |
+| `fingerprint subdomains get <id>` | Show a custom subdomain and its DNS records |
+| `fingerprint subdomains verify <id>` | Run an on-demand DNS check and show the fresh status |
+| `fingerprint subdomains delete <id>` | Delete a custom subdomain and revoke its certificate |
 | `fingerprint login` / `signup` | Sign in or create an account through the browser |
 | `fingerprint whoami` | Show the signed-in workspace |
 | `fingerprint logout` | Delete the local credential |
@@ -71,6 +76,9 @@ And these work everywhere:
 - `--interactive` — ask before every individual file edit and package install
 - `--verbose` — show each step in detail: file reads, edits, and tool calls
 - `--ci` — non-interactive: never prompt, and fail fast if something is missing
+
+The create, list, get, verify, and delete operations support `--json`.
+Deleting requires confirmation; pass `--yes` explicitly in non-interactive runs.
 
 ## Signing in
 

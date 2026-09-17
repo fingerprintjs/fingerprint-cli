@@ -6,15 +6,22 @@ import { VERSION } from '../version.js'
 // Required by the Management API (see fingerprint-mcp-server).
 const API_VERSION = '2025-11-20'
 
+export interface ApiViolation {
+  property: string
+  message: string
+}
+
 interface ApiErrorBody {
-  error?: { message?: string; code?: string }
+  error?: { message?: string; code?: string; violations?: ApiViolation[] }
 }
 
 export class ManagementApiError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
-    public readonly code?: string
+    public readonly code?: string,
+    public readonly violations?: ApiViolation[],
+    public readonly retryAfter?: string
   ) {
     super(message)
     this.name = 'ManagementApiError'
@@ -37,6 +44,8 @@ export class ManagementClient {
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const url = new URL(path, this.baseUrl)
+    const redact = (value: string | undefined) =>
+      value && this.key ? value.replaceAll(this.key, '[REDACTED]') : value
     let res: Response
     try {
       res = await fetch(url, {
@@ -53,7 +62,8 @@ export class ManagementClient {
       })
     } catch (e) {
       // fetch rejects with a bare `TypeError: fetch failed`; name the host so the error is actionable.
-      debugLog(`Management API request to ${url.href} failed: ${e instanceof Error ? e.message : String(e)}`)
+      const reason = redact(e instanceof Error ? e.message : String(e))
+      debugLog(`Management API request to ${url.href} failed: ${reason}`)
       throw new ManagementApiError(`Couldn’t reach the Management API at ${url.origin}. Check your connection.`)
     }
 
@@ -62,7 +72,16 @@ export class ManagementClient {
     const body = (await res.json().catch(() => ({}))) as ApiErrorBody | T
     if (!res.ok) {
       const err = (body as ApiErrorBody)?.error
-      throw new ManagementApiError(err?.message ?? 'Management API request failed', res.status, err?.code)
+      throw new ManagementApiError(
+        redact(err?.message) ?? 'Management API request failed',
+        res.status,
+        redact(err?.code),
+        err?.violations?.map((violation) => ({
+          property: redact(violation.property) ?? '',
+          message: redact(violation.message) ?? '',
+        })),
+        redact(res.headers.get('retry-after') ?? undefined)
+      )
     }
     return body as T
   }

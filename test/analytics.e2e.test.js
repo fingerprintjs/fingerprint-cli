@@ -99,6 +99,19 @@ test('an invoked integrate is reported as invoked, not chained', async () => {
   await api.close()
 })
 
+test('a nested command reports its full command path', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['subdomains', 'list', '--json'], { home })
+  assert.equal(res.status, 1)
+  assert.deepEqual(commands(api), ['subdomains-list'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
+
+  await api.close()
+})
+
 test('an integrate that applies nothing reports why', async () => {
   const api = await startManagementApi()
   const home = makeHome()
