@@ -8,7 +8,7 @@ import {
   type SubdomainListItem,
 } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
-import { requireAuth } from '../utils/session.js'
+import { NotAuthenticatedError, requireAuth } from '../utils/session.js'
 
 interface OutputOptions {
   json?: boolean
@@ -18,11 +18,17 @@ interface DeleteOptions extends OutputOptions {
   yes?: boolean
 }
 
+const UNAVAILABLE_MESSAGE =
+  'Custom subdomain service is unavailable. This may be temporary, or the feature may be disabled. ' +
+  'Check availability with Fingerprint support before retrying.'
+
 type ErrorKind =
+  | 'not_authenticated'
   | 'invalid_subdomain'
   | 'duplicate'
   | 'limit_reached'
   | 'rate_limited'
+  | 'unavailable'
   | 'not_found'
   | 'ambiguous'
   | 'confirmation_required'
@@ -266,13 +272,14 @@ function dnsRecords(subdomain: Subdomain): DnsRecord[] {
 
 function serializeError(error: unknown): Record<string, unknown> {
   if (error instanceof SubdomainCommandError) return { kind: error.kind, message: error.message }
+  if (error instanceof NotAuthenticatedError) return { kind: 'not_authenticated', message: error.message }
   if (!(error instanceof ManagementApiError)) {
     return { kind: 'api_error', message: error instanceof Error ? error.message : String(error) }
   }
 
   return {
     kind: errorKind(error),
-    message: error.message,
+    message: apiErrorMessage(error),
     ...(error.status === undefined ? {} : { status: error.status }),
     ...(error.code === undefined ? {} : { code: error.code }),
     ...(error.violations?.length ? { violations: error.violations } : {}),
@@ -280,12 +287,19 @@ function serializeError(error: unknown): Record<string, unknown> {
   }
 }
 
+function apiErrorMessage(error: ManagementApiError): string {
+  if (error.status === 401) return `${error.message} Run: fingerprint login`
+  if (error.status === 503) return UNAVAILABLE_MESSAGE
+  return error.message
+}
+
 function formatError(error: unknown): string {
   if (!(error instanceof ManagementApiError)) return error instanceof Error ? error.message : String(error)
+  if (error.status === 503) return UNAVAILABLE_MESSAGE
 
   const violations = formatViolations(error.violations)
   const retry = error.retryAfter ? ` Retry after ${error.retryAfter}.` : ''
-  return `${error.message}${violations}${retry}`
+  return `${apiErrorMessage(error)}${violations}${retry}`
 }
 
 function formatViolations(violations?: ApiViolation[]): string {
@@ -294,6 +308,7 @@ function formatViolations(violations?: ApiViolation[]): string {
 }
 
 function errorKind(error: ManagementApiError): ErrorKind {
+  if (error.status === 401) return 'not_authenticated'
   // Runtime currently returns 400 for limits, while the published contract documents 409.
   if (
     (error.status === 400 || error.status === 409) &&
@@ -305,6 +320,7 @@ function errorKind(error: ManagementApiError): ErrorKind {
   if (error.status === 409) return 'duplicate'
   if (error.status === 429) return 'rate_limited'
   if (error.status === 404) return 'not_found'
+  if (error.status === 503) return 'unavailable'
   return 'api_error'
 }
 

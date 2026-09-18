@@ -4,6 +4,9 @@ import { createServer } from 'node:http'
 import { makeHome, runCli, seedAuth } from './helpers/harness.js'
 
 const ID = 'certv2_1234567890abcd'
+const UNAVAILABLE_MESSAGE =
+  'Custom subdomain service is unavailable. This may be temporary, or the feature may be disabled. ' +
+  'Check availability with Fingerprint support before retrying.'
 
 function subdomain(overrides = {}) {
   return {
@@ -206,6 +209,23 @@ test('bare subdomains without auth prints help and the login error without reque
   assert.equal(result.status, 1)
   assert.match(result.stdout, /Usage:.*subdomains/)
   assert.match(result.stderr, /fingerprint login/)
+  assert.equal(api.requests.length, 0)
+})
+
+test('JSON commands without auth return not_authenticated without requesting subdomains', async (t) => {
+  const api = await startApi(() => undefined)
+  t.after(() => api.close())
+
+  const result = await runCli(['subdomains', 'list', '--json'], {
+    home: makeHome(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
+  })
+
+  assert.equal(result.status, 1)
+  assert.deepEqual(JSON.parse(result.stdout).error, {
+    kind: 'not_authenticated',
+    message: 'Not logged in. Run: fingerprint login',
+  })
   assert.equal(api.requests.length, 0)
 })
 
@@ -439,8 +459,22 @@ test('interactive delete by hostname names the resolved resource and can be canc
   ])
 })
 
-test('JSON errors distinguish validation, duplicate, limit, and rate limiting', async () => {
+test('JSON errors distinguish authentication, validation, duplicate, limit, rate limiting, and service failures', async (t) => {
   const cases = [
+    {
+      args: ['subdomains', 'list', '--json'],
+      status: 401,
+      body: { error: { code: 'general.unauthorized', message: 'Invalid API key' } },
+      kind: 'not_authenticated',
+      message: 'Invalid API key Run: fingerprint login',
+    },
+    {
+      args: ['subdomains', 'list', '--json'],
+      status: 403,
+      body: { error: { code: 'general.forbidden', message: 'Access denied' } },
+      kind: 'api_error',
+      message: 'Access denied',
+    },
     {
       args: ['subdomains', 'create', 'invalid', '--json'],
       status: 422,
@@ -485,6 +519,29 @@ test('JSON errors distinguish validation, duplicate, limit, and rate limiting', 
       kind: 'rate_limited',
       retryAfter: '60',
     },
+    {
+      args: ['subdomains', 'create', 'metrics.example.com', '--json'],
+      status: 503,
+      body: { error: { code: 'general.unavailable', message: 'Service unavailable. Try again later.' } },
+      kind: 'unavailable',
+      message: UNAVAILABLE_MESSAGE,
+    },
+    {
+      args: ['subdomains', 'create', 'metrics.example.com', '--json'],
+      status: 503,
+      headers: { 'retry-after': '60' },
+      body: { error: { code: 'general.unavailable', message: 'Service unavailable. Try again later.' } },
+      kind: 'unavailable',
+      message: UNAVAILABLE_MESSAGE,
+      retryAfter: '60',
+    },
+    {
+      args: ['subdomains', 'create', 'metrics.example.com', '--json'],
+      status: 500,
+      body: { error: { code: 'general.internal-server-error', message: 'Unable to create subdomain' } },
+      kind: 'api_error',
+      message: 'Unable to create subdomain',
+    },
   ]
 
   for (const fixture of cases) {
@@ -493,18 +550,64 @@ test('JSON errors distinguish validation, duplicate, limit, and rate limiting', 
       headers: fixture.headers,
       body: fixture.body,
     }))
+    t.after(() => api.close())
 
     const result = await run(api, fixture.args)
     assert.equal(result.status, 1)
+    assert.equal(api.requests.length, 1)
     const error = JSON.parse(result.stdout).error
     assert.equal(error.kind, fixture.kind)
     assert.equal(error.status, fixture.status)
     assert.equal(error.code, fixture.body.error.code)
+    if (fixture.message) assert.equal(error.message, fixture.message)
     if (fixture.status === 422) assert.equal(error.violations[0].property, 'subdomain')
     if (fixture.status === 422) assert.match(result.stdout, /\[REDACTED\]/)
     if (fixture.retryAfter) assert.equal(error.retry_after, fixture.retryAfter)
-    else if (fixture.status === 429) assert.ok(!('retry_after' in error))
+    else assert.ok(!('retry_after' in error))
     assert.doesNotMatch(result.stdout + result.stderr, /mgmt_key_1/)
-    await api.close()
   }
+})
+
+test('a live 401 tells the user to log in again', async (t) => {
+  const api = await startApi(() => ({
+    status: 401,
+    body: { error: { code: 'general.unauthorized', message: 'Invalid API key' } },
+  }))
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'list'])
+
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /Invalid API key Run: fingerprint login/)
+  assert.equal(api.requests.length, 1)
+})
+
+test('transport errors remain api_error without suggesting login', async () => {
+  const api = await startApi(() => undefined)
+  await api.close()
+
+  const result = await run(api, ['subdomains', 'list', '--json'])
+
+  assert.equal(result.status, 1)
+  assert.deepEqual(JSON.parse(result.stdout).error, {
+    kind: 'api_error',
+    message: `Couldn’t reach the Management API at ${api.url}. Check your connection.`,
+  })
+  assert.doesNotMatch(result.stdout + result.stderr, /fingerprint login/)
+})
+
+test('create explains a 503 may mean the feature is disabled without suggesting a retry', async (t) => {
+  const api = await startApi(() => ({
+    status: 503,
+    headers: { 'retry-after': '60' },
+    body: { error: { code: 'general.unavailable', message: 'Service unavailable. Try again later.' } },
+  }))
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'create', 'metrics.example.com'])
+
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes(UNAVAILABLE_MESSAGE), result.stderr)
+  assert.doesNotMatch(result.stdout + result.stderr, /Try again later|Retry after|not_enabled/)
+  assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), ['POST /subdomains'])
 })
