@@ -54,14 +54,21 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 | `fingerprint` | The guided setup, start to finish: sign in, then integrate |
 | `fingerprint integrate` | Add Fingerprint to the repo in the current directory |
 | `fingerprint keys [public\|secret]` | Print an API key for your workspace (prompts if omitted) |
+| `fingerprint subdomains` | List custom subdomains and show the available commands |
 | `fingerprint subdomains create <hostname>` | Register a custom subdomain and print its DNS records |
 | `fingerprint subdomains list` | List custom subdomains and their status |
-| `fingerprint subdomains get <id>` | Show a custom subdomain and its DNS records |
-| `fingerprint subdomains verify <id>` | Run an on-demand DNS check and show the fresh status |
-| `fingerprint subdomains delete <id>` | Delete a custom subdomain and revoke its certificate |
+| `fingerprint subdomains get <id-or-hostname>` | Show a custom subdomain and its DNS records |
+| `fingerprint subdomains verify <id-or-hostname>` | Run an on-demand DNS check and show the fresh status |
+| `fingerprint subdomains delete <id-or-hostname>` | Delete a custom subdomain and revoke its certificate |
 | `fingerprint login` / `signup` | Sign in or create an account through the browser |
 | `fingerprint whoami` | Show the signed-in workspace |
 | `fingerprint logout` | Delete the local credential |
+
+After creating a subdomain, add the returned DNS records at your DNS provider, then run
+`fingerprint subdomains verify metrics.example.com`. Use your subdomain's hostname or its
+`certv2_...` ID with `get`, `verify`, and `delete`. Hostnames are resolved within the signed-in workspace.
+If all DNS records are validated but setup is still pending, use `fingerprint subdomains get metrics.example.com`
+later to check for activation. Only configure your integration to use the subdomain once it is `active`.
 
 ### Options
 

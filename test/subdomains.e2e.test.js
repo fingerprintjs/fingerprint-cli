@@ -114,6 +114,7 @@ test('create returns stable JSON and sends the authenticated Management API requ
 
   assert.equal(result.status, 0, result.stderr)
   const output = JSON.parse(result.stdout)
+  assert.deepEqual(output, { data: { ...subdomain(), webhook_secret: null } })
   assert.equal(output.data.id, ID)
   assert.equal(output.data.dns_records.routing.length, 2)
   assert.equal(output.data.dns_records.caa.type, 'CAA')
@@ -165,14 +166,123 @@ test('list follows pagination and returns every result', async () => {
   await api.close()
 })
 
-test('get human output includes status and every DNS record', async () => {
+test('bare subdomains lists resources and help, while --help makes no API requests', async (t) => {
+  let items = [listItem()]
+  const api = await startApi((request) => {
+    if (request.method === 'GET' && request.path === '/subdomains') {
+      return { body: { data: items } }
+    }
+  })
+  t.after(() => api.close())
+
+  const help = await run(api, ['subdomains', '--help'])
+  assert.equal(help.status, 0, help.stderr)
+  assert.match(help.stdout, /Usage:.*subdomains/)
+  assert.equal(api.requests.length, 0)
+
+  const result = await run(api, ['subdomains'])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /metrics\.example\.com[\s\S]*Usage:.*subdomains/)
+  assert.match(result.stdout, /get[^\n]*<id-or-hostname>/)
+  assert.match(result.stdout, /verify[^\n]*<id-or-hostname>/)
+  assert.match(result.stdout, /delete[^\n]*<id-or-hostname>/)
+  assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), ['GET /subdomains'])
+
+  items = []
+  const empty = await run(api, ['subdomains'])
+  assert.equal(empty.status, 0, empty.stderr)
+  assert.match(empty.stdout, /No custom subdomains found[\s\S]*Usage:.*subdomains/)
+})
+
+for (const command of ['get', 'verify', 'delete']) {
+  test(`${command} resolves a normalized hostname through every page before using its ID`, async (t) => {
+    const api = await startApi((request) => {
+      if (request.method === 'GET' && request.path === '/subdomains') {
+        return {
+          body: request.query.cursor
+            ? { data: [listItem({ subdomain: 'METRICS.EXAMPLE.COM.' })] }
+            : {
+                data: [listItem({ id: 'certv2_other', subdomain: 'other.example.com' })],
+                metadata: { pagination: { next_cursor: 'page-2' } },
+              },
+        }
+      }
+      if (request.method === 'POST' && request.path === `/subdomains/${ID}/verify`) {
+        return { body: { data: subdomain() } }
+      }
+      if (request.method === 'GET' && request.path === `/subdomains/${ID}`) {
+        return { body: { data: subdomain({ status: 'active' }) } }
+      }
+      if (request.method === 'DELETE' && request.path === `/subdomains/${ID}`) return { status: 204 }
+    })
+    t.after(() => api.close())
+
+    const args = ['subdomains', command, '  Metrics.Example.Com.  ', '--json']
+    if (command === 'delete') args.push('--yes')
+    const result = await run(api, args)
+
+    assert.equal(result.status, 0, result.stderr)
+    const output = JSON.parse(result.stdout)
+    assert.equal(output.data.id, ID)
+    if (command === 'delete') assert.deepEqual(output, { data: { id: ID, deleted: true } })
+    else assert.equal(output.data.status, 'active')
+    assert.deepEqual(api.requests.slice(0, 2).map(({ query }) => query), [
+      { limit: '100' },
+      { limit: '100', cursor: 'page-2' },
+    ])
+    assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), [
+      'GET /subdomains',
+      'GET /subdomains',
+      ...(command === 'verify' ? [`POST /subdomains/${ID}/verify`] : []),
+      `GET /subdomains/${ID}`,
+      ...(command === 'delete' ? [`DELETE /subdomains/${ID}`] : []),
+    ])
+  })
+}
+
+for (const { command, kind } of [
+  { command: 'verify', kind: 'not_found' },
+  { command: 'delete', kind: 'ambiguous' },
+]) {
+  test(`${command} returns ${kind} for hostname lookup without reading or mutating a resource`, async (t) => {
+    const api = await startApi((request) => {
+      if (request.method !== 'GET' || request.path !== '/subdomains') return
+      return {
+        body: request.query.cursor
+          ? { data: kind === 'ambiguous' ? [listItem({ id: 'certv2_other', subdomain: 'METRICS.EXAMPLE.COM.' })] : [] }
+          : {
+              data: kind === 'ambiguous' ? [listItem()] : [],
+              metadata: { pagination: { next_cursor: 'page-2' } },
+            },
+      }
+    })
+    t.after(() => api.close())
+
+    const args = ['subdomains', command, 'metrics.example.com', '--json']
+    if (command === 'delete') args.push('--yes')
+    const result = await run(api, args)
+
+    assert.equal(result.status, 1)
+    const error = JSON.parse(result.stdout).error
+    assert.equal(error.kind, kind)
+    assert.match(error.message, /metrics\.example\.com/)
+    if (kind === 'ambiguous') assert.match(error.message, /\bID\b/)
+    assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), [
+      'GET /subdomains',
+      'GET /subdomains',
+    ])
+  })
+}
+
+test('get human output includes status and every DNS record', async (t) => {
   const api = await startApi((request) => {
     if (request.method === 'GET' && request.path === `/subdomains/${ID}`) {
       return { body: { data: subdomainWithoutCaa() } }
     }
   })
+  t.after(() => api.close())
 
-  const result = await run(api, ['subdomains', 'get', ID])
+  const result = await run(api, ['subdomains', 'get', `  ${ID}  `])
 
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /metrics\.example\.com/)
@@ -180,7 +290,53 @@ test('get human output includes status and every DNS record', async () => {
   assert.match(result.stdout, /CNAME[\s\S]*validation\.fpjs\.io/)
   assert.match(result.stdout, /A[\s\S]*1\.2\.3\.4[\s\S]*A[\s\S]*5\.6\.7\.8/)
   assert.doesNotMatch(result.stdout, /\bCAA\b/)
-  await api.close()
+  assert.match(result.stdout, /DNS provider/i)
+  assert.match(result.stdout, /fingerprint subdomains verify metrics\.example\.com/)
+  assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), [`GET /subdomains/${ID}`])
+})
+
+test('create directs users to correct DNS when only the CAA record still needs validation', async (t) => {
+  const value = subdomain()
+  value.dns_records.routing.forEach((record) => (record.status = 'validated'))
+  value.dns_records.caa.status = 'failed'
+  const api = await startApi((request) => {
+    if (request.method === 'POST' && request.path === '/subdomains') {
+      return { status: 201, body: { data: { ...value, webhook_secret: null } } }
+    }
+  })
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'create', 'metrics.example.com'])
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /(?:add|correct)[\s\S]*DNS provider/i)
+  assert.match(result.stdout, /fingerprint subdomains verify metrics\.example\.com/)
+})
+
+test('verify with all DNS records validated explains setup progress and suggests get instead of verify', async (t) => {
+  const value = subdomainWithoutCaa()
+  value.dns_records.routing.forEach((record) => (record.status = 'validated'))
+  const api = await startApi((request) => {
+    if (request.method === 'POST' && request.path === `/subdomains/${ID}/verify`) {
+      return { body: { data: subdomain() } }
+    }
+    if (request.method === 'GET' && request.path === `/subdomains/${ID}`) {
+      return { body: { data: value } }
+    }
+  })
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'verify', ID])
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /setup[\s\S]*in progress/i)
+  assert.match(result.stdout, /fingerprint subdomains get metrics\.example\.com/)
+  assert.doesNotMatch(result.stdout, /fingerprint subdomains verify/)
+  assert.doesNotMatch(result.stdout, /DNS provider/i)
+  assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), [
+    `POST /subdomains/${ID}/verify`,
+    `GET /subdomains/${ID}`,
+  ])
 })
 
 test('verify presents the fresh GET representation', async () => {
@@ -193,7 +349,7 @@ test('verify presents the fresh GET representation', async () => {
     }
   })
 
-  const result = await run(api, ['subdomains', 'verify', ID, '--json'])
+  const result = await run(api, ['subdomains', 'verify', `  ${ID}  `, '--json'])
 
   assert.equal(result.status, 0, result.stderr)
   assert.equal(JSON.parse(result.stdout).data.status, 'active')
@@ -218,7 +374,7 @@ test('delete requires --yes in CI and deletes only the confirmed resource', asyn
   })
   assert.equal(api.requests.length, 0)
 
-  const confirmed = await run(api, ['--ci', 'subdomains', 'delete', ID, '--json', '--yes'])
+  const confirmed = await run(api, ['--ci', 'subdomains', 'delete', `  ${ID}  `, '--json', '--yes'])
   assert.equal(confirmed.status, 0, confirmed.stderr)
   assert.deepEqual(JSON.parse(confirmed.stdout), { data: { id: ID, deleted: true } })
   assert.deepEqual(
@@ -228,20 +384,25 @@ test('delete requires --yes in CI and deletes only the confirmed resource', asyn
   await api.close()
 })
 
-test('interactive delete can be cancelled without mutating the workspace', async () => {
+test('interactive delete by hostname names the resolved resource and can be cancelled without mutating the workspace', async (t) => {
   const api = await startApi((request) => {
+    if (request.method === 'GET' && request.path === '/subdomains') return { body: { data: [listItem()] } }
     if (request.method === 'GET' && request.path === `/subdomains/${ID}`) return { body: { data: subdomain() } }
     if (request.method === 'DELETE' && request.path === `/subdomains/${ID}`) return { status: 204 }
   })
+  t.after(() => api.close())
 
-  const result = await run(api, ['subdomains', 'delete', ID], {
+  const result = await run(api, ['subdomains', 'delete', 'metrics.example.com'], {
     respond: [{ when: /Delete metrics\.example\.com/, send: 'n\n' }],
   })
 
   assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Delete metrics\.example\.com \(certv2_1234567890abcd\) and revoke its certificate/)
   assert.match(result.stdout, /Deletion cancelled/)
-  assert.deepEqual(api.requests.map(({ method }) => method), ['GET'])
-  await api.close()
+  assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), [
+    'GET /subdomains',
+    `GET /subdomains/${ID}`,
+  ])
 })
 
 test('JSON errors distinguish validation, duplicate, limit, and rate limiting', async () => {

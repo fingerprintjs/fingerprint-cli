@@ -24,6 +24,7 @@ type ErrorKind =
   | 'limit_reached'
   | 'rate_limited'
   | 'not_found'
+  | 'ambiguous'
   | 'confirmation_required'
   | 'api_error'
 
@@ -41,9 +42,12 @@ export function registerSubdomainsCommands(program: Command): void {
   const subdomains = program
     .command('subdomains')
     .description('Manage custom subdomains for the active workspace')
-    .action(function () {
+    .action(async function () {
+      await listSubdomains({})
+      console.log()
       this.outputHelp()
     })
+    .addHelpText('after', '\nExample:\n  fingerprint subdomains verify metrics.example.com')
 
   subdomains
     .command('create')
@@ -61,25 +65,25 @@ export function registerSubdomainsCommands(program: Command): void {
   subdomains
     .command('get')
     .description('Get a custom subdomain')
-    .argument('<id>', 'subdomain ID')
+    .argument('<id-or-hostname>', 'subdomain hostname or ID')
     .option('--json', 'print machine-readable JSON')
-    .action((id: string, options: OutputOptions) => getSubdomain(id, options))
+    .action((target: string, options: OutputOptions) => getSubdomain(target, options))
 
   subdomains
     .command('verify')
     .description('Check the DNS and certificate status of a custom subdomain')
-    .argument('<id>', 'subdomain ID')
+    .argument('<id-or-hostname>', 'subdomain hostname or ID')
     .option('--json', 'print machine-readable JSON')
-    .action((id: string, options: OutputOptions) => verifySubdomain(id, options))
+    .action((target: string, options: OutputOptions) => verifySubdomain(target, options))
 
   subdomains
     .command('delete')
     .description('Delete a custom subdomain and revoke its certificate')
-    .argument('<id>', 'subdomain ID')
+    .argument('<id-or-hostname>', 'subdomain hostname or ID')
     .option('--json', 'print machine-readable JSON')
     .option('-y, --yes', 'confirm deletion without prompting')
-    .action((id: string, options: DeleteOptions, command: Command) =>
-      deleteSubdomain(id, { ...options, yes: options.yes || Boolean(command.optsWithGlobals().yes) })
+    .action((target: string, options: DeleteOptions, command: Command) =>
+      deleteSubdomain(target, { ...options, yes: options.yes || Boolean(command.optsWithGlobals().yes) })
     )
 }
 
@@ -100,16 +104,18 @@ async function listSubdomains(options: OutputOptions): Promise<void> {
   })
 }
 
-async function getSubdomain(id: string, options: OutputOptions): Promise<void> {
+async function getSubdomain(target: string, options: OutputOptions): Promise<void> {
   await runCommand(options, async (service) => {
+    const id = await resolveSubdomainId(service, target)
     const subdomain = await service.get(id)
     if (options.json) return printJson({ data: subdomain })
     printSubdomain(subdomain)
   })
 }
 
-async function verifySubdomain(id: string, options: OutputOptions): Promise<void> {
+async function verifySubdomain(target: string, options: OutputOptions): Promise<void> {
   await runCommand(options, async (service) => {
+    const id = await resolveSubdomainId(service, target)
     const subdomain = await service.verify(id)
     if (options.json) return printJson({ data: subdomain })
     console.log('Verification requested.\n')
@@ -117,7 +123,7 @@ async function verifySubdomain(id: string, options: OutputOptions): Promise<void
   })
 }
 
-async function deleteSubdomain(id: string, options: DeleteOptions): Promise<void> {
+async function deleteSubdomain(target: string, options: DeleteOptions): Promise<void> {
   await runCommand(options, async (service) => {
     if ((isCi() || options.json) && !options.yes) {
       throw new SubdomainCommandError(
@@ -126,6 +132,7 @@ async function deleteSubdomain(id: string, options: DeleteOptions): Promise<void
       )
     }
 
+    const id = await resolveSubdomainId(service, target)
     const subdomain = await service.get(id)
     if (!options.yes) {
       const approved = await confirm({
@@ -142,6 +149,23 @@ async function deleteSubdomain(id: string, options: DeleteOptions): Promise<void
     if (options.json) return printJson({ data: { id: subdomain.id, deleted: true } })
     console.log(`Deleted ${subdomain.subdomain} (${subdomain.id}).`)
   })
+}
+
+async function resolveSubdomainId(service: SubdomainsService, target: string): Promise<string> {
+  const value = target.trim()
+  if (value.startsWith('certv2_')) return value
+
+  const result = await service.findByHostname(value)
+  if (result.outcome === 'not_found') {
+    throw new SubdomainCommandError('not_found', `No custom subdomain named ${result.hostname} in this workspace.`)
+  }
+  if (result.outcome === 'ambiguous') {
+    throw new SubdomainCommandError(
+      'ambiguous',
+      `Multiple subdomains match ${result.hostname}. Use an ID instead: ${result.matches.map(({ id }) => id).join(', ')}.`
+    )
+  }
+  return result.subdomain.id
 }
 
 async function runCommand(
@@ -177,6 +201,34 @@ function printSubdomain(subdomain: Subdomain): void {
       ],
       '    '
     )
+  }
+  printNextStep(subdomain)
+}
+
+function printNextStep(subdomain: Subdomain): void {
+  const hostname = subdomain.subdomain
+  switch (subdomain.status) {
+    case 'pending':
+      if (dnsRecords(subdomain).some((record) => record.status !== 'validated')) {
+        console.log('\nSetup is not complete. Add or correct the unvalidated DNS records above at your DNS provider.')
+        console.log('If you already added them, allow time for DNS propagation. Then run:')
+        console.log(`  fingerprint subdomains verify ${hostname}`)
+      } else {
+        console.log('\nAll DNS records are validated. Setup is still in progress. Check the status later:')
+        console.log(`  fingerprint subdomains get ${hostname}`)
+      }
+      break
+    case 'active':
+      console.log(`\nThe subdomain is active. You can now configure your Fingerprint integration to use ${hostname}.`)
+      break
+    case 'timed_out':
+      console.log('\nSetup timed out. To retry, delete this subdomain and create it again:')
+      console.log(`  fingerprint subdomains delete ${hostname}`)
+      console.log(`  fingerprint subdomains create ${hostname}`)
+      break
+    case 'failed':
+      console.log('\nSubdomain setup failed. Contact Fingerprint support before retrying.')
+      break
   }
 }
 
