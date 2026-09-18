@@ -1,6 +1,7 @@
 import { confirm } from '@inquirer/prompts'
 import { Command } from 'commander'
 import { ManagementApiError, type ApiViolation } from '../api/management.js'
+import { apiErrorMessage, serializeSubdomainError } from '../api/subdomain-errors.js'
 import {
   SubdomainsService,
   type DnsRecord,
@@ -8,7 +9,7 @@ import {
   type SubdomainListItem,
 } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
-import { NotAuthenticatedError, requireAuth } from '../utils/session.js'
+import { requireAuth } from '../utils/session.js'
 
 interface OutputOptions {
   json?: boolean
@@ -17,10 +18,6 @@ interface OutputOptions {
 interface DeleteOptions extends OutputOptions {
   yes?: boolean
 }
-
-const UNAVAILABLE_MESSAGE =
-  'Custom subdomain service is unavailable. This may be temporary, or the feature may be disabled. ' +
-  'Check availability with Fingerprint support before retrying.'
 
 type ErrorKind =
   | 'not_authenticated'
@@ -273,30 +270,12 @@ function dnsRecords(subdomain: Subdomain): DnsRecord[] {
 
 function serializeError(error: unknown): Record<string, unknown> {
   if (error instanceof SubdomainCommandError) return { kind: error.kind, message: error.message }
-  if (error instanceof NotAuthenticatedError) return { kind: 'not_authenticated', message: error.message }
-  if (!(error instanceof ManagementApiError)) {
-    return { kind: 'api_error', message: error instanceof Error ? error.message : String(error) }
-  }
-
-  return {
-    kind: errorKind(error),
-    message: apiErrorMessage(error),
-    ...(error.status === undefined ? {} : { status: error.status }),
-    ...(error.code === undefined ? {} : { code: error.code }),
-    ...(error.violations?.length ? { violations: error.violations } : {}),
-    ...(error.retryAfter === undefined ? {} : { retry_after: error.retryAfter }),
-  }
-}
-
-function apiErrorMessage(error: ManagementApiError): string {
-  if (error.status === 401) return `${error.message.replace(/[.!?]*$/, '')}. Run: fingerprint login`
-  if (error.status === 503) return UNAVAILABLE_MESSAGE
-  return error.message
+  return serializeSubdomainError(error)
 }
 
 function formatError(error: unknown): string {
   if (!(error instanceof ManagementApiError)) return error instanceof Error ? error.message : String(error)
-  if (error.status === 503) return UNAVAILABLE_MESSAGE
+  if (error.status === 503) return apiErrorMessage(error)
 
   const violations = formatViolations(error.violations)
   const retry = error.retryAfter ? ` Retry after ${error.retryAfter}.` : ''
@@ -306,23 +285,6 @@ function formatError(error: unknown): string {
 function formatViolations(violations?: ApiViolation[]): string {
   if (!violations?.length) return ''
   return `\n${violations.map((violation) => `${violation.property}: ${violation.message}`).join('\n')}`
-}
-
-function errorKind(error: ManagementApiError): ErrorKind {
-  if (error.status === 401) return 'not_authenticated'
-  // Runtime currently returns 400 for limits, while the published contract documents 409.
-  if (
-    (error.status === 400 || error.status === 409) &&
-    /limit.*subdomains|subdomains.*limit/i.test(error.message)
-  ) {
-    return 'limit_reached'
-  }
-  if (error.status === 422) return 'invalid_subdomain'
-  if (error.status === 409) return 'duplicate'
-  if (error.status === 429) return 'rate_limited'
-  if (error.status === 404) return 'not_found'
-  if (error.status === 503) return 'unavailable'
-  return 'api_error'
 }
 
 function printJson(value: unknown): void {

@@ -160,19 +160,26 @@ export function startGateway(writeTarget, writeContent) {
       }
       calls++
       bodies.push(body)
-      // Drive off conversation content, not a call counter: the real run may make preamble calls, so
-      // emit the Write on any turn that has no tool_result yet, then end once the write came back.
-      const alreadyWrote = body.includes('tool_result')
-      if (process.env.FP_GW_DEBUG) console.error(`[gw] call ${calls} alreadyWrote=${alreadyWrote}`)
+      // Drive off conversation content, not a call counter: the real run may make preamble calls.
+      const messages = JSON.stringify(JSON.parse(body).messages ?? [])
+      const selectedSkill = messages.includes('"name":"Skill"')
+      const alreadyWrote = messages.includes('"name":"Write"')
+      if (process.env.FP_GW_DEBUG) {
+        console.error(`[gw] call ${calls} selectedSkill=${selectedSkill} alreadyWrote=${alreadyWrote}`)
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`)
       ev('message_start', {
         type: 'message_start',
         message: { id: 'm', type: 'message', role: 'assistant', model: 'x', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } },
       })
-      if (!alreadyWrote) {
-        // Tell the agent to Write the integration file.
-        ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: 'Write', input: {} } })
+      if (!selectedSkill) {
+        ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_skill', name: 'Skill', input: {} } })
+        ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ skill: 'fingerprint:fingerprint-react' }) } })
+        ev('content_block_stop', { type: 'content_block_stop', index: 0 })
+        ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } })
+      } else if (!alreadyWrote) {
+        ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_write', name: 'Write', input: {} } })
         ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: writeTarget, content: writeContent }) } })
         ev('content_block_stop', { type: 'content_block_stop', index: 0 })
         ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } })
@@ -199,18 +206,27 @@ export function startGateway(writeTarget, writeContent) {
 // flow resolves to: the two framework skills plus the get-started orchestrator that drives them.
 // `packages` (keyed by skill id) defaults empty so the post-agent installer is a no-op;
 // install-failure tests pass real names and a fake package manager on PATH.
-export function makeSkillsDir(packages = {}) {
+export function makeSkillsDir(packages = {}, { includeSubdomain = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fp-skills-'))
+  mkdirSync(join(dir, '.claude-plugin'), { recursive: true })
+  writeFileSync(
+    join(dir, '.claude-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'fingerprint', version: '1.0.0' })
+  )
   const skills = [
     ['fingerprint-react', 'frontend'],
     ['fingerprint-node', 'backend'],
     ['fingerprint-get-started', 'orchestrator'],
   ]
-  for (const [id, role] of skills) {
+  if (includeSubdomain) skills.push(['fingerprint-proxy-integration', 'feature', 'get-started'])
+  for (const [id, role, category] of skills) {
     const s = join(dir, 'skills', id)
     mkdirSync(s, { recursive: true })
     writeFileSync(join(s, 'SKILL.md'), `# ${id}\nTest skill.\n`)
-    writeFileSync(join(s, 'skill.json'), JSON.stringify({ id, role, packages: packages[id] ?? [] }))
+    writeFileSync(
+      join(s, 'skill.json'),
+      JSON.stringify({ id, role, packages: packages[id] ?? [], ...(category ? { category } : {}) })
+    )
   }
   return dir
 }

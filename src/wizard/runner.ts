@@ -1,4 +1,4 @@
-import { confirm, input, select } from '@inquirer/prompts'
+import { checkbox, confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -9,82 +9,220 @@ import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
-import { assertAllowedPackage, getStartedSkills, installSkills, skillMeta, SkillMeta } from './skills.js'
+import {
+  assertAllowedPackage,
+  getStartedSkills,
+  installSkills,
+  skillMeta,
+  skillsPluginPath,
+  SkillMeta,
+} from './skills.js'
 import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
+import { createAgentFilePolicy, createAskUserQuestionBridge } from './agent-tool-policy.js'
+import {
+  CONFIGURE_SUBDOMAIN_ENDPOINT_TOOL,
+  createSubdomainRuntime,
+  mcpToolName,
+  type SubdomainRunOutcome,
+  type SubdomainRunState,
+} from './subdomain-runtime.js'
+import { FINGERPRINT_MCP_SERVER_NAME, SUBDOMAIN_TOOL_NAMES } from './subdomains-mcp.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
 // mutating ones (Edit/Write) are gated separately so --interactive can prompt before each one.
 const READONLY_TOOLS = ['Read', 'Glob', 'Grep']
 const EDIT_TOOLS = ['Edit', 'Write']
+const ASK_USER_TOOL = 'AskUserQuestion'
+const SUBDOMAIN_SKILL = 'fingerprint-proxy-integration'
 
-// In interactive mode, prompt before each file edit; deny anything that isn't a known edit tool
-// (read-only tools are auto-allowed via allowedTools and never reach here, so a hit means something
-// unexpected like Bash). Returns an SDK PermissionResult.
-const askBeforeEdit: CanUseTool = async (toolName, input) => {
-  if (toolName === 'Edit' || toolName === 'Write') {
-    const file = (input.file_path ?? input.path) as string | undefined
-    const verb = toolName === 'Write' ? 'create/overwrite' : 'edit'
-    const ok = await confirm({ message: `Allow the wizard to ${verb} ${file ?? 'a file'}?`, default: true })
-    return ok ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'User declined this edit.' }
-  }
-  return { behavior: 'deny', message: `Tool ${toolName} is not permitted by the wizard.` }
+type AgentEditPhase = 'audit' | 'general' | 'proxy' | 'subdomain_choice' | 'subdomain_locked'
+
+interface AgentEditBoundary {
+  state: SubdomainRunState
+  explicitHostname?: string
+  phase: AgentEditPhase
+  skillIds: Set<string>
 }
 
-// A .env file in the repo holds the freshly provisioned secret key (see provision.ts). The agent
-// legitimately needs Read/Grep for the integration, so we can't drop those tools — instead a
-// PreToolUse hook denies them specifically on .env files. Unlike the system-prompt instruction (a
-// soft control) or canUseTool (which `acceptEdits` bypasses for auto-allowed read tools), a
-// PreToolUse deny is a hard rule that fires in every permission mode, keeping the secret out of the
-// LLM transcript and the gateway.
-const ENV_FILE = /(^|[/\\])\.env(\.[^/\\]*)?$/
-
-const denyEnvReads: HookCallbackMatcher = {
-  hooks: [
-    async (input) => {
-      if (input.hook_event_name !== 'PreToolUse') return {}
-      if (input.tool_name !== 'Read' && input.tool_name !== 'Grep') return {}
-      const i = (input.tool_input ?? {}) as { file_path?: string; path?: string }
-      const target = i.file_path ?? i.path ?? ''
-      if (!ENV_FILE.test(target)) return {}
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: 'Reading .env is not allowed — reference keys by env-var name only.',
-        },
-      }
-    },
-  ],
-}
+const SUBDOMAIN_READ_TOOLS = [
+  mcpToolName(SUBDOMAIN_TOOL_NAMES.list),
+  mcpToolName(SUBDOMAIN_TOOL_NAMES.get),
+]
+const SUBDOMAIN_MUTATION_TOOLS = new Set([
+  mcpToolName(SUBDOMAIN_TOOL_NAMES.create),
+  mcpToolName(SUBDOMAIN_TOOL_NAMES.verify),
+  mcpToolName(SUBDOMAIN_TOOL_NAMES.delete),
+  mcpToolName(CONFIGURE_SUBDOMAIN_ENDPOINT_TOOL),
+])
 
 // Permission-related query options. Auto mode (default): edits + reads run without prompting.
-// Interactive mode: reads/web stay auto-allowed, but Edit/Write route through askBeforeEdit.
+// Interactive mode: reads/web stay auto-allowed, but Edit/Write prompt before running.
 // `extraReadonly` adds read-only tools that should also run without prompting (e.g. WebFetch).
-// Both modes carry the .env deny hook so a secret in .env never reaches the model.
-function permissionOptions(extraReadonly: string[] = []) {
+// Both modes carry a hard project boundary so credentials cannot enter the model transcript.
+function permissionOptions(
+  root: string,
+  ui: AgentUi,
+  extraReadonly: string[] = [],
+  subdomains?: AgentEditBoundary
+) {
   const readonly = [...READONLY_TOOLS, ...extraReadonly]
-  const hooks = { PreToolUse: [denyEnvReads] }
-  if (!isInteractive()) {
-    return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
+  const questionBridge = createAskUserQuestionBridge({
+    headless: isCi(),
+    onNeedsUserAction: () => {
+      ui.needsUserAction = true
+    },
+    prompts: {
+      input: async (options) => {
+        ui.beforePrompt()
+        return input(options)
+      },
+      select: async (options) => {
+        ui.beforePrompt()
+        return select(options)
+      },
+      checkbox: async (options) => {
+        ui.beforePrompt()
+        return checkbox(options)
+      },
+    },
+  })
+  const canUseTool: CanUseTool = async (toolName, toolInput, context) => {
+    if (toolName === ASK_USER_TOOL) {
+      const result = await questionBridge(toolName, toolInput, context)
+      if (subdomains?.phase === 'subdomain_choice' && result.behavior === 'allow') {
+        const answers = (result.updatedInput as { answers?: Record<string, string> }).answers ?? {}
+        const selected = Object.values(answers).join(' ')
+        if (/\b(?:proxy|cloudflare worker|cloudfront|lambda@edge|azure|nginx)\b/i.test(selected)) {
+          subdomains.phase = 'proxy'
+        } else if (
+          /\bcustom subdomain\b/i.test(selected) ||
+          /\b(?:subdomain|fqdn|dns)\b/i.test(Object.keys(answers).join(' '))
+        ) {
+          subdomains.phase = 'subdomain_locked'
+        }
+      }
+      return result
+    }
+    if (SUBDOMAIN_MUTATION_TOOLS.has(toolName)) return { behavior: 'allow', updatedInput: toolInput }
+    if (toolName === 'Edit' || toolName === 'Write') {
+      if (!isInteractive()) return { behavior: 'allow', updatedInput: toolInput }
+      const file = (toolInput.file_path ?? toolInput.path) as string | undefined
+      const verb = toolName === 'Write' ? 'create/overwrite' : 'edit'
+      ui.beforePrompt()
+      const ok = await confirm({ message: `Allow the wizard to ${verb} ${file ?? 'a file'}?`, default: true })
+      return ok
+        ? { behavior: 'allow', updatedInput: toolInput }
+        : { behavior: 'deny', message: 'User declined this edit.' }
+    }
+    return { behavior: 'deny', message: `Tool ${toolName} is not permitted by the wizard.` }
   }
-  return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
+  const allowedTools = [...readonly, ...(isInteractive() ? [] : EDIT_TOOLS), ...(subdomains ? SUBDOMAIN_READ_TOOLS : [])]
+  return {
+    permissionMode: isInteractive() ? ('default' as const) : ('acceptEdits' as const),
+    tools: [...readonly, ...EDIT_TOOLS, ASK_USER_TOOL],
+    allowedTools,
+    canUseTool,
+    hooks: {
+      PreToolUse: [
+        ...(subdomains ? [createIntegrationPhaseHook(subdomains)] : []),
+        createAgentFilePolicy(root, {
+          mutationGuard: (_toolName, input) => subdomainEditDenial(subdomains, input),
+        }),
+      ],
+    },
+    strictMcpConfig: true,
+    persistSession: false,
+    settingSources: [],
+  }
+}
+
+function subdomainEditDenial(
+  boundary: AgentEditBoundary | undefined,
+  input: Record<string, unknown>
+): string | undefined {
+  if (!boundary || boundary.state.outcome === 'completed') return undefined
+  if (boundary.phase === 'proxy' && boundary.state.outcome === 'idle') return undefined
+  if (boundary.phase === 'audit') {
+    if (boundary.state.outcome === 'idle') boundary.state.outcome = 'needs_user_action'
+    return 'Project files cannot be edited until the integration audit selects a trusted skill.'
+  }
+  if (boundary.phase === 'subdomain_choice' || boundary.phase === 'subdomain_locked') {
+    if (boundary.state.outcome === 'idle') boundary.state.outcome = 'needs_user_action'
+    return boundary.phase === 'subdomain_choice'
+      ? 'Choose custom subdomain or proxy setup before editing project files.'
+      : 'Project files cannot be edited until the active custom subdomain is selected and configured.'
+  }
+  if (boundary.state.outcome !== 'idle') {
+    return 'Project files cannot be edited until the active custom subdomain is selected and configured.'
+  }
+
+  const body = [input.content, input.new_string]
+    .filter((value): value is string => typeof value === 'string')
+    .join('\n')
+  if (!body) return undefined
+
+  const hostname = boundary.explicitHostname?.trim().replace(/\.$/, '').toLowerCase()
+  const changesEndpoint =
+    /fingerprint[\w-]*_?endpoints?|\bendpoints?\s*[:=]/i.test(body) ||
+    Boolean(hostname && body.toLowerCase().includes(hostname))
+  return changesEndpoint
+    ? 'Custom subdomain endpoint changes require an active API status first.'
+    : undefined
+}
+
+function createIntegrationPhaseHook(boundary: AgentEditBoundary): HookCallbackMatcher {
+  return {
+    hooks: [
+      async (event) => {
+        if (event.hook_event_name !== 'PreToolUse' || event.tool_name !== 'Skill') return {}
+        const rawSkill = (event.tool_input as { skill?: unknown } | undefined)?.skill
+        if (typeof rawSkill !== 'string') return {}
+
+        const skill = rawSkill.split(':').at(-1) ?? rawSkill
+        if (
+          skill === SUBDOMAIN_SKILL &&
+          boundary.phase !== 'proxy' &&
+          boundary.phase !== 'subdomain_locked'
+        ) {
+          boundary.phase = boundary.explicitHostname ? 'subdomain_locked' : 'subdomain_choice'
+        } else if (
+          boundary.phase === 'audit' &&
+          skill !== GET_STARTED_SKILL &&
+          boundary.skillIds.has(skill)
+        ) {
+          boundary.phase = 'general'
+        }
+        return {}
+      },
+    ],
+  }
+}
+
+interface AgentUi {
+  beforePrompt: () => void
+  needsUserAction: boolean
 }
 
 // How an integration run ended. `skipped` covers the user declining a prompt (the integration
 // itself, or an interactive install) — a choice, not a failure, so it keeps a zero exit code.
 // `failed` means the agent or a package install broke; the run must not claim success or exit 0.
-export type IntegrateOutcome = 'completed' | 'skipped' | 'failed'
+export type IntegrateOutcome = 'completed' | 'skipped' | 'waiting' | 'needs_user_action' | 'failed'
+
+interface IntegrateOptions {
+  yes?: boolean
+  subdomain?: string
+}
 
 // Top-level integration flow for a single command invocation: provision env keys, apply one Get
 // Started step for `root`, then keep going one step at a time for as long as the user says so.
 // Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at; it never
 // assumes a particular layout. The CLI adds no closing guidance of its own — the Get Started skill
 // the agent follows already tells the user how to verify each step.
-export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
+export async function integrateProject(root: string, opts: IntegrateOptions = {}): Promise<IntegrateOutcome> {
   let outcome = await provisionAndApply(root, opts)
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
   // checklist ran dry.
@@ -106,7 +244,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean } = {
       if (backend) outcome = await provisionAndApply(backend, opts)
       continue
     }
-    outcome = await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
+    outcome = await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step, subdomain: opts.subdomain })
   }
   return outcome
 }
@@ -166,7 +304,7 @@ function hasServerSdk(app: DetectedApp): boolean {
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<IntegrateOutcome> {
+async function provisionAndApply(root: string, opts: IntegrateOptions): Promise<IntegrateOutcome> {
   log.step('Set up environment variables')
   const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
@@ -178,7 +316,10 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent, so the flow is continuous: set up env → "integrate this repo?" → apply.
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
-async function applyIntegration(root: string, opts: { yes?: boolean; step?: string } = {}): Promise<IntegrateOutcome> {
+async function applyIntegration(
+  root: string,
+  opts: IntegrateOptions & { step?: string } = {}
+): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
@@ -210,7 +351,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
   if (!proceed) return 'skipped'
 
   log.step('Apply integration')
-  return runAgent(analysis, opts.step)
+  return runAgent(analysis, opts.step, { subdomain: opts.subdomain })
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -218,38 +359,99 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
 // and how to verify each live there, not in a hand-rolled prompt.
 const GET_STARTED_SKILL = 'fingerprint-get-started'
 
-export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<IntegrateOutcome> {
+export async function runAgent(
+  analysis: RepoAnalysis,
+  step?: string,
+  opts: { subdomain?: string } = {}
+): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
   // The orchestrator drives; the detected framework skills and the feature skills for the later
   // checklist steps are what it can delegate to.
   const ids = [GET_STARTED_SKILL, ...analysis.skills, ...getStartedSkills()]
+  const subdomainStep = step === NEXT_STEPS.proxy.step
+  const editPhase: AgentEditPhase =
+    step === undefined
+      ? 'audit'
+      : subdomainStep
+        ? opts.subdomain
+          ? 'subdomain_locked'
+          : 'subdomain_choice'
+        : 'general'
 
-  // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
-  // rather than us stuffing their full text into the prompt every turn.
+  // Keep the curated skills available in the repo after the run. This session loads the trusted
+  // source as an isolated plugin below, so project settings and hooks never execute.
   installSkills(analysis.root, ids)
   const metas = ids.map(skillMeta)
+
+  const ui: AgentUi = { beforePrompt: () => {}, needsUserAction: false }
+  const subdomains = createSubdomainRuntime({
+    root: analysis.root,
+    explicitHostname: opts.subdomain,
+    headless: isCi(),
+    beforePrompt: () => ui.beforePrompt(),
+  })
 
   log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step),
+    prompt: buildGetStartedPrompt(analysis, step, opts.subdomain),
     options: {
       model: llm.model,
       env: llm.env,
       cwd: analysis.root,
       systemPrompt: SYSTEM_PROMPT,
-      settingSources: ['project'], // discover .claude/skills/
-      skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(['Skill']), // the orchestrator dispatches via the Skill tool
+      plugins: [{ type: 'local', path: skillsPluginPath(), skipMcpDiscovery: true }],
+      skills: ids,
+      mcpServers: { [FINGERPRINT_MCP_SERVER_NAME]: subdomains.server },
+      ...permissionOptions(analysis.root, ui, ['Skill'], {
+        state: subdomains.state,
+        explicitHostname: opts.subdomain,
+        phase: editPhase,
+        skillIds: new Set(ids),
+      }),
     },
   })
 
-  const run = await consume(response, 'Setting up the integration')
+  const run = await consume(response, 'Setting up the integration', ui)
   if (!run.ok) {
     process.exitCode = 1
     return 'failed'
+  }
+
+  const subdomainOutcome =
+    integrationOutcomeForSubdomain(subdomains.state.outcome) ??
+    (ui.needsUserAction ? 'needs_user_action' : undefined)
+  if (subdomainOutcome) {
+    if (run.text) log.info(renderMarkdown(run.text))
+    if (subdomainOutcome === 'needs_user_action' && isCi()) process.exitCode = 1
+    if (subdomainOutcome === 'failed') {
+      log.error(
+        subdomains.state.subdomain?.status === 'failed'
+          ? 'Custom subdomain setup failed with a terminal status.'
+          : 'Custom subdomain setup failed.'
+      )
+      process.exitCode = 1
+    } else if (subdomainOutcome === 'waiting') {
+      const records = subdomains.state.pendingDnsRecords ?? []
+      if (records.length) {
+        log.info('DNS records still waiting for validation:')
+        for (const record of records) log.info(`  ${record.type} ${record.host} → ${record.value}`)
+      } else {
+        log.info('DNS records are validated; certificate issuance is still in progress.')
+      }
+      log.info('Re-run the same fingerprint integrate command later.')
+    } else if (subdomains.state.subdomain?.status === 'timed_out') {
+      log.warn(
+        `Custom subdomain ${subdomains.state.subdomain.subdomain} timed out. Delete ${subdomains.state.subdomain.id}, then create it again.`
+      )
+    } else if (subdomains.state.recreateHostname) {
+      log.warn(`Custom subdomain deleted. Create ${subdomains.state.recreateHostname} again to continue.`)
+    } else {
+      log.warn('Custom subdomain setup needs user action before it can continue.')
+    }
+    return subdomainOutcome
   }
 
   const installed = await installPackages(analysis, metas)
@@ -265,6 +467,20 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
   return installed
 }
 
+function integrationOutcomeForSubdomain(outcome: SubdomainRunOutcome): IntegrateOutcome | undefined {
+  switch (outcome) {
+    case 'waiting':
+      return 'waiting'
+    case 'active':
+    case 'needs_user_action':
+      return 'needs_user_action'
+    case 'failed':
+      return 'failed'
+    default:
+      return undefined
+  }
+}
+
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with
 // the current high-level activity (the per-step tool calls are hidden); verbose mode, `--ci`, and
 // non-TTY (piped/redirected) contexts skip the spinner — its multi-line redraw only works on a live
@@ -273,8 +489,9 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
 // streamed it.
 type AgentRun = { ok: boolean; text?: string }
 
-async function consume(response: unknown, initialMessage: string): Promise<AgentRun> {
+async function consume(response: unknown, initialMessage: string, ui?: AgentUi): Promise<AgentRun> {
   const spinner = !isVerbose() && process.stdout.isTTY && !isCi() ? new Spinner() : null
+  if (ui) ui.beforePrompt = () => spinner?.stop()
   spinner?.start(initialMessage)
   let run: AgentRun = { ok: false }
   try {
@@ -296,6 +513,10 @@ const SYSTEM_PROMPT = [
   '- Make minimal, focused changes; match the existing code style.',
   '- The secret key is server-side only; never reference it in frontend code.',
   '- Do NOT read or print .env. Reference keys by env-var name only.',
+  '- Manage custom subdomains only through the fingerprint tools. Never ask for or handle a',
+  '  Management API key. If status is pending, stop cleanly; do not poll or set endpoints.',
+  '- Only after status is active, call configure_subdomain_endpoint and use the returned env var',
+  '  in the existing provider/start options.',
   '- Only edit application code. Do not run shell commands, install packages, or touch package',
   '  manifests, lockfiles or package-manager config — the CLI installs the required packages itself',
   '  after you finish. ("v4" in a skill is the Fingerprint platform, not an npm major version.)',
@@ -308,7 +529,7 @@ const SYSTEM_PROMPT = [
 // and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
 // agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
 // the CLI's stack detection, and where the provisioned keys live (it may not open .env).
-function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
+function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?: string): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
@@ -321,6 +542,9 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
     'The .env files are already provisioned: the public key is in',
     `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+    subdomain
+      ? `For the custom-subdomain step, use exactly ${subdomain}; it was supplied by the user.`
+      : 'For the custom-subdomain step, ask the user for the FQDN; never guess one.',
   ].join('\n')
 }
 
@@ -330,6 +554,7 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
 // reports the install command instead.
 export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<IntegrateOutcome> {
   const llm = await resolveLlmConfig()
+  const ui: AgentUi = { beforePrompt: () => {}, needsUserAction: false }
   const response = query({
     prompt: buildDocsTaskPrompt(analysis),
     options: {
@@ -337,14 +562,20 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<Integrat
       env: llm.env,
       cwd: analysis.root,
       systemPrompt: DOCS_SYSTEM_PROMPT,
-      ...permissionOptions(['WebFetch', 'WebSearch']),
+      ...permissionOptions(analysis.root, ui, ['WebFetch', 'WebSearch']),
     },
   })
 
-  const run = await consume(response, 'Researching docs and applying the integration')
+  const run = await consume(response, 'Researching docs and applying the integration', ui)
   if (!run.ok) {
     process.exitCode = 1
     return 'failed'
+  }
+  if (ui.needsUserAction) {
+    if (run.text) log.info(renderMarkdown(run.text))
+    log.warn('The integration needs user input before it can continue.')
+    if (isCi()) process.exitCode = 1
+    return 'needs_user_action'
   }
   if (run.text) log.info(renderMarkdown(run.text))
   log.success('Agent finished applying the integration.')

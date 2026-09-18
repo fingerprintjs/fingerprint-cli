@@ -81,13 +81,14 @@ program
   .description('Analyze the current repo and apply the Fingerprint integration')
   .option('--path <dir>', 'repo to analyze (default: current directory)')
   .option('--analyze', 'only analyze; do not apply the integration')
+  .option('--subdomain <fqdn>', 'custom subdomain to use without an interactive hostname prompt')
   .option('--yes', 'skip the confirmation prompt')
   .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
   .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
   .action((opts) => {
     if (opts.verbose) setVerbose(true)
     if (opts.interactive && !isCi()) setInteractive(true)
-    return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes })
+    return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes, subdomain: opts.subdomain })
   })
 
 registerSubdomainsCommands(program)

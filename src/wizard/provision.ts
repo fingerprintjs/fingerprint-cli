@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { ManagementClient } from '../api/management.js'
 import { fetchPublicKey } from '../api/keys.js'
 import { requireAuth } from '../utils/session.js'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { log } from './log.js'
+import { assertPathWithinProject } from '../utils/project-path.js'
 
 // Per-framework env conventions: which file to write, the public/secret-key var names (with
 // bundler prefix), the region var names (client needs the bundler-prefixed one; server reads
@@ -12,6 +13,7 @@ import { log } from './log.js'
 interface EnvConvention {
   file: string
   publicVar?: string
+  endpointVar?: string
   secretVar?: string
   clientRegionVar?: string
   serverRegionVar?: string
@@ -25,6 +27,7 @@ export function conventionFor(app: DetectedApp): EnvConvention {
       return {
         file: '.env.local',
         publicVar: 'NEXT_PUBLIC_FINGERPRINT_PUBLIC_API_KEY',
+        endpointVar: 'NEXT_PUBLIC_FINGERPRINT_ENDPOINTS',
         clientRegionVar: 'NEXT_PUBLIC_FINGERPRINT_REGION',
         secretVar: 'FINGERPRINT_SECRET_API_KEY',
         serverRegionVar: 'FINGERPRINT_REGION',
@@ -33,6 +36,7 @@ export function conventionFor(app: DetectedApp): EnvConvention {
       return {
         file: '.env',
         publicVar: 'NUXT_PUBLIC_FINGERPRINT_PUBLIC_API_KEY',
+        endpointVar: 'NUXT_PUBLIC_FINGERPRINT_ENDPOINTS',
         clientRegionVar: 'NUXT_PUBLIC_FINGERPRINT_REGION',
         secretVar: 'FINGERPRINT_SECRET_API_KEY',
         serverRegionVar: 'FINGERPRINT_REGION',
@@ -42,7 +46,12 @@ export function conventionFor(app: DetectedApp): EnvConvention {
     case 'vue':
     case 'svelte':
     case 'astro':
-      return { file: '.env', publicVar: 'VITE_FINGERPRINT_PUBLIC_API_KEY', clientRegionVar: 'VITE_FINGERPRINT_REGION' }
+      return {
+        file: '.env',
+        publicVar: 'VITE_FINGERPRINT_PUBLIC_API_KEY',
+        endpointVar: 'VITE_FINGERPRINT_ENDPOINTS',
+        clientRegionVar: 'VITE_FINGERPRINT_REGION',
+      }
     // Node backends — need dotenv to read a .env file.
     case 'express':
     case 'fastify':
@@ -98,6 +107,7 @@ function writeEnvFile(file: string, vars: Record<string, string | undefined>): s
 // separate backend dir) are skipped and reported to the caller.
 function ensureGitignored(root: string, files: string[]): { added: string[]; external: string[] } {
   const gitignore = join(root, '.gitignore')
+  assertPathWithinProject(root, gitignore, 'write')
   const raw = existsSync(gitignore) ? readFileSync(gitignore, 'utf8') : ''
   const existing = raw.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
 
@@ -139,6 +149,90 @@ export interface ProvisionResult {
   needsDotenv: DetectedApp[]
 }
 
+export type EndpointProvisionResult =
+  | { outcome: 'no_frontend' }
+  | { outcome: 'unsupported'; framework?: string }
+  | {
+      outcome: 'configured'
+      endpoint: string
+      envFile: string
+      envVar: string
+      updated: boolean
+    }
+
+// Store an active custom subdomain using the selected frontend's existing env convention. The
+// caller is responsible for checking the subdomain status before invoking this helper.
+export function provisionActiveSubdomainEndpoint(root: string, hostname: string): EndpointProvisionResult {
+  const analysis = analyzeRepo(root)
+  const frontend = analysis.frontend
+  if (!frontend) return { outcome: 'no_frontend' }
+
+  const endpoint = `https://${hostname}`
+  if (frontend.framework === 'angular') return provisionAngularEndpoint(root, frontend, endpoint)
+
+  const convention = conventionFor(frontend)
+  if (!convention.endpointVar) return { outcome: 'unsupported', framework: frontend.framework }
+
+  const file = join(frontend.dir, convention.file)
+  assertPathWithinProject(root, file, 'write')
+  const updated = readEnvVar(file, convention.endpointVar) !== endpoint
+  if (updated) writeEnvFile(file, { [convention.endpointVar]: endpoint })
+  ensureGitignored(root, [file])
+
+  return {
+    outcome: 'configured',
+    endpoint,
+    envFile: relative(root, file).split(sep).join('/'),
+    envVar: convention.endpointVar,
+    updated,
+  }
+}
+
+function provisionAngularEndpoint(root: string, app: DetectedApp, endpoint: string): EndpointProvisionResult {
+  const environmentDir = join(app.dir, 'src', 'environments')
+  if (!existsSync(environmentDir)) return { outcome: 'unsupported', framework: app.framework }
+
+  const files = readdirSync(environmentDir)
+    .filter((file) => /^environment(?:\.[A-Za-z0-9_-]+)?\.ts$/.test(file))
+    .sort((a, b) => (a === 'environment.ts' ? -1 : b === 'environment.ts' ? 1 : a.localeCompare(b)))
+    .map((file) => join(environmentDir, file))
+  if (!files.length) return { outcome: 'unsupported', framework: app.framework }
+
+  const updates: Array<{ file: string; contents: string; updated: boolean }> = []
+  for (const file of files) {
+    assertPathWithinProject(root, file, 'write')
+    const current = readFileSync(file, 'utf8')
+    const contents = upsertAngularEnvironmentEndpoint(current, endpoint)
+    if (contents === undefined) return { outcome: 'unsupported', framework: app.framework }
+    updates.push({ file, contents, updated: contents !== current })
+  }
+
+  for (const update of updates) {
+    if (update.updated) writeFileSync(update.file, update.contents)
+  }
+
+  return {
+    outcome: 'configured',
+    endpoint,
+    envFile: relative(root, files[0]).split(sep).join('/'),
+    envVar: 'environment.fingerprintEndpoints',
+    updated: updates.some((update) => update.updated),
+  }
+}
+
+function upsertAngularEnvironmentEndpoint(contents: string, endpoint: string): string | undefined {
+  const existing = /(\bfingerprintEndpoints\s*:\s*)(['"`])[^'"`\r\n]*\2/
+  if (existing.test(contents)) return contents.replace(existing, `$1'${endpoint}'`)
+  if (/\bfingerprintEndpoints\s*:/.test(contents)) return undefined
+
+  const environment = /export\s+const\s+environment(?:\s*:[^=]+)?\s*=\s*\{/.exec(contents)
+  if (!environment) return undefined
+
+  const insertAt = environment.index + environment[0].length
+  const indent = contents.slice(insertAt).match(/\n([ \t]+)\w/)?.[1] ?? '  '
+  return `${contents.slice(0, insertAt)}\n${indent}fingerprintEndpoints: '${endpoint}',${contents.slice(insertAt)}`
+}
+
 // Provision real workspace keys into the right per-app .env files, host-side (never via the
 // agent, so secrets stay out of the LLM transcript).
 export async function provisionForRepo(root: string): Promise<ProvisionResult> {
@@ -164,7 +258,9 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
     // login bundle. The CLI never mints keys itself.
     for (const app of secretApps) {
       const conv = conventionFor(app)
-      secretKey = readEnvVar(join(app.dir, conv.file), conv.secretVar!)
+      const file = join(app.dir, conv.file)
+      assertPathWithinProject(root, file, 'write')
+      secretKey = readEnvVar(file, conv.secretVar!)
       if (secretKey) break
     }
     if (secretKey) log.info('Reusing existing Secret API key from env.')
@@ -181,6 +277,7 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   for (const app of apps) {
     const conv = conventionFor(app)
     const file = join(app.dir, conv.file)
+    assertPathWithinProject(root, file, 'write')
     const written = writeEnvFile(file, {
       [conv.publicVar ?? '']: conv.publicVar ? publicKey : undefined,
       [conv.secretVar ?? '']: conv.secretVar ? secretKey : undefined,
