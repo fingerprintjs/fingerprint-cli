@@ -169,7 +169,7 @@ test('list follows pagination and returns every result', async () => {
   await api.close()
 })
 
-test('bare subdomains lists resources and help, while --help makes no API requests', async (t) => {
+test('bare subdomains lists resources and help, while --help works without auth or API requests', async (t) => {
   let items = [listItem()]
   const api = await startApi((request) => {
     if (request.method === 'GET' && request.path === '/subdomains') {
@@ -178,7 +178,10 @@ test('bare subdomains lists resources and help, while --help makes no API reques
   })
   t.after(() => api.close())
 
-  const help = await run(api, ['subdomains', '--help'])
+  const help = await runCli(['subdomains', '--help'], {
+    home: makeHome(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
+  })
   assert.equal(help.status, 0, help.stderr)
   assert.match(help.stdout, /Usage:.*subdomains/)
   assert.equal(api.requests.length, 0)
@@ -197,7 +200,7 @@ test('bare subdomains lists resources and help, while --help makes no API reques
   assert.match(empty.stdout, /No custom subdomains found[\s\S]*Usage:.*subdomains/)
 })
 
-test('bare subdomains without auth prints help and the login error without requesting subdomains', async (t) => {
+test('bare subdomains without auth prints only the login error without requesting subdomains', async (t) => {
   const api = await startApi(() => undefined)
   t.after(() => api.close())
 
@@ -207,7 +210,7 @@ test('bare subdomains without auth prints help and the login error without reque
   })
 
   assert.equal(result.status, 1)
-  assert.match(result.stdout, /Usage:.*subdomains/)
+  assert.equal(result.stdout, '')
   assert.match(result.stderr, /fingerprint login/)
   assert.equal(api.requests.length, 0)
 })

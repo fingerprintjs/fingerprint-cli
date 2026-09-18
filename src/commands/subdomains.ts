@@ -49,6 +49,7 @@ export function registerSubdomainsCommands(program: Command): void {
     .command('subdomains')
     .description('Manage custom subdomains for the active workspace')
     .action(async function () {
+      requireAuth()
       try {
         await listSubdomains({})
       } finally {
