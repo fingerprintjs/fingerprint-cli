@@ -43,9 +43,12 @@ export function registerSubdomainsCommands(program: Command): void {
     .command('subdomains')
     .description('Manage custom subdomains for the active workspace')
     .action(async function () {
-      await listSubdomains({})
-      console.log()
-      this.outputHelp()
+      try {
+        await listSubdomains({})
+      } finally {
+        console.log()
+        this.outputHelp()
+      }
     })
     .addHelpText('after', '\nExample:\n  fingerprint subdomains verify metrics.example.com')
 

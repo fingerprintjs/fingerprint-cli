@@ -194,6 +194,40 @@ test('bare subdomains lists resources and help, while --help makes no API reques
   assert.match(empty.stdout, /No custom subdomains found[\s\S]*Usage:.*subdomains/)
 })
 
+test('bare subdomains without auth prints help and the login error without requesting subdomains', async (t) => {
+  const api = await startApi(() => undefined)
+  t.after(() => api.close())
+
+  const result = await runCli(['subdomains'], {
+    home: makeHome(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
+  })
+
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /Usage:.*subdomains/)
+  assert.match(result.stderr, /fingerprint login/)
+  assert.equal(api.requests.length, 0)
+})
+
+test('bare subdomains prints help and preserves a listing HTTP error with a failing exit status', async (t) => {
+  const api = await startApi((request) => {
+    if (request.method === 'GET' && request.path === '/subdomains') {
+      return {
+        status: 500,
+        body: { error: { code: 'general.internal-server-error', message: 'Unable to list subdomains' } },
+      }
+    }
+  })
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains'])
+
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /Usage:.*subdomains/)
+  assert.match(result.stderr, /Unable to list subdomains/)
+  assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), ['GET /subdomains'])
+})
+
 for (const command of ['get', 'verify', 'delete']) {
   test(`${command} resolves a normalized hostname through every page before using its ID`, async (t) => {
     const api = await startApi((request) => {
