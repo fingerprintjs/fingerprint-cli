@@ -469,7 +469,7 @@ test('JSON errors distinguish authentication, validation, duplicate, limit, rate
       status: 401,
       body: { error: { code: 'general.unauthorized', message: 'Invalid API key' } },
       kind: 'not_authenticated',
-      message: 'Invalid API key Run: fingerprint login',
+      message: 'Invalid API key. Run: fingerprint login',
     },
     {
       args: ['subdomains', 'list', '--json'],
@@ -581,7 +581,7 @@ test('a live 401 tells the user to log in again', async (t) => {
   const result = await run(api, ['subdomains', 'list'])
 
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /Invalid API key Run: fingerprint login/)
+  assert.match(result.stderr, /Invalid API key\. Run: fingerprint login/)
   assert.equal(api.requests.length, 1)
 })
 

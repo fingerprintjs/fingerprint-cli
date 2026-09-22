@@ -289,7 +289,7 @@ function serializeError(error: unknown): Record<string, unknown> {
 }
 
 function apiErrorMessage(error: ManagementApiError): string {
-  if (error.status === 401) return `${error.message} Run: fingerprint login`
+  if (error.status === 401) return `${error.message.replace(/[.!?]*$/, '')}. Run: fingerprint login`
   if (error.status === 503) return UNAVAILABLE_MESSAGE
   return error.message
 }
