@@ -224,7 +224,7 @@ test('a command that fails still reports, with status error', async () => {
 function makeFailingGit() {
   const dir = mkdtempSync(join(tmpdir(), 'fp-bin-'))
   const file = join(dir, 'git')
-  writeFileSync(file, '#!/bin/sh\necho "fatal: unable to access" >&2\nexit 128\n')
+  writeFileSync(file, '#!/bin/sh\necho "fatal: destination path \'$6\' already exists and is not an empty directory." >&2\nexit 128\n')
   chmodSync(file, 0o755)
   return dir
 }
@@ -279,6 +279,9 @@ test('the reported message says what actually failed', async () => {
   })
 
   assert.match(errorProps(api).error_message, /Could not fetch skills/)
+  const message = errorProps(api).error_message
+  assert.match(message, /fatal: destination path '~\/\.config\/fingerprint\/skills' already exists/)
+  assert.ok(!message.includes(home))
 
   await api.close()
 })

@@ -41,14 +41,25 @@ function ensureSkillsRepo(): void {
       return
     }
     mkdirSync(dirname(skillsCache), { recursive: true })
-    execFileSync('git', ['clone', '--depth', '1', '--quiet', SKILLS_REPO, skillsCache], { stdio: 'ignore', timeout: GIT_TIMEOUT_MS })
+    execFileSync('git', ['clone', '--depth', '1', '--quiet', SKILLS_REPO, skillsCache], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: GIT_TIMEOUT_MS,
+    })
   } catch (e) {
     throw new CodedError(
       'skills_fetch_failed',
       `Could not fetch skills from ${SKILLS_REPO} (needs git + network). ` +
-        `If you're offline, set FINGERPRINT_SKILLS_DIR to a local checkout. Cause: ${(e as Error).message}`
+        `If you're offline, set FINGERPRINT_SKILLS_DIR to a local checkout. Cause: ${gitFailureReason(e)}`
     )
   }
+}
+
+function gitFailureReason(e: unknown): string {
+  const stderr = String((e as { stderr?: Buffer | string }).stderr ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return stderr.at(-1) ?? (e as Error).message
 }
 
 // Skill folders live under the repo's `skills/` directory (standard Claude Code plugin layout).
