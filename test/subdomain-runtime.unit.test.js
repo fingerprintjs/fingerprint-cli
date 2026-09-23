@@ -217,7 +217,45 @@ test('headless create requires and enforces the explicit hostname', async () => 
   assert.equal(explicit.calls.filter(([operation]) => operation === 'create').length, 1)
 })
 
-test('GET maps every public API status to the run outcome', async () => {
+test('audit reads leave the subdomain workflow idle', async () => {
+  for (const status of [undefined, 'pending', 'active', 'timed_out', 'failed']) {
+    const current = status ? makeSubdomain(status) : undefined
+    const fake = makeService(current ? [current] : [])
+    const runtime = createSubdomainRuntime({
+      root: makeRepo(),
+      service: fake.service,
+      explicitHostname: 'metrics.example.com',
+    })
+
+    const listed = await invoke(runtime, SUBDOMAIN_TOOL_NAMES.list)
+    assert.equal(listed.structuredContent.subdomains.length, current ? 1 : 0)
+    assert.deepEqual(runtime.state, { outcome: 'idle' })
+    if (current) {
+      const result = await invoke(runtime, SUBDOMAIN_TOOL_NAMES.get, { id: current.id })
+      assert.equal(result.structuredContent.subdomain.status, status)
+      assert.deepEqual(runtime.state, { outcome: 'idle' })
+    }
+  }
+})
+
+test('audit read errors are returned without changing the integration outcome', async () => {
+  for (const operation of ['list', 'get']) {
+    for (const status of [401, 404, 500, 503]) {
+      const fake = makeService()
+      fake.service[operation] = async () => {
+        throw new ManagementApiError('Read failed', status)
+      }
+      const runtime = createSubdomainRuntime({ root: makeRepo(), service: fake.service })
+
+      const result = await invoke(runtime, SUBDOMAIN_TOOL_NAMES[operation], { id: 'certv2_123' })
+
+      assert.equal(result.isError, true)
+      assert.deepEqual(runtime.state, { outcome: 'idle' })
+    }
+  }
+})
+
+test('GET maps every public API status to the outcome during subdomain setup', async () => {
   for (const [status, outcome] of [
     ['pending', 'waiting'],
     ['active', 'active'],
@@ -226,7 +264,11 @@ test('GET maps every public API status to the run outcome', async () => {
   ]) {
     const current = makeSubdomain(status)
     const fake = makeService([current])
-    const runtime = createSubdomainRuntime({ root: makeRepo(), service: fake.service })
+    const runtime = createSubdomainRuntime({
+      root: makeRepo(),
+      service: fake.service,
+      isSubdomainStep: () => true,
+    })
 
     const result = await invoke(runtime, SUBDOMAIN_TOOL_NAMES.get, { id: current.id })
 
@@ -251,7 +293,29 @@ test('GET maps every public API status to the run outcome', async () => {
   }
 })
 
-test('headless verify requires the explicit hostname even after a read selected the resource', async () => {
+test('cached reads track the outcome when the audit selects subdomain setup', async () => {
+  const current = makeSubdomain('pending')
+  const fake = makeService([current])
+  let selected = false
+  const runtime = createSubdomainRuntime({
+    root: makeRepo(),
+    service: fake.service,
+    isSubdomainStep: () => selected,
+  })
+
+  await invoke(runtime, SUBDOMAIN_TOOL_NAMES.list)
+  await invoke(runtime, SUBDOMAIN_TOOL_NAMES.get, { id: current.id })
+  assert.equal(runtime.state.outcome, 'idle')
+
+  selected = true
+  await invoke(runtime, SUBDOMAIN_TOOL_NAMES.list)
+  assert.equal(runtime.state.outcome, 'needs_user_action')
+  await invoke(runtime, SUBDOMAIN_TOOL_NAMES.get, { id: current.id })
+  assert.equal(runtime.state.outcome, 'waiting')
+  assert.deepEqual(fake.calls, [['list'], ['get', current.id]])
+})
+
+test('headless verify requires the explicit hostname even after reading the resource', async () => {
   const current = makeSubdomain('pending')
   const denied = makeService([current])
   const deniedRuntime = createSubdomainRuntime({
@@ -613,7 +677,12 @@ for (const [error, kind] of [
       throw error
     }
     const root = makeRepo()
-    const runtime = createSubdomainRuntime({ root, service: fake.service, headless: true })
+    const runtime = createSubdomainRuntime({
+      root,
+      service: fake.service,
+      headless: true,
+      isSubdomainStep: () => true,
+    })
 
     const result = await invoke(runtime, SUBDOMAIN_TOOL_NAMES.list)
 
@@ -633,6 +702,7 @@ test('unexpected runtime errors stay failed and block later mutations', async ()
     service: fake.service,
     headless: true,
     explicitHostname: current.subdomain,
+    isSubdomainStep: () => true,
   })
 
   await invoke(runtime, SUBDOMAIN_TOOL_NAMES.get, { id: current.id })

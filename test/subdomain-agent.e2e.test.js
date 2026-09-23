@@ -184,6 +184,105 @@ test('--subdomain does not block an earlier integration step', async (t) => {
   assert.equal(readFileSync(target, 'utf8'), '// base Fingerprint integration\n')
 })
 
+for (const status of [undefined, 'pending', 'active', 'timed_out', 'failed']) {
+  test(`audit reads (${status ?? 'empty list'}) allow edits and package installation without invoking Skill`, async (t) => {
+    const api = await startSubdomainApi()
+    t.after(() => api.close())
+    if (status) api.seedStatus(status)
+    const home = makeHome()
+    seedAuth(home, api.url)
+    const repo = makeRepo()
+    const skillsDir = makeSkillsDir({ 'fingerprint-react': ['@fingerprint/react'] }, { includeSubdomain: true })
+    const target = join(repo, 'web', 'fingerprint-integration.js')
+    const actions = [
+      { tool: 'Read', input: { file_path: join(repo, '.claude', 'skills', 'fingerprint-react', 'SKILL.md') } },
+      { tool: 'mcp__fingerprint__list_subdomains', input: {} },
+      ...(status ? [{ tool: 'mcp__fingerprint__get_subdomain', input: { id: ID } }] : []),
+    ]
+    const gateway = await startGeneralIntegrationGateway(target, actions)
+    t.after(() => gateway.close())
+    const bin = join(home, 'bin')
+    mkdirSync(bin)
+    const installLog = join(home, 'install.json')
+    writeFileSync(
+      join(bin, 'npm'),
+      `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(installLog)}, JSON.stringify(process.argv.slice(2)))\n`,
+      { mode: 0o755 }
+    )
+
+    const result = await runCli(['--ci', 'integrate', '--yes', '--subdomain', HOSTNAME], {
+      home,
+      cwd: repo,
+      env: {
+        FINGERPRINT_SKILLS_DIR: skillsDir,
+        FINGERPRINT_GATEWAY_URL: gateway.url,
+        PATH: `${bin}:${process.env.PATH}`,
+      },
+    })
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readFileSync(target, 'utf8'), '// base Fingerprint integration\n')
+    assert.deepEqual(JSON.parse(readFileSync(installLog, 'utf8')), ['install', '@fingerprint/react@latest'])
+    assert.match(result.stdout, /Agent finished applying the integration/)
+    assert.doesNotMatch(result.stdout, /Custom subdomain setup needs user action|Re-run the same fingerprint integrate/)
+    assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
+    assert.equal(api.createCalls(), 0)
+  })
+}
+
+test('GET still reports waiting after the audit selects custom subdomain setup', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('pending')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir({}, { includeSubdomain: true })
+  const target = join(repo, 'web', 'subdomain-bypass.js')
+  const gateway = await startGeneralIntegrationGateway(target, [
+    { tool: 'Skill', input: { skill: 'fingerprint:fingerprint-proxy-integration' } },
+    { tool: 'mcp__fingerprint__get_subdomain', input: { id: ID } },
+  ])
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--yes', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /DNS records still waiting for validation/)
+  assert.equal(existsSync(target), false)
+  assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
+})
+
+test('general edits cannot set a custom endpoint before activation', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir({}, { includeSubdomain: true })
+  const target = join(repo, 'web', 'endpoint-bypass.js')
+  const gateway = await startGateway((payload) => {
+    const messages = JSON.stringify(payload.messages ?? [])
+    return messages.includes('"name":"Write"')
+      ? { text: 'The endpoint edit was blocked.' }
+      : { tool: 'Write', input: { file_path: target, content: `export const endpoints = 'https://${HOSTNAME}'\n` } }
+  })
+  t.after(() => gateway.close())
+
+  await runCli(['--ci', 'integrate', '--yes'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(existsSync(target), false)
+  assert.match(gateway.bodies().join('\n'), /Custom subdomain endpoint changes require an active API status first/)
+})
+
 test('choosing a non-subdomain proxy keeps the unified skill editable', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
@@ -417,11 +516,11 @@ function startSubdomainBypassGateway(target) {
   })
 }
 
-function startGeneralIntegrationGateway(target) {
+function startGeneralIntegrationGateway(target, actions = []) {
   return startGateway((payload) => {
     const messages = JSON.stringify(payload.messages ?? [])
-    if (!messages.includes('"name":"Skill"')) {
-      return { tool: 'Skill', input: { skill: 'fingerprint:fingerprint-react' } }
+    for (const action of actions) {
+      if (!messages.includes(`"name":"${action.tool}"`)) return action
     }
     if (!messages.includes('"name":"Write"')) {
       return {

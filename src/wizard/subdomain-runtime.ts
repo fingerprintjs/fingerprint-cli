@@ -36,6 +36,7 @@ interface RuntimeOptions {
   service?: SubdomainsService
   confirm?: typeof confirm
   beforePrompt?: () => void
+  isSubdomainStep?: () => boolean
 }
 
 export function mcpToolName(name: string): string {
@@ -54,6 +55,9 @@ export function createSubdomainRuntime(options: RuntimeOptions) {
   const lookupCache = new Map<string, SubdomainLookupResult>()
   const verified = new Set<string>()
   let operationFailed = false
+
+  const shouldTrackReads = (): boolean =>
+    state.outcome !== 'idle' || options.isSubdomainStep?.() === true
 
   const observe = (subdomain: SubdomainListItem, preserveCompleted = false): void => {
     const remainsCompleted =
@@ -199,15 +203,14 @@ export function createSubdomainRuntime(options: RuntimeOptions) {
     },
 
     async list() {
-      if (state.outcome === 'idle') markNeedsUserAction()
+      if (shouldTrackReads() && state.outcome === 'idle') markNeedsUserAction()
       listCache ??= await service.list()
       return listCache
     },
 
     async get(id) {
-      if (state.outcome === 'idle') markNeedsUserAction()
       const subdomain = await getDetail(id)
-      observe(subdomain, true)
+      if (shouldTrackReads()) observe(subdomain, true)
       return subdomain
     },
 
@@ -255,20 +258,20 @@ export function createSubdomainRuntime(options: RuntimeOptions) {
     },
   }
 
-  const guardRuntimeOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const guardRuntimeOperation = async <T>(operation: () => Promise<T>, trackOutcome = true): Promise<T> => {
     try {
       if (operationFailed) throw new Error('Custom subdomain setup already failed in this run.')
       return await operation()
     } catch (error) {
-      handleOperationError(error)
+      if (trackOutcome) handleOperationError(error)
       throw error
     }
   }
 
   const guardedRuntimeService: SubdomainsToolService = {
     create: (hostname) => guardRuntimeOperation(() => runtimeService.create(hostname)),
-    list: () => guardRuntimeOperation(() => runtimeService.list()),
-    get: (id) => guardRuntimeOperation(() => runtimeService.get(id)),
+    list: () => guardRuntimeOperation(() => runtimeService.list(), shouldTrackReads()),
+    get: (id) => guardRuntimeOperation(() => runtimeService.get(id), shouldTrackReads()),
     verify: (id) => guardRuntimeOperation(() => runtimeService.verify(id)),
     delete: (id) => guardRuntimeOperation(() => runtimeService.delete(id)),
   }

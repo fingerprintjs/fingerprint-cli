@@ -39,13 +39,12 @@ const EDIT_TOOLS = ['Edit', 'Write']
 const ASK_USER_TOOL = 'AskUserQuestion'
 const SUBDOMAIN_SKILL = 'fingerprint-proxy-integration'
 
-type AgentEditPhase = 'audit' | 'general' | 'proxy' | 'subdomain_choice' | 'subdomain_locked'
+type AgentEditPhase = 'general' | 'proxy' | 'subdomain_choice' | 'subdomain_locked'
 
 interface AgentEditBoundary {
   state: SubdomainRunState
   explicitHostname?: string
   phase: AgentEditPhase
-  skillIds: Set<string>
 }
 
 const SUBDOMAIN_READ_TOOLS = [
@@ -146,10 +145,6 @@ function subdomainEditDenial(
 ): string | undefined {
   if (!boundary || boundary.state.outcome === 'completed') return undefined
   if (boundary.phase === 'proxy' && boundary.state.outcome === 'idle') return undefined
-  if (boundary.phase === 'audit') {
-    if (boundary.state.outcome === 'idle') boundary.state.outcome = 'needs_user_action'
-    return 'Project files cannot be edited until the integration audit selects a trusted skill.'
-  }
   if (boundary.phase === 'subdomain_choice' || boundary.phase === 'subdomain_locked') {
     if (boundary.state.outcome === 'idle') boundary.state.outcome = 'needs_user_action'
     return boundary.phase === 'subdomain_choice'
@@ -189,12 +184,6 @@ function createIntegrationPhaseHook(boundary: AgentEditBoundary): HookCallbackMa
           boundary.phase !== 'subdomain_locked'
         ) {
           boundary.phase = boundary.explicitHostname ? 'subdomain_locked' : 'subdomain_choice'
-        } else if (
-          boundary.phase === 'audit' &&
-          skill !== GET_STARTED_SKILL &&
-          boundary.skillIds.has(skill)
-        ) {
-          boundary.phase = 'general'
         }
         return {}
       },
@@ -371,14 +360,11 @@ export async function runAgent(
   // checklist steps are what it can delegate to.
   const ids = [GET_STARTED_SKILL, ...analysis.skills, ...getStartedSkills()]
   const subdomainStep = step === NEXT_STEPS.proxy.step
-  const editPhase: AgentEditPhase =
-    step === undefined
-      ? 'audit'
-      : subdomainStep
-        ? opts.subdomain
-          ? 'subdomain_locked'
-          : 'subdomain_choice'
-        : 'general'
+  const editPhase: AgentEditPhase = subdomainStep
+    ? opts.subdomain
+      ? 'subdomain_locked'
+      : 'subdomain_choice'
+    : 'general'
 
   // Keep the curated skills available in the repo after the run. This session loads the trusted
   // source as an isolated plugin below, so project settings and hooks never execute.
@@ -391,7 +377,13 @@ export async function runAgent(
     explicitHostname: opts.subdomain,
     headless: isCi(),
     beforePrompt: () => ui.beforePrompt(),
+    isSubdomainStep: () => boundary.phase === 'subdomain_locked',
   })
+  const boundary: AgentEditBoundary = {
+    state: subdomains.state,
+    explicitHostname: opts.subdomain,
+    phase: editPhase,
+  }
 
   log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
@@ -405,12 +397,7 @@ export async function runAgent(
       plugins: [{ type: 'local', path: skillsPluginPath(), skipMcpDiscovery: true }],
       skills: ids,
       mcpServers: { [FINGERPRINT_MCP_SERVER_NAME]: subdomains.server },
-      ...permissionOptions(analysis.root, ui, ['Skill'], {
-        state: subdomains.state,
-        explicitHostname: opts.subdomain,
-        phase: editPhase,
-        skillIds: new Set(ids),
-      }),
+      ...permissionOptions(analysis.root, ui, ['Skill'], boundary),
     },
   })
 
