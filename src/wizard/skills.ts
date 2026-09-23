@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:f
 import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { CodedError } from '../errors.js'
 
 export interface SkillMeta {
   id: string
@@ -42,7 +43,8 @@ function ensureSkillsRepo(): void {
     mkdirSync(dirname(skillsCache), { recursive: true })
     execFileSync('git', ['clone', '--depth', '1', '--quiet', SKILLS_REPO, skillsCache], { stdio: 'ignore', timeout: GIT_TIMEOUT_MS })
   } catch (e) {
-    throw new Error(
+    throw new CodedError(
+      'skills_fetch_failed',
       `Could not fetch skills from ${SKILLS_REPO} (needs git + network). ` +
         `If you're offline, set FINGERPRINT_SKILLS_DIR to a local checkout. Cause: ${(e as Error).message}`
     )

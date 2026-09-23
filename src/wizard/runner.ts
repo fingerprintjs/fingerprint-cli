@@ -14,6 +14,7 @@ import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
+import { markFailure } from '../analytics/failure.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
@@ -246,17 +247,19 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
     },
   })
 
-  const run = await consume(response, 'Setting up the integration')
+  const run = await runAgentTurn(response, 'Setting up the integration')
   if (!run.ok) {
+    markFailure('agent_failed')
     process.exitCode = 1
     return 'failed'
   }
 
-  const installed = await installPackages(analysis, metas)
+  const installed = await installOrFail(analysis, metas)
   // The agent's final message — what changed and how to verify it — goes after the install output,
   // so it is what the user is reading when asked what to do next.
   if (run.text) log.info(renderMarkdown(run.text))
   if (installed === 'failed') {
+    markFailure('install_failed')
     log.warn('The code changes were applied, but package installs failed — the integration cannot run until they are installed (see above).')
     process.exitCode = 1
     return 'failed'
@@ -272,6 +275,24 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
 // the caller to print once its own output (package installs) is done; unset when --verbose already
 // streamed it.
 type AgentRun = { ok: boolean; text?: string }
+
+async function runAgentTurn(response: unknown, message: string) {
+  try {
+    return await consume(response, message)
+  } catch (err) {
+    markFailure('agent_failed', err)
+    throw err
+  }
+}
+
+async function installOrFail(analysis: RepoAnalysis, skills: SkillMeta[]) {
+  try {
+    return await installPackages(analysis, skills)
+  } catch (err) {
+    markFailure('install_failed', err)
+    throw err
+  }
+}
 
 async function consume(response: unknown, initialMessage: string): Promise<AgentRun> {
   const spinner = !isVerbose() && process.stdout.isTTY && !isCi() ? new Spinner() : null
@@ -341,8 +362,9 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<Integrat
     },
   })
 
-  const run = await consume(response, 'Researching docs and applying the integration')
+  const run = await runAgentTurn(response, 'Researching docs and applying the integration')
   if (!run.ok) {
+    markFailure('agent_failed')
     process.exitCode = 1
     return 'failed'
   }
