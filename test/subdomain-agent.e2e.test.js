@@ -12,6 +12,9 @@ const ID = 'certv2_123'
 const DOWN = '\x1b[B'
 const APPLYING = /Applying .* via fingerprint-get-started/g
 const FINISHED = /Agent finished applying the integration/g
+const DNS_MENU = /Add the records at your provider/
+const LATER = `${DOWN}${DOWN}\n`
+const HOSTNAME_PROMPT = /Custom subdomain to use/
 
 test('a pending subdomain leaves the step waiting with the DNS records to add', async (t) => {
   const api = await startSubdomainApi()
@@ -29,7 +32,8 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` }, // [server-side verification, custom subdomain]
-      { when: /Custom subdomain to use/, send: `${HOSTNAME}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: LATER },
     ],
   })
 
@@ -39,7 +43,7 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   assert.match(result.stdout, /metrics\.example\.com is waiting for these DNS records/)
   assert.match(result.stdout, /CNAME {2}_acme-challenge\.metrics\.example\.com/)
   assert.match(result.stdout, /DNS only/)
-  assert.match(result.stdout, /fingerprint integrate. again/)
+  assert.match(result.stdout, /Resume with: fingerprint integrate --subdomain metrics\.example\.com/)
   assert.equal(api.createCalls(), 1)
   const sent = gateway.bodies().join('\n')
   assert.match(sent, new RegExp(`The custom subdomain is ${HOSTNAME.replace('.', '\\.')}`))
@@ -83,23 +87,14 @@ test('an active subdomain is configured as the endpoint and completes the step',
   assert.match(gateway.bodies().join('\n'), /reference VITE_FINGERPRINT_ENDPOINTS in the provider options/)
 })
 
-test('a run that only listed a pending subdomain is still reported as waiting', async (t) => {
+test('an existing pending subdomain goes straight to the DNS menu; the records can be shown again', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   api.seedStatus('pending')
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
-  const gateway = await startGateway((payload) => {
-    const messages = JSON.stringify(payload.messages ?? [])
-    if (!messages.includes('Quick start step 3')) {
-      return messages.includes('"name":"Write"')
-        ? { text: 'Step 1 is done.' }
-        : { tool: 'Write', input: { file_path: join(repo, 'web', 'fingerprint.js'), content: '// integration\n' } }
-    }
-    if (!messages.includes('"name":"mcp__fingerprint__list_subdomains"')) return { tool: 'mcp__fingerprint__list_subdomains', input: {} }
-    return { text: `${HOSTNAME} exists and is pending; add the DNS records.` }
-  })
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
   t.after(() => gateway.close())
 
   const result = await runCli(['integrate'], {
@@ -109,14 +104,140 @@ test('a run that only listed a pending subdomain is still reported as waiting', 
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
-      { when: /Custom subdomain to use/, send: `${HOSTNAME}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: `${DOWN}\n` }, // show the records
+      { when: /DNS records for metrics\.example\.com[\s\S]*Add the records at your provider/, send: LATER },
     ],
   })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout)
-  assert.match(result.stdout, /metrics\.example\.com is still pending\. See its DNS records with: fingerprint subdomains get metrics\.example\.com/)
+  // Step 1 ran the agent; the pending subdomain did not: its state came from the API.
+  assert.equal(result.stdout.match(APPLYING)?.length, 1, result.stdout)
+  assert.match(result.stdout, /DNS records for metrics\.example\.com/)
+  assert.match(result.stdout, /A {2}metrics\.example\.com {2}192\.0\.2\.1 {2}\(pending_validation\)/)
+  assert.match(result.stdout, /Resume with: fingerprint integrate --subdomain/)
+  assert.equal(api.createCalls(), 0)
   assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
+})
+
+test('checking DNS from the menu picks up activation and finishes the step in the same run', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.activateAfterVerify()
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: '\n' }, // check now
+      { when: /Agent finished[\s\S]*Agent finished[\s\S]*What's next\?/, send: `${DOWN}\n` },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(api.createCalls(), 1)
+  assert.match(result.stdout, /Checking DNS records/)
+  assert.match(result.stdout, /metrics\.example\.com is active\./)
+  assert.equal(result.stdout.match(FINISHED)?.length, 2, result.stdout)
+  assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: 'https:\/\/metrics\.example\.com'/)
+})
+
+test('a later run offers to resume the unfinished subdomain without auditing or asking for the hostname', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url }
+
+  const first = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env,
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: LATER },
+    ],
+  })
+  assert.equal(first.status, 0, first.stderr)
+
+  // Still pending: resume lands on the DNS menu.
+  const second = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env,
+    respond: [
+      { when: /unfinished custom subdomain setup: metrics\.example\.com/, send: '\n' },
+      { when: DNS_MENU, send: LATER },
+    ],
+  })
+  assert.equal(second.status, 0, second.stderr)
+  assert.equal(second.stdout.match(APPLYING), null, second.stdout)
+  assert.doesNotMatch(second.stdout, HOSTNAME_PROMPT)
+  assert.doesNotMatch(second.stdout, /Integrate Fingerprint into this repo/)
+
+  // Active now: resume configures the endpoint and the setup is no longer pending afterwards.
+  api.seedStatus('active')
+  const third = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env,
+    respond: [
+      { when: /unfinished custom subdomain setup: metrics\.example\.com/, send: '\n' },
+      { when: /Agent finished[\s\S]*What's next\?/, send: `${DOWN}\n` },
+    ],
+  })
+  assert.equal(third.status, 0, third.stderr)
+  assert.equal(third.stdout.match(APPLYING)?.length, 1, third.stdout)
+  assert.doesNotMatch(third.stdout, HOSTNAME_PROMPT)
+  assert.match(third.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.equal(api.createCalls(), 1)
+
+  const fourth = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env,
+    respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }],
+  })
+  assert.doesNotMatch(fourth.stdout, /unfinished custom subdomain setup/)
+})
+
+test('--subdomain goes straight to the step, in CI too', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('pending')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url }
+
+  const pending = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
+  assert.equal(pending.status, 0, pending.stderr)
+  assert.equal(pending.stdout.match(APPLYING), null, pending.stdout)
+  assert.match(pending.stdout, /Resume with: fingerprint integrate --subdomain metrics\.example\.com/)
+
+  api.seedStatus('active')
+  const active = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
+  assert.equal(active.status, 0, active.stderr)
+  assert.equal(active.stdout.match(APPLYING)?.length, 1, active.stdout)
+  assert.match(active.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.equal(active.stdout.match(FINISHED)?.length, 1, active.stdout)
 })
 
 test('the agent has no shell and no subagent, so .env cannot leak around the read hook', async (t) => {
@@ -235,6 +356,7 @@ function startSubdomainApi() {
   let created = false
   let createCalls = 0
   let createFailure
+  let activateOnVerify = false
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
@@ -253,7 +375,11 @@ function startSubdomainApi() {
         return json(200, { data: detail(status) })
       }
       if (route === `GET /subdomains/${ID}`) return json(200, { data: detail(status) })
-      if (route === `POST /subdomains/${ID}/verify`) return json(200, { data: detail(status) })
+      if (route === `POST /subdomains/${ID}/verify`) {
+        const response = detail(status)
+        if (activateOnVerify) status = 'active' // the refreshed GET after verify sees it
+        return json(200, { data: response })
+      }
       if (route.startsWith('POST /analytics/')) {
         res.writeHead(202)
         return res.end()
@@ -272,6 +398,9 @@ function startSubdomainApi() {
         createCalls: () => createCalls,
         failCreate(code, error) {
           createFailure = { code, error }
+        },
+        activateAfterVerify() {
+          activateOnVerify = true
         },
         close: () => new Promise((done) => server.close(done)),
       })

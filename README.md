@@ -76,6 +76,7 @@ later to check for activation. Only configure your integration to use the subdom
 
 - `--path <dir>` — the repo to work on (default: the current directory)
 - `--analyze` — report the detected stack and stop, without changing anything
+- `--subdomain <fqdn>` — go straight to the custom subdomain step for that hostname, to start it or pick it up where it stopped
 
 And these work everywhere:
 

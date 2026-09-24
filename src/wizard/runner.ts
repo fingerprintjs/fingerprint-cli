@@ -14,7 +14,9 @@ import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
-import { normalizeHostname } from '../api/subdomains.js'
+import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain } from '../api/subdomains.js'
+import { serializeSubdomainError } from '../commands/subdomains.js'
+import { clearPendingSubdomainSetup, pendingSubdomainSetup, savePendingSubdomainSetup } from './subdomain-setups.js'
 import {
   createSubdomainsMcpServer,
   FINGERPRINT_MCP_SERVER_NAME,
@@ -97,15 +99,32 @@ export type IntegrateOutcome = 'completed' | 'skipped' | 'waiting' | 'failed'
 // Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at; it never
 // assumes a particular layout. The CLI adds no closing guidance of its own — the Get Started skill
 // the agent follows already tells the user how to verify each step.
-export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
-  let outcome = await provisionAndApply(root, opts)
+export async function integrateProject(root: string, opts: { yes?: boolean; subdomain?: string } = {}): Promise<IntegrateOutcome> {
+  let outcome: IntegrateOutcome
+  // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
+  // is behind us it drops out of the menu.
+  const done = new Set<NextStep>()
+  const unfinished = opts.subdomain ? undefined : pendingSubdomainSetup(root)
+  if (opts.subdomain) {
+    // Direct entry: start or resume the custom subdomain step for this hostname, nothing else.
+    outcome = await provisionAndRunSubdomainStep(root, normalizeHostname(opts.subdomain))
+    done.add('proxy')
+  } else if (unfinished && !opts.yes && !autoYes() && (await askResumeSubdomain(unfinished.hostname))) {
+    outcome = await provisionAndRunSubdomainStep(root, unfinished.hostname)
+    done.add('proxy')
+  } else {
+    outcome = await provisionAndApply(root, opts)
+    // The agent may have created a subdomain while auditing; stay on that step instead of exiting.
+    const started = outcome === 'waiting' && !autoYes() ? pendingSubdomainSetup(root) : undefined
+    if (started) {
+      outcome = await runSubdomainStep(root, started.hostname)
+      done.add('proxy')
+    }
+  }
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
   // checklist ran dry.
   if (opts.yes || autoYes()) return outcome
 
-  // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
-  // is behind us it drops out of the menu.
-  const done = new Set<NextStep>()
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
     if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
@@ -119,9 +138,141 @@ export async function integrateProject(root: string, opts: { yes?: boolean } = {
       if (backend) outcome = await provisionAndApply(backend, opts)
       continue
     }
-    outcome = await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
+    outcome =
+      next === 'proxy'
+        ? await runSubdomainStep(root, await askSubdomainHostname())
+        : await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
   }
   return outcome
+}
+
+async function askResumeSubdomain(hostname: string): Promise<boolean> {
+  log.line()
+  const choice = await select({
+    message: `You have an unfinished custom subdomain setup: ${hostname}`,
+    choices: [
+      { name: 'Resume setup', value: 'resume' },
+      { name: 'Continue with other integration steps', value: 'other' },
+    ],
+  })
+  return choice === 'resume'
+}
+
+async function provisionAndRunSubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
+  log.step('Set up environment variables')
+  await provisionForRepo(root)
+  return runSubdomainStep(root, hostname)
+}
+
+// The custom subdomain step, host-side. The CLI owns the hostname, the DNS wait and the resume;
+// the agent runs only to create the subdomain (following the skill) and, once it is active, to
+// point the app at it. Between those, checking DNS is an API call, not a model call.
+async function runSubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
+  savePendingSubdomainSetup(root, hostname)
+  const service = new SubdomainsService()
+  let current = await findSubdomain(service, hostname)
+  if (!current) {
+    const outcome = await applySubdomainStep(root, hostname)
+    if (outcome !== 'waiting') return outcome
+    current = await findSubdomain(service, hostname)
+    if (!current) return 'waiting'
+  }
+
+  while (true) {
+    if (current.status === 'active') {
+      const outcome = await applySubdomainStep(root, hostname)
+      if (outcome === 'completed') clearPendingSubdomainSetup(root)
+      return outcome
+    }
+    if (current.status === 'failed') {
+      log.error(`${hostname} failed. Check it with \`fingerprint subdomains get ${hostname}\`.`)
+      process.exitCode = 1
+      return 'failed'
+    }
+    if (current.status === 'timed_out') {
+      log.warn(`${hostname} timed out before its DNS records validated. Delete it with \`fingerprint subdomains delete ${hostname}\` and set it up again.`)
+      return 'waiting'
+    }
+    if (isCi()) {
+      log.info(`Resume with: fingerprint integrate --subdomain ${hostname}`)
+      return 'waiting'
+    }
+
+    log.line()
+    const choice = await select({
+      message: `${hostname} is waiting for DNS. Add the records at your provider, then:`,
+      choices: [
+        { name: "I've added the records, check now", value: 'check' },
+        { name: 'Show the DNS records again', value: 'show' },
+        { name: 'Finish later', value: 'later' },
+      ],
+    })
+    if (choice === 'later') {
+      log.info(`Resume with: fingerprint integrate --subdomain ${hostname}`)
+      return 'waiting'
+    }
+    if (choice === 'show') {
+      printDnsRecords(current)
+      continue
+    }
+    current = await waitForDns(service, current)
+  }
+}
+
+async function applySubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
+  return applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname })
+}
+
+async function findSubdomain(service: SubdomainsService, hostname: string): Promise<Subdomain | undefined> {
+  const found = await service.findByHostname(hostname)
+  if (found.outcome === 'not_found') return undefined
+  if (found.outcome === 'ambiguous') throw new Error(`Several subdomains match ${hostname}; pick one with: fingerprint subdomains list`)
+  return service.get(found.subdomain.id)
+}
+
+// One verify (the API allows one per minute), then read the status until it settles or the wait
+// runs out. Running out is not a failure: DNS propagation is outside anyone's control here.
+async function waitForDns(service: SubdomainsService, current: Subdomain): Promise<Subdomain> {
+  const waitMs = Number(process.env.FINGERPRINT_DNS_WAIT_MS ?? 120_000)
+  const pollMs = Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
+  log.info(`Checking DNS records (waiting up to ${Math.round(waitMs / 1000)}s for validation)...`)
+  let latest = current
+  try {
+    latest = await service.verify(current.id)
+  } catch (error) {
+    if (serializeSubdomainError(error).kind !== 'rate_limited') throw error
+  }
+  const deadline = Date.now() + waitMs
+  while (latest.status === 'pending' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))))
+    latest = await service.get(current.id)
+  }
+  if (latest.status === 'active') log.success(`${latest.subdomain} is active.`)
+  else if (latest.status === 'pending') {
+    const pending = pendingDnsRecords(latest)
+    if (pending.length) {
+      log.info('Not validated yet. Still waiting for:')
+      for (const record of pending) log.info(`  ${record.type}  ${record.host}  ${record.value}`)
+      log.info('On Cloudflare, set them to DNS only (proxying off). Propagation can take a few minutes.')
+    } else {
+      log.info('DNS records are validated; certificate issuance is still in progress.')
+    }
+  }
+  return latest
+}
+
+function pendingDnsRecords(subdomain: Subdomain): DnsRecord[] {
+  const { verification, routing, caa } = subdomain.dns_records
+  return [verification, ...routing, ...(caa ? [caa] : [])].filter((record) => record.status !== 'validated')
+}
+
+function printDnsRecords(subdomain: Subdomain): void {
+  const { verification, routing, caa } = subdomain.dns_records
+  log.info(`DNS records for ${subdomain.subdomain}:`)
+  for (const record of [verification, ...routing, ...(caa ? [caa] : [])]) {
+    log.info(`  ${record.type}  ${record.host}  ${record.value}  (${record.status})`)
+  }
+  log.info('On Cloudflare, set them to DNS only (proxying off).')
 }
 
 // The steps the CLI can offer after one lands. `step` is what the agent is told to do; `more` has
@@ -191,7 +342,10 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent, so the flow is continuous: set up env → "integrate this repo?" → apply.
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
-async function applyIntegration(root: string, opts: { yes?: boolean; step?: string } = {}): Promise<IntegrateOutcome> {
+async function applyIntegration(
+  root: string,
+  opts: { yes?: boolean; step?: string; subdomain?: string } = {}
+): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
@@ -223,12 +377,10 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
   if (!proceed) return 'skipped'
 
   log.step('Apply integration')
-  // The subdomain step needs a hostname the agent must not guess. Asking here keeps the run
-  // non-interactive for the agent; in CI there is no one to ask, so the agent works from list.
-  const subdomain = opts.step === NEXT_STEPS.proxy.step && !isCi() ? await askSubdomainHostname() : undefined
-  return runAgent(analysis, opts.step, subdomain)
+  return runAgent(analysis, opts.step, opts.subdomain)
 }
 
+// The subdomain step needs a hostname the agent must not guess, so the CLI asks before the run.
 async function askSubdomainHostname(): Promise<string> {
   const hostname = await input({
     message: 'Custom subdomain to use (a subdomain of the site, e.g. metrics.yourdomain.com):',
@@ -291,10 +443,14 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
     // the user should act on.
     if (run.text && (seen?.status !== 'active' || subdomains.lastFailure())) log.info(renderMarkdown(run.text))
     const outcome = subdomainOutcome(seen, subdomains.lastFailure())
+    if (outcome === 'waiting' && seen) savePendingSubdomainSetup(analysis.root, seen.hostname)
     if (outcome) return outcome
     // Active: the agent referenced the endpoint variable in code; the CLI writes it, host-side,
     // like the other keys. The step is done when the app talks to the subdomain, so say how to check.
-    if (seen?.status === 'active') writeSubdomainEndpoint(analysis.root, seen.hostname)
+    if (seen?.status === 'active') {
+      writeSubdomainEndpoint(analysis.root, seen.hostname)
+      clearPendingSubdomainSetup(analysis.root)
+    }
   }
 
   const installed = await installPackages(analysis, metas)
@@ -340,7 +496,7 @@ function subdomainOutcome(seen: SeenSubdomain | undefined, failure: SubdomainFai
     } else {
       log.info(`${seen.hostname}: DNS records are validated; certificate issuance is still in progress.`)
     }
-    log.info('Run `fingerprint integrate` again and pick the custom subdomain step once it is active.')
+    if (isCi()) log.info(`Resume with: fingerprint integrate --subdomain ${seen.hostname}`)
     return 'waiting'
   }
   if (seen.status === 'timed_out') {
