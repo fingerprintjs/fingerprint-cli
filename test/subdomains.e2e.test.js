@@ -348,6 +348,7 @@ test('get human output includes status and every DNS record', async (t) => {
   assert.match(result.stdout, /A[\s\S]*1\.2\.3\.4[\s\S]*A[\s\S]*5\.6\.7\.8/)
   assert.doesNotMatch(result.stdout, /\bCAA\b/)
   assert.match(result.stdout, /DNS provider/i)
+  assert.match(result.stdout, /Cloudflare.*DNS only/)
   assert.match(result.stdout, /fingerprint subdomains verify metrics\.example\.com/)
   assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), [`GET /subdomains/${ID}`])
 })

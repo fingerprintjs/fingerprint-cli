@@ -221,6 +221,7 @@ function printNextStep(subdomain: Subdomain): void {
     case 'pending':
       if (dnsRecords(subdomain).some((record) => record.status !== 'validated')) {
         console.log('\nSetup is not complete. Add or correct the unvalidated DNS records above at your DNS provider.')
+        console.log('On Cloudflare, set the records to DNS only (proxying off); proxied records do not validate.')
         console.log('If you already added them, allow time for DNS propagation. Then run:')
         console.log(`  fingerprint subdomains verify ${hostname}`)
       } else {
