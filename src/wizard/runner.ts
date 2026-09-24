@@ -365,6 +365,8 @@ const SYSTEM_PROMPT = [
   '- Only edit application code. Do not run shell commands, install packages, or touch package',
   '  manifests, lockfiles or package-manager config — the CLI installs the required packages itself',
   '  after you finish. ("v4" in a skill is the Fingerprint platform, not an npm major version.)',
+  '- Identification results use snake_case: visitor_id and event_id. visitorId and requestId are',
+  '  v3 names and do not exist in v4.',
   '- Do not invent app surface: if the repo has no backend, no form, or no sensitive action,',
   "  integrate what's actually there and say what's missing — never scaffold one.",
 ].join('\n')
