@@ -287,11 +287,11 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
   // not hold an unrelated step back.
   if (step === NEXT_STEPS.proxy.step || subdomains.mutated()) {
     const seen = subdomains.lastSeen()
+    // The agent's message first, the CLI's status last: the status comes from the API and is what
+    // the user should act on.
+    if (run.text && (seen?.status !== 'active' || subdomains.lastFailure())) log.info(renderMarkdown(run.text))
     const outcome = subdomainOutcome(seen, subdomains.lastFailure())
-    if (outcome) {
-      if (run.text) log.info(renderMarkdown(run.text))
-      return outcome
-    }
+    if (outcome) return outcome
     // Active: the agent referenced the endpoint variable in code; the CLI writes it, host-side,
     // like the other keys. The step is done when the app talks to the subdomain, so say how to check.
     if (seen?.status === 'active') writeSubdomainEndpoint(analysis.root, seen.hostname)
@@ -414,6 +414,7 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?
     ...(subdomain
       ? [
           `The custom subdomain is ${subdomain}. Look it up with list_subdomains and create it only if it is not there.`,
+          'While it is pending, do not change any code: report the DNS records and stop.',
           endpointVar
             ? `Once it is active, reference ${endpointVar} in the provider options; the CLI writes that variable to the env file itself, so do not edit .env or ask the user to.`
             : `Once it is active, set endpoints to https://${subdomain} directly in the provider options.`,
