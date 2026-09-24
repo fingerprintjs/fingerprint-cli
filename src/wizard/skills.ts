@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:f
 import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { assertPathWithinProject } from '../utils/project-path.js'
 
 export interface SkillMeta {
   id: string
@@ -108,7 +109,18 @@ export function installSkills(root: string, ids: string[]): void {
     const src = skillSrc(id)
     if (!existsSync(join(src, 'SKILL.md'))) throw new Error(`Skill "${id}" not found in ${skillsDir()}`)
     const dest = join(root, '.claude', 'skills', id)
+    assertCopyTargetsSafe(root, src, dest)
     mkdirSync(dest, { recursive: true })
     cpSync(src, dest, { recursive: true })
+  }
+}
+
+function assertCopyTargetsSafe(root: string, source: string, destination: string): void {
+  assertPathWithinProject(root, destination, 'install skills')
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const sourcePath = join(source, entry.name)
+    const destinationPath = join(destination, entry.name)
+    assertPathWithinProject(root, destinationPath, 'install skills')
+    if (entry.isDirectory()) assertCopyTargetsSafe(root, sourcePath, destinationPath)
   }
 }

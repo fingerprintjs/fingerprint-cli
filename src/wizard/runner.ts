@@ -2,7 +2,7 @@ import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
+import { query, type CanUseTool } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { conventionFor, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
@@ -14,6 +14,7 @@ import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
+import { createAgentFilePolicy } from './agent-tool-policy.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
@@ -34,40 +35,18 @@ const askBeforeEdit: CanUseTool = async (toolName, input) => {
   return { behavior: 'deny', message: `Tool ${toolName} is not permitted by the wizard.` }
 }
 
-// A .env file in the repo holds the freshly provisioned secret key (see provision.ts). The agent
-// legitimately needs Read/Grep for the integration, so we can't drop those tools — instead a
-// PreToolUse hook denies them specifically on .env files. Unlike the system-prompt instruction (a
-// soft control) or canUseTool (which `acceptEdits` bypasses for auto-allowed read tools), a
-// PreToolUse deny is a hard rule that fires in every permission mode, keeping the secret out of the
-// LLM transcript and the gateway.
-const ENV_FILE = /(^|[/\\])\.env(\.[^/\\]*)?$/
-
-const denyEnvReads: HookCallbackMatcher = {
-  hooks: [
-    async (input) => {
-      if (input.hook_event_name !== 'PreToolUse') return {}
-      if (input.tool_name !== 'Read' && input.tool_name !== 'Grep') return {}
-      const i = (input.tool_input ?? {}) as { file_path?: string; path?: string }
-      const target = i.file_path ?? i.path ?? ''
-      if (!ENV_FILE.test(target)) return {}
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: 'Reading .env is not allowed — reference keys by env-var name only.',
-        },
-      }
-    },
-  ],
-}
+// File tools are confined to the project by a PreToolUse hook (see agent-tool-policy.ts): reads
+// and searches cannot leave the repo, and .env and other secret files are never handed to the
+// model. Unlike the system-prompt instruction (a soft control) or canUseTool (which `acceptEdits`
+// bypasses for auto-allowed read tools), a PreToolUse deny fires in every permission mode.
 
 // Permission-related query options. Auto mode (default): edits + reads run without prompting.
 // Interactive mode: reads/web stay auto-allowed, but Edit/Write route through askBeforeEdit.
 // `extraReadonly` adds read-only tools that should also run without prompting (e.g. WebFetch).
-// Both modes carry the .env deny hook so a secret in .env never reaches the model.
-function permissionOptions(extraReadonly: string[] = []) {
+// Both modes carry the file policy hook so a secret on disk never reaches the model.
+function permissionOptions(root: string, extraReadonly: string[] = []) {
   const readonly = [...READONLY_TOOLS, ...extraReadonly]
-  const hooks = { PreToolUse: [denyEnvReads] }
+  const hooks = { PreToolUse: [createAgentFilePolicy(root)] }
   if (!isInteractive()) {
     return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
   }
@@ -242,7 +221,7 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(['Skill']), // the orchestrator dispatches via the Skill tool
+      ...permissionOptions(analysis.root, ['Skill']), // the orchestrator dispatches via the Skill tool
     },
   })
 
@@ -337,7 +316,7 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<Integrat
       env: llm.env,
       cwd: analysis.root,
       systemPrompt: DOCS_SYSTEM_PROMPT,
-      ...permissionOptions(['WebFetch', 'WebSearch']),
+      ...permissionOptions(analysis.root, ['WebFetch', 'WebSearch']),
     },
   })
 

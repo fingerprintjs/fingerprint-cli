@@ -5,6 +5,7 @@ import { fetchPublicKey } from '../api/keys.js'
 import { requireAuth } from '../utils/session.js'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
 import { log } from './log.js'
+import { assertPathWithinProject } from '../utils/project-path.js'
 
 // Per-framework env conventions: which file to write, the public/secret-key var names (with
 // bundler prefix), the region var names (client needs the bundler-prefixed one; server reads
@@ -98,6 +99,7 @@ function writeEnvFile(file: string, vars: Record<string, string | undefined>): s
 // separate backend dir) are skipped and reported to the caller.
 function ensureGitignored(root: string, files: string[]): { added: string[]; external: string[] } {
   const gitignore = join(root, '.gitignore')
+  assertPathWithinProject(root, gitignore, 'write')
   const raw = existsSync(gitignore) ? readFileSync(gitignore, 'utf8') : ''
   const existing = raw.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
 
@@ -164,7 +166,9 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
     // login bundle. The CLI never mints keys itself.
     for (const app of secretApps) {
       const conv = conventionFor(app)
-      secretKey = readEnvVar(join(app.dir, conv.file), conv.secretVar!)
+      const file = join(app.dir, conv.file)
+      assertPathWithinProject(root, file, 'write')
+      secretKey = readEnvVar(file, conv.secretVar!)
       if (secretKey) break
     }
     if (secretKey) log.info('Reusing existing Secret API key from env.')
@@ -181,6 +185,7 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   for (const app of apps) {
     const conv = conventionFor(app)
     const file = join(app.dir, conv.file)
+    assertPathWithinProject(root, file, 'write')
     const written = writeEnvFile(file, {
       [conv.publicVar ?? '']: conv.publicVar ? publicKey : undefined,
       [conv.secretVar ?? '']: conv.secretVar ? secretKey : undefined,
