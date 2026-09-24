@@ -14,6 +14,13 @@ import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
+import { normalizeHostname } from '../api/subdomains.js'
+import {
+  createSubdomainsMcpServer,
+  FINGERPRINT_MCP_SERVER_NAME,
+  SUBDOMAIN_TOOL_NAMES,
+  type SeenSubdomain,
+} from './subdomains-mcp.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
@@ -77,7 +84,8 @@ function permissionOptions(extraReadonly: string[] = []) {
 // How an integration run ended. `skipped` covers the user declining a prompt (the integration
 // itself, or an interactive install) — a choice, not a failure, so it keeps a zero exit code.
 // `failed` means the agent or a package install broke; the run must not claim success or exit 0.
-export type IntegrateOutcome = 'completed' | 'skipped' | 'failed'
+// `waiting` is a custom subdomain that is not active yet: nothing is broken, but the step is not done.
+export type IntegrateOutcome = 'completed' | 'skipped' | 'waiting' | 'failed'
 
 // Top-level integration flow for a single command invocation: provision env keys, apply one Get
 // Started step for `root`, then keep going one step at a time for as long as the user says so.
@@ -210,7 +218,18 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
   if (!proceed) return 'skipped'
 
   log.step('Apply integration')
-  return runAgent(analysis, opts.step)
+  // The subdomain step needs a hostname the agent must not guess. Asking here keeps the run
+  // non-interactive for the agent; in CI there is no one to ask, so the agent works from list.
+  const subdomain = opts.step === NEXT_STEPS.proxy.step && !isCi() ? await askSubdomainHostname() : undefined
+  return runAgent(analysis, opts.step, subdomain)
+}
+
+async function askSubdomainHostname(): Promise<string> {
+  const hostname = await input({
+    message: 'Custom subdomain to use (a subdomain of the site, e.g. metrics.yourdomain.com):',
+    validate: (value) => (value.trim() ? true : 'Enter a hostname.'),
+  })
+  return normalizeHostname(hostname)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -218,7 +237,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
 // and how to verify each live there, not in a hand-rolled prompt.
 const GET_STARTED_SKILL = 'fingerprint-get-started'
 
-export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<IntegrateOutcome> {
+export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?: string): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
@@ -233,8 +252,11 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
 
   log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
+  // The subdomain tools run in-process with the CLI's own session, so the agent can list, create
+  // and verify without ever seeing a Management API key.
+  const subdomains = createSubdomainsMcpServer()
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain),
     options: {
       model: llm.model,
       env: llm.env,
@@ -242,7 +264,9 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(['Skill']), // the orchestrator dispatches via the Skill tool
+      mcpServers: { [FINGERPRINT_MCP_SERVER_NAME]: subdomains.server },
+      // The orchestrator dispatches via the Skill tool; the subdomain tools need no prompting either.
+      ...permissionOptions(['Skill', ...SUBDOMAIN_TOOL_NAMES]),
     },
   })
 
@@ -250,6 +274,16 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
   if (!run.ok) {
     process.exitCode = 1
     return 'failed'
+  }
+
+  // Only the subdomain step is judged by the subdomain's status: in other steps the agent may read
+  // an existing pending subdomain while auditing, and that must not hold the step back.
+  if (step === NEXT_STEPS.proxy.step) {
+    const outcome = subdomainOutcome(subdomains.lastSeen())
+    if (outcome) {
+      if (run.text) log.info(renderMarkdown(run.text))
+      return outcome
+    }
   }
 
   const installed = await installPackages(analysis, metas)
@@ -263,6 +297,30 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
   }
   log.success('Agent finished applying the integration.')
   return installed
+}
+
+// What the last subdomain the agent touched means for the step. Active (or nothing touched, e.g.
+// the user chose a proxy integration instead) falls through to the normal completion path.
+function subdomainOutcome(seen: SeenSubdomain | undefined): IntegrateOutcome | undefined {
+  if (!seen || seen.status === 'active') return undefined
+  if (seen.status === 'pending') {
+    if (seen.pendingRecords.length) {
+      log.info(`${seen.hostname} is waiting for these DNS records:`)
+      for (const record of seen.pendingRecords) log.info(`  ${record.type}  ${record.host}  ${record.value}`)
+      log.info('On Cloudflare, set them to DNS only (proxying off).')
+    } else {
+      log.info(`${seen.hostname}: DNS records are validated; certificate issuance is still in progress.`)
+    }
+    log.info('Run `fingerprint integrate` again and pick the custom subdomain step once it is active.')
+    return 'waiting'
+  }
+  if (seen.status === 'timed_out') {
+    log.warn(`${seen.hostname} timed out before its DNS records validated. Delete it with \`fingerprint subdomains delete ${seen.hostname}\` and set it up again.`)
+    return 'waiting'
+  }
+  log.error(`${seen.hostname} failed. Check it with \`fingerprint subdomains get ${seen.hostname}\`.`)
+  process.exitCode = 1
+  return 'failed'
 }
 
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with
@@ -296,6 +354,9 @@ const SYSTEM_PROMPT = [
   '- Make minimal, focused changes; match the existing code style.',
   '- The secret key is server-side only; never reference it in frontend code.',
   '- Do NOT read or print .env. Reference keys by env-var name only.',
+  '- For a custom subdomain, use the fingerprint tools (list_subdomains, get_subdomain,',
+  '  create_subdomain, verify_subdomain). Never ask for a Management API key. Only an active',
+  '  subdomain may be configured as the endpoint; if it is pending, report the DNS records and stop.',
   '- Only edit application code. Do not run shell commands, install packages, or touch package',
   '  manifests, lockfiles or package-manager config — the CLI installs the required packages itself',
   '  after you finish. ("v4" in a skill is the Fingerprint platform, not an npm major version.)',
@@ -308,7 +369,7 @@ const SYSTEM_PROMPT = [
 // and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
 // agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
 // the CLI's stack detection, and where the provisioned keys live (it may not open .env).
-function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
+function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?: string): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
@@ -321,6 +382,9 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
     'The .env files are already provisioned: the public key is in',
     `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+    ...(subdomain
+      ? [`The custom subdomain is ${subdomain}. Look it up with list_subdomains and create it only if it is not there.`]
+      : []),
   ].join('\n')
 }
 

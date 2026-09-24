@@ -187,7 +187,7 @@ async function runCommand(
     await action(new SubdomainsService())
   } catch (error) {
     if (!options.json) throw new Error(formatError(error))
-    printJson({ error: serializeError(error) })
+    printJson({ error: serializeSubdomainError(error) })
     process.exitCode = 1
   }
 }
@@ -272,7 +272,7 @@ function dnsRecords(subdomain: Subdomain): DnsRecord[] {
   ]
 }
 
-function serializeError(error: unknown): Record<string, unknown> {
+export function serializeSubdomainError(error: unknown): Record<string, unknown> {
   if (error instanceof SubdomainCommandError) return { kind: error.kind, message: error.message }
   if (error instanceof NotAuthenticatedError) return { kind: 'not_authenticated', message: error.message }
   if (!(error instanceof ManagementApiError)) {
