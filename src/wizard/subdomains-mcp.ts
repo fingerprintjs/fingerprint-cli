@@ -1,6 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { serializeSubdomainError } from '../commands/subdomains.js'
+import { serializeSubdomainError, type SubdomainErrorKind } from '../api/subdomain-errors.js'
 import {
   normalizeHostname,
   SubdomainsService,
@@ -32,7 +32,7 @@ type Service = Pick<SubdomainsService, 'list' | 'get' | 'create' | 'verify'>
 
 export interface SubdomainFailure {
   tool: string
-  kind: string
+  kind: SubdomainErrorKind
   message: string
 }
 
@@ -70,7 +70,7 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
     try {
       return result(await operation())
     } catch (error) {
-      const serialized = serializeSubdomainError(error) as { kind: string; message: string }
+      const serialized = serializeSubdomainError(error)
       failure = { tool: toolName, kind: serialized.kind, message: serialized.message }
       return result({ error: serialized }, true)
     }
