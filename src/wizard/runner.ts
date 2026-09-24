@@ -20,6 +20,7 @@ import {
   FINGERPRINT_MCP_SERVER_NAME,
   SUBDOMAIN_TOOL_NAMES,
   type SeenSubdomain,
+  type SubdomainFailure,
 } from './subdomains-mcp.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
@@ -276,10 +277,11 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
     return 'failed'
   }
 
-  // Only the subdomain step is judged by the subdomain's status: in other steps the agent may read
-  // an existing pending subdomain while auditing, and that must not hold the step back.
-  if (step === NEXT_STEPS.proxy.step) {
-    const outcome = subdomainOutcome(subdomains.lastSeen())
+  // The subdomain decides the outcome when this is the subdomain step, or when the agent created
+  // or verified one in any step. Merely reading an existing pending subdomain while auditing must
+  // not hold an unrelated step back.
+  if (step === NEXT_STEPS.proxy.step || subdomains.mutated()) {
+    const outcome = subdomainOutcome(subdomains.lastSeen(), subdomains.lastFailure())
     if (outcome) {
       if (run.text) log.info(renderMarkdown(run.text))
       return outcome
@@ -299,9 +301,15 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
   return installed
 }
 
-// What the last subdomain the agent touched means for the step. Active (or nothing touched, e.g.
-// the user chose a proxy integration instead) falls through to the normal completion path.
-function subdomainOutcome(seen: SeenSubdomain | undefined): IntegrateOutcome | undefined {
+// What the agent's subdomain work means for the step. A tool error that was not recovered from is
+// a failure, not a step with nothing to report. Active (or nothing touched, e.g. the user chose a
+// proxy integration instead) falls through to the normal completion path.
+function subdomainOutcome(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined): IntegrateOutcome | undefined {
+  if (failure) {
+    log.error(`Custom subdomain setup failed (${failure.tool}: ${failure.kind}). ${failure.message}`)
+    process.exitCode = 1
+    return 'failed'
+  }
   if (!seen || seen.status === 'active') return undefined
   if (seen.status === 'pending') {
     if (seen.pendingRecords.length) {

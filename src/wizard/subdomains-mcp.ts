@@ -16,8 +16,8 @@ export const FINGERPRINT_MCP_SERVER_NAME = 'fingerprint'
 const TOOL_NAMES = ['list_subdomains', 'get_subdomain', 'create_subdomain', 'verify_subdomain'] as const
 export const SUBDOMAIN_TOOL_NAMES = TOOL_NAMES.map((name) => `mcp__${FINGERPRINT_MCP_SERVER_NAME}__${name}`)
 
-// The last subdomain the agent read or changed, so the CLI can report the run honestly: a pending
-// subdomain is not a finished step.
+// What the agent did with subdomains, so the CLI can report the run honestly: a pending subdomain
+// is not a finished step, and a failed create is not a success.
 export interface SeenSubdomain {
   id: string
   hostname: string
@@ -27,9 +27,18 @@ export interface SeenSubdomain {
 
 type Service = Pick<SubdomainsService, 'list' | 'get' | 'create' | 'verify'>
 
+export interface SubdomainFailure {
+  tool: string
+  kind: string
+  message: string
+}
+
 export function createSubdomainsMcpServer(service: Service = new SubdomainsService()) {
   let seen: SeenSubdomain | undefined
+  let failure: SubdomainFailure | undefined
+  let mutated = false
   const observe = (subdomain: Subdomain) => {
+    failure = undefined
     const records = [subdomain.dns_records.verification, ...subdomain.dns_records.routing, subdomain.dns_records.caa]
     seen = {
       id: subdomain.id,
@@ -42,43 +51,53 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
     return { subdomain: safeSubdomain(subdomain) }
   }
   const id = z.string().trim().min(1).describe('Subdomain id, as returned by list_subdomains')
+  const run = async (toolName: string, operation: () => Promise<Record<string, unknown>>) => {
+    try {
+      return result(await operation())
+    } catch (error) {
+      const serialized = serializeSubdomainError(error) as { kind: string; message: string }
+      failure = { tool: toolName, kind: serialized.kind, message: serialized.message }
+      return result({ error: serialized }, true)
+    }
+  }
+  const mutate = async (toolName: string, operation: () => Promise<Record<string, unknown>>) => {
+    mutated = true
+    return run(toolName, operation)
+  }
 
   const tools = [
     tool(
       'list_subdomains',
       'Lists the custom subdomains in the workspace with their status. Call it before creating one.',
       {},
-      () => run(async () => ({ subdomains: (await service.list()).map(safeListItem) }))
+      () => run('list_subdomains', async () => ({ subdomains: (await service.list()).map(safeListItem) }))
     ),
     tool('get_subdomain', 'Gets one custom subdomain with its status and DNS records.', { id }, ({ id }) =>
-      run(async () => observe(await service.get(id)))
+      run('get_subdomain', async () => observe(await service.get(id)))
     ),
     tool(
       'create_subdomain',
       'Creates a custom subdomain and returns the DNS records the user must add.',
       { hostname: z.string().trim().min(1).describe('Fully qualified hostname, e.g. metrics.example.com') },
-      ({ hostname }) => run(async () => observe(await service.create(hostname)))
+      ({ hostname }) => mutate('create_subdomain', async () => observe(await service.create(hostname)))
     ),
     tool(
       'verify_subdomain',
       'Checks the DNS records now and returns the refreshed subdomain. Call it once, after the records were added.',
       { id },
-      ({ id }) => run(async () => observe(await service.verify(id)))
+      ({ id }) => mutate('verify_subdomain', async () => observe(await service.verify(id)))
     ),
   ]
 
   return {
     server: createSdkMcpServer({ name: FINGERPRINT_MCP_SERVER_NAME, version: VERSION, tools }),
     tools,
+    // The last subdomain the agent read or changed, and the last tool error not followed by a
+    // successful read or change of a subdomain.
     lastSeen: () => seen,
-  }
-}
-
-async function run(operation: () => Promise<Record<string, unknown>>) {
-  try {
-    return result(await operation())
-  } catch (error) {
-    return result({ error: serializeSubdomainError(error) }, true)
+    lastFailure: () => failure,
+    // Whether the agent tried to create or verify a subdomain in this run, in any step.
+    mutated: () => mutated,
   }
 }
 

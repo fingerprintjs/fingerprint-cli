@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeHome, makeRepo, makeSkillsDir, runCli, seedAuth } from './helpers/harness.js'
 
@@ -47,7 +47,7 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   assert.equal(existsSync(join(repo, 'web', 'fingerprint.js')), true)
 })
 
-test('an active subdomain completes the step like any other', async (t) => {
+test('an active subdomain is configured as the endpoint and completes the step', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   api.seedStatus('active')
@@ -74,6 +74,50 @@ test('an active subdomain completes the step like any other', async (t) => {
   assert.equal(result.stdout.match(FINISHED)?.length, 2, result.stdout)
   assert.doesNotMatch(result.stdout, /waiting for these DNS records/)
   assert.equal(api.createCalls(), 0)
+  // The agent could still edit code after using the tools, and pointed the app at the subdomain.
+  assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: 'https:\/\/metrics\.example\.com'/)
+})
+
+test('a subdomain created while auditing still leaves the run waiting, not finished', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(createsDuringAuditAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--yes'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(api.createCalls(), 1)
+  assert.match(result.stdout, /waiting for these DNS records/)
+  assert.doesNotMatch(result.stdout, FINISHED)
+})
+
+test('a failed create ends the run as failed instead of finished', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.failCreate(503, 'general.unavailable')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(createsDuringAuditAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--yes'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stdout + result.stderr, /Custom subdomain setup failed \(create_subdomain: unavailable\)/)
+  assert.doesNotMatch(result.stdout, FINISHED)
 })
 
 // The scripted agent: step 1 writes the integration file; the subdomain step lists, then creates
@@ -89,6 +133,11 @@ function subdomainAgent(target) {
     const listed = /"subdomains":\[\{[^\]]*"status":\\"(\w+)/.exec(messages) ? true : messages.includes(`\\"id\\":\\"${ID}\\"`)
     if (listed) {
       if (!has('mcp__fingerprint__get_subdomain')) return { tool: 'mcp__fingerprint__get_subdomain', input: { id: ID } }
+      if (messages.includes('\\"status\\":\\"active\\"') && !has('Write')) {
+        // The SDK requires a Read before overwriting an existing file.
+        if (!has('Read')) return { tool: 'Read', input: { file_path: target } }
+        return { tool: 'Write', input: { file_path: target, content: `// integration\nexport const options = { endpoints: 'https://${HOSTNAME}' }\n` } }
+      }
       return { text: `${HOSTNAME} is already set up.` }
     }
     if (!has('mcp__fingerprint__create_subdomain')) return { tool: 'mcp__fingerprint__create_subdomain', input: { hostname: HOSTNAME } }
@@ -96,10 +145,23 @@ function subdomainAgent(target) {
   }
 }
 
+// An agent that creates the subdomain during the first, audit-driven step instead of waiting for
+// the user to pick that step.
+function createsDuringAuditAgent(target) {
+  return (payload) => {
+    const messages = JSON.stringify(payload.messages ?? [])
+    const has = (tool) => messages.includes(`"name":"${tool}"`)
+    if (!has('mcp__fingerprint__create_subdomain')) return { tool: 'mcp__fingerprint__create_subdomain', input: { hostname: HOSTNAME } }
+    if (!has('Write')) return { tool: 'Write', input: { file_path: target, content: '// integration\n' } }
+    return { text: 'Done.' }
+  }
+}
+
 function startSubdomainApi() {
   let status = 'pending'
   let created = false
   let createCalls = 0
+  let createFailure
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
@@ -113,6 +175,7 @@ function startSubdomainApi() {
       if (route === 'GET /subdomains') return json(200, { data: created ? [summary(status)] : [], metadata: { pagination: { next_cursor: null } } })
       if (route === 'POST /subdomains') {
         createCalls += 1
+        if (createFailure) return json(createFailure.code, { error: { code: createFailure.error, message: 'Service unavailable' } })
         created = true
         return json(200, { data: detail(status) })
       }
@@ -134,6 +197,9 @@ function startSubdomainApi() {
           status = next
         },
         createCalls: () => createCalls,
+        failCreate(code, error) {
+          createFailure = { code, error }
+        },
         close: () => new Promise((done) => server.close(done)),
       })
     })

@@ -92,9 +92,12 @@ test('lastSeen follows the latest subdomain the agent read or changed', async ()
     pendingRecords: [{ type: 'CNAME', host: '_acme-challenge.metrics.example.com', value: 'validation.example.com' }],
   })
 
+  assert.equal(server.mutated(), false, 'reads are not mutations')
+
   await tools.verify_subdomain.handler({ id: item.id }, {})
   assert.equal(server.lastSeen().status, 'active')
   assert.deepEqual(server.lastSeen().pendingRecords, [])
+  assert.equal(server.mutated(), true)
 })
 
 test('service errors come back as tool errors with the CLI error shape', async () => {
@@ -108,4 +111,24 @@ test('service errors come back as tool errors with the CLI error shape', async (
   const result = await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {})
   assert.equal(result.isError, true)
   assert.deepEqual(result.structuredContent, { error: { kind: 'api_error', message: 'boom' } })
+})
+
+test('lastFailure remembers a failed tool call until a subdomain is read or changed successfully', async () => {
+  const { service } = makeService({
+    async create() {
+      throw new Error('boom')
+    },
+  })
+  const server = createSubdomainsMcpServer(service)
+  const tools = toolsByName(server)
+
+  await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {})
+  assert.deepEqual(server.lastFailure(), { tool: 'create_subdomain', kind: 'api_error', message: 'boom' })
+  assert.equal(server.mutated(), true)
+
+  await tools.list_subdomains.handler({}, {})
+  assert.ok(server.lastFailure(), 'a list does not clear the failure')
+
+  await tools.get_subdomain.handler({ id: item.id }, {})
+  assert.equal(server.lastFailure(), undefined)
 })
