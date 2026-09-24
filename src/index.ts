@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import { login, signup, startAuth, logout, whoami } from './commands/auth.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
+import { registerSubdomainsCommands } from './commands/subdomains.js'
 import { getAuthState } from './auth/tokenStore.js'
 import { hasUsableSession } from './auth/refresh.js'
 import { setCiContext, isCi } from './utils/ci.js'
@@ -18,7 +19,7 @@ program.name('fingerprint').description('Fingerprint CLI dashboard companion').v
 
 // Global flags shared by every command, used for headless/CI runs.
 program
-  .option('--ci', 'non-interactive: never prompt; auto-confirm and fail fast on missing input')
+  .option('--ci', 'never prompt; auto-confirm non-destructive actions and fail fast on missing input')
   .option('-y, --yes', 'skip confirmation prompts')
   .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
   .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
@@ -42,7 +43,7 @@ let ranUnknownCommand = false
 // in real use that `login` and `default` were going missing entirely.
 let invokedCommand: string | undefined
 program.hook('preAction', async (_thisCommand, actionCommand) => {
-  invokedCommand = actionCommand === program ? undefined : actionCommand.name()
+  invokedCommand = actionCommand === program ? undefined : commandPath(actionCommand)
   // Before the action runs, so it lands whether or not the run ever reaches an account, and whether
   // or not it finishes. `cli_command_run` only reports runs that settle, which misses the person who
   // reads the prompt and closes the terminal.
@@ -89,6 +90,8 @@ program
     return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes })
   })
 
+registerSubdomainsCommands(program)
+
 // Default command: `fingerprint` with no subcommand. Route by where the user is so the whole
 // onboarding is one command (login → integrate, resuming from any point). Signup + workspace/region
 // selection all happen in the browser during login, so by the time we're authenticated the workspace
@@ -132,6 +135,7 @@ async function defaultCommand(unknownCommand?: string) {
     ['fingerprint', 'this guided setup, start to finish'],
     ['fingerprint integrate', 'add Fingerprint to the repo in this directory'],
     ['fingerprint keys', 'print a public or secret API key'],
+    ['fingerprint subdomains', 'manage custom subdomains for this workspace'],
     ['fingerprint whoami', 'show the signed-in workspace'],
     ['fingerprint --help', 'every command and flag'],
   ]
@@ -153,6 +157,14 @@ async function defaultCommand(unknownCommand?: string) {
   // Authenticated (workspace already chosen in the browser) → integrate the repo in the current
   // directory (provisions keys + applies).
   await integrateCommand({ chained: true })
+}
+
+function commandPath(command: Command): string {
+  const names: string[] = []
+  for (let current: Command | null = command; current && current !== program; current = current.parent) {
+    names.unshift(current.name())
+  }
+  return names.join('-')
 }
 
 // A variadic optional positional lets the bare `fingerprint` run onboarding while still catching an
