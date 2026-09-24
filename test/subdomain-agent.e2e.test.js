@@ -230,6 +230,42 @@ for (const status of [undefined, 'pending', 'active', 'timed_out', 'failed']) {
   })
 }
 
+test('resuming a pending subdomain without --subdomain ends as waiting, not completed', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('pending')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir({}, { includeSubdomain: true })
+  const gateway = await startGateway((payload) => {
+    const messages = JSON.stringify(payload.messages ?? [])
+    if (!messages.includes('"name":"Skill"')) {
+      return { tool: 'Skill', input: { skill: 'fingerprint:fingerprint-proxy-integration' } }
+    }
+    if (!messages.includes('"name":"mcp__fingerprint__list_subdomains"')) {
+      return { tool: 'mcp__fingerprint__list_subdomains', input: {} }
+    }
+    if (!messages.includes('"name":"mcp__fingerprint__get_subdomain"')) {
+      return { tool: 'mcp__fingerprint__get_subdomain', input: { id: ID } }
+    }
+    return { text: `${HOSTNAME} is still pending. Add the DNS records and resume later.` }
+  })
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--yes'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /DNS records still waiting for validation/)
+  assert.doesNotMatch(result.stdout, /Agent finished applying the integration/)
+  assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
+  assert.equal(api.createCalls(), 0)
+})
+
 test('GET still reports waiting after the audit selects custom subdomain setup', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())

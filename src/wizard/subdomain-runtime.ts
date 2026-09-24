@@ -36,7 +36,7 @@ interface RuntimeOptions {
   service?: SubdomainsService
   confirm?: typeof confirm
   beforePrompt?: () => void
-  isSubdomainStep?: () => boolean
+  subdomainSetupSelected?: () => boolean
 }
 
 export function mcpToolName(name: string): string {
@@ -57,7 +57,7 @@ export function createSubdomainRuntime(options: RuntimeOptions) {
   let operationFailed = false
 
   const shouldTrackReads = (): boolean =>
-    state.outcome !== 'idle' || options.isSubdomainStep?.() === true
+    state.outcome !== 'idle' || options.subdomainSetupSelected?.() === true
 
   const observe = (subdomain: SubdomainListItem, preserveCompleted = false): void => {
     const remainsCompleted =

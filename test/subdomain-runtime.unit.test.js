@@ -267,7 +267,7 @@ test('GET maps every public API status to the outcome during subdomain setup', a
     const runtime = createSubdomainRuntime({
       root: makeRepo(),
       service: fake.service,
-      isSubdomainStep: () => true,
+      subdomainSetupSelected: () => true,
     })
 
     const result = await invoke(runtime, SUBDOMAIN_TOOL_NAMES.get, { id: current.id })
@@ -300,7 +300,7 @@ test('cached reads track the outcome when the audit selects subdomain setup', as
   const runtime = createSubdomainRuntime({
     root: makeRepo(),
     service: fake.service,
-    isSubdomainStep: () => selected,
+    subdomainSetupSelected: () => selected,
   })
 
   await invoke(runtime, SUBDOMAIN_TOOL_NAMES.list)
@@ -681,7 +681,7 @@ for (const [error, kind] of [
       root,
       service: fake.service,
       headless: true,
-      isSubdomainStep: () => true,
+      subdomainSetupSelected: () => true,
     })
 
     const result = await invoke(runtime, SUBDOMAIN_TOOL_NAMES.list)
@@ -702,7 +702,7 @@ test('unexpected runtime errors stay failed and block later mutations', async ()
     service: fake.service,
     headless: true,
     explicitHostname: current.subdomain,
-    isSubdomainStep: () => true,
+    subdomainSetupSelected: () => true,
   })
 
   await invoke(runtime, SUBDOMAIN_TOOL_NAMES.get, { id: current.id })

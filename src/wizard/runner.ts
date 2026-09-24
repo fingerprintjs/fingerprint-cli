@@ -372,18 +372,19 @@ export async function runAgent(
   const metas = ids.map(skillMeta)
 
   const ui: AgentUi = { beforePrompt: () => {}, needsUserAction: false }
+  // The runtime state is attached right after the runtime is created; the getter only runs on
+  // tool calls, which happen once the query starts.
+  const boundary = { explicitHostname: opts.subdomain, phase: editPhase } as AgentEditBoundary
   const subdomains = createSubdomainRuntime({
     root: analysis.root,
     explicitHostname: opts.subdomain,
     headless: isCi(),
     beforePrompt: () => ui.beforePrompt(),
-    isSubdomainStep: () => boundary.phase === 'subdomain_locked',
+    // Reads count towards the outcome once custom subdomain setup is selected, with or without an
+    // explicit hostname. During the general step they are audit reads and stay untracked.
+    subdomainSetupSelected: () => boundary.phase === 'subdomain_choice' || boundary.phase === 'subdomain_locked',
   })
-  const boundary: AgentEditBoundary = {
-    state: subdomains.state,
-    explicitHostname: opts.subdomain,
-    phase: editPhase,
-  }
+  boundary.state = subdomains.state
 
   log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
