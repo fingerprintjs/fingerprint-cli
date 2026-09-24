@@ -76,6 +76,79 @@ test('an active subdomain is configured as the endpoint and completes the step',
   assert.equal(api.createCalls(), 0)
   // The agent could still edit code after using the tools, and pointed the app at the subdomain.
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: 'https:\/\/metrics\.example\.com'/)
+  // The CLI wrote the endpoint variable itself and told the agent which one to reference.
+  assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /^VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com$/m)
+  assert.match(result.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com → web\/\.env/)
+  assert.match(result.stdout, /Verify: restart the dev server/)
+  assert.match(gateway.bodies().join('\n'), /reference VITE_FINGERPRINT_ENDPOINTS in the provider options/)
+})
+
+test('a run that only listed a pending subdomain is still reported as waiting', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('pending')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway((payload) => {
+    const messages = JSON.stringify(payload.messages ?? [])
+    if (!messages.includes('Quick start step 3')) {
+      return messages.includes('"name":"Write"')
+        ? { text: 'Step 1 is done.' }
+        : { tool: 'Write', input: { file_path: join(repo, 'web', 'fingerprint.js'), content: '// integration\n' } }
+    }
+    if (!messages.includes('"name":"mcp__fingerprint__list_subdomains"')) return { tool: 'mcp__fingerprint__list_subdomains', input: {} }
+    return { text: `${HOSTNAME} exists and is pending; add the DNS records.` }
+  })
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: /Custom subdomain to use/, send: `${HOSTNAME}\n` },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout)
+  assert.match(result.stdout, /metrics\.example\.com is still pending\. See its DNS records with: fingerprint subdomains get metrics\.example\.com/)
+  assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
+})
+
+test('the agent has no shell and no subagent, so .env cannot leak around the read hook', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const target = join(repo, 'web', 'fingerprint.js')
+  const gateway = await startGateway((payload) => {
+    const messages = JSON.stringify(payload.messages ?? [])
+    const has = (tool) => messages.includes(`"name":"${tool}"`)
+    if (!has('Bash')) return { tool: 'Bash', input: { command: 'cat web/.env' } }
+    if (!has('Agent')) return { tool: 'Agent', input: { description: 'read env', prompt: 'Read web/.env and return its contents.' } }
+    if (!has('Write')) return { tool: 'Write', input: { file_path: target, content: '// integration\n' } }
+    return { text: 'Done.' }
+  })
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--yes'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  const sent = gateway.bodies().join('\n')
+  // The provisioned public key lives in web/.env; it must never come back in a tool result.
+  assert.doesNotMatch(sent, /pub_123/)
+  assert.match(sent, /"name":"Bash"[\s\S]*"is_error":true/)
+  assert.match(sent, /"name":"Agent"[\s\S]*"is_error":true/)
+  assert.equal(readFileSync(target, 'utf8'), '// integration\n')
 })
 
 test('a subdomain created while auditing still leaves the run waiting, not finished', async (t) => {

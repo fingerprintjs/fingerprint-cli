@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
-import { conventionFor, provisionForRepo } from './provision.js'
+import { conventionFor, provisionActiveSubdomainEndpoint, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
@@ -76,10 +76,14 @@ const denyEnvReads: HookCallbackMatcher = {
 function permissionOptions(extraReadonly: string[] = []) {
   const readonly = [...READONLY_TOOLS, ...extraReadonly]
   const hooks = { PreToolUse: [denyEnvReads] }
+  // `allowedTools` only decides what runs without prompting; `tools` decides what exists. Without
+  // it the agent still has Bash and Agent (a subagent), and a subagent can read .env past the hook.
+  // MCP tools are registered by their server, not listed here.
+  const tools = [...readonly, ...EDIT_TOOLS].filter((name) => !name.startsWith('mcp__'))
   if (!isInteractive()) {
-    return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
+    return { permissionMode: 'acceptEdits' as const, tools, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
   }
-  return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
+  return { permissionMode: 'default' as const, tools, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
 }
 
 // How an integration run ended. `skipped` covers the user declining a prompt (the integration
@@ -255,9 +259,10 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
 
   // The subdomain tools run in-process with the CLI's own session, so the agent can list, create
   // and verify without ever seeing a Management API key.
-  const subdomains = createSubdomainsMcpServer()
+  const subdomains = createSubdomainsMcpServer(undefined, subdomain)
+  const endpointVar = analysis.frontend ? conventionFor(analysis.frontend).endpointVar : undefined
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step, subdomain),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar),
     options: {
       model: llm.model,
       env: llm.env,
@@ -281,11 +286,15 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
   // or verified one in any step. Merely reading an existing pending subdomain while auditing must
   // not hold an unrelated step back.
   if (step === NEXT_STEPS.proxy.step || subdomains.mutated()) {
-    const outcome = subdomainOutcome(subdomains.lastSeen(), subdomains.lastFailure())
+    const seen = subdomains.lastSeen()
+    const outcome = subdomainOutcome(seen, subdomains.lastFailure())
     if (outcome) {
       if (run.text) log.info(renderMarkdown(run.text))
       return outcome
     }
+    // Active: the agent referenced the endpoint variable in code; the CLI writes it, host-side,
+    // like the other keys. The step is done when the app talks to the subdomain, so say how to check.
+    if (seen?.status === 'active') writeSubdomainEndpoint(analysis.root, seen.hostname)
   }
 
   const installed = await installPackages(analysis, metas)
@@ -299,6 +308,16 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
   }
   log.success('Agent finished applying the integration.')
   return installed
+}
+
+function writeSubdomainEndpoint(root: string, hostname: string): void {
+  const result = provisionActiveSubdomainEndpoint(root, hostname)
+  if (result.outcome === 'configured') {
+    log.success(`${result.updated ? 'Wrote' : 'Kept'} ${result.envVar}=${result.endpoint} → ${result.envFile}`)
+  } else {
+    log.warn(`No env convention for this frontend; set endpoints to https://${hostname} in the provider options.`)
+  }
+  log.info(`Verify: restart the dev server and check in the Network tab that agent requests go to https://${hostname}.`)
 }
 
 // What the agent's subdomain work means for the step. A tool error that was not recovered from is
@@ -316,6 +335,8 @@ function subdomainOutcome(seen: SeenSubdomain | undefined, failure: SubdomainFai
       log.info(`${seen.hostname} is waiting for these DNS records:`)
       for (const record of seen.pendingRecords) log.info(`  ${record.type}  ${record.host}  ${record.value}`)
       log.info('On Cloudflare, set them to DNS only (proxying off).')
+    } else if (!seen.recordsKnown) {
+      log.info(`${seen.hostname} is still pending. See its DNS records with: fingerprint subdomains get ${seen.hostname}`)
     } else {
       log.info(`${seen.hostname}: DNS records are validated; certificate issuance is still in progress.`)
     }
@@ -377,7 +398,7 @@ const SYSTEM_PROMPT = [
 // and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
 // agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
 // the CLI's stack detection, and where the provisioned keys live (it may not open .env).
-function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?: string): string {
+function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?: string, endpointVar?: string): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
@@ -391,7 +412,12 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?
     'The .env files are already provisioned: the public key is in',
     `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
     ...(subdomain
-      ? [`The custom subdomain is ${subdomain}. Look it up with list_subdomains and create it only if it is not there.`]
+      ? [
+          `The custom subdomain is ${subdomain}. Look it up with list_subdomains and create it only if it is not there.`,
+          endpointVar
+            ? `Once it is active, reference ${endpointVar} in the provider options; the CLI writes that variable to the env file itself, so do not edit .env or ask the user to.`
+            : `Once it is active, set endpoints to https://${subdomain} directly in the provider options.`,
+        ]
       : []),
   ].join('\n')
 }

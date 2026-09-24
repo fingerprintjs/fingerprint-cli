@@ -90,6 +90,7 @@ test('lastSeen follows the latest subdomain the agent read or changed', async ()
     hostname: 'metrics.example.com',
     status: 'pending',
     pendingRecords: [{ type: 'CNAME', host: '_acme-challenge.metrics.example.com', value: 'validation.example.com' }],
+    recordsKnown: true,
   })
 
   assert.equal(server.mutated(), false, 'reads are not mutations')
@@ -131,4 +132,22 @@ test('lastFailure remembers a failed tool call until a subdomain is read or chan
 
   await tools.get_subdomain.handler({ id: item.id }, {})
   assert.equal(server.lastFailure(), undefined)
+})
+
+test('with a known hostname, a list entry for it counts as seen, without records', async () => {
+  const server = createSubdomainsMcpServer(makeService().service, ' Metrics.Example.com. ')
+  const tools = toolsByName(server)
+
+  await tools.list_subdomains.handler({}, {})
+  assert.deepEqual(server.lastSeen(), {
+    id: item.id,
+    hostname: 'metrics.example.com',
+    status: 'pending',
+    pendingRecords: [],
+    recordsKnown: false,
+  })
+
+  const other = createSubdomainsMcpServer(makeService().service, 'other.example.com')
+  await toolsByName(other).list_subdomains.handler({}, {})
+  assert.equal(other.lastSeen(), undefined)
 })

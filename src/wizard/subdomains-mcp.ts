@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { serializeSubdomainError } from '../commands/subdomains.js'
 import {
+  normalizeHostname,
   SubdomainsService,
   type DnsRecord,
   type Subdomain,
@@ -22,7 +23,9 @@ export interface SeenSubdomain {
   id: string
   hostname: string
   status: SubdomainStatus
+  // Empty when the agent only listed: a list entry carries the status but not the records.
   pendingRecords: Pick<DnsRecord, 'type' | 'host' | 'value'>[]
+  recordsKnown: boolean
 }
 
 type Service = Pick<SubdomainsService, 'list' | 'get' | 'create' | 'verify'>
@@ -33,7 +36,10 @@ export interface SubdomainFailure {
   message: string
 }
 
-export function createSubdomainsMcpServer(service: Service = new SubdomainsService()) {
+// `hostname` is the subdomain the user asked for, when known: a list entry matching it counts as
+// having seen the subdomain, so a run that only listed is still judged by its status.
+export function createSubdomainsMcpServer(service: Service = new SubdomainsService(), hostname?: string) {
+  const wanted = hostname ? normalizeHostname(hostname) : undefined
   let seen: SeenSubdomain | undefined
   let failure: SubdomainFailure | undefined
   let mutated = false
@@ -47,8 +53,17 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       pendingRecords: records
         .filter((record): record is DnsRecord => Boolean(record) && record!.status !== 'validated')
         .map(({ type, host, value }) => ({ type, host, value })),
+      recordsKnown: true,
     }
     return { subdomain: safeSubdomain(subdomain) }
+  }
+  const observeList = (items: SubdomainListItem[]) => {
+    const match = wanted && items.find((item) => normalizeHostname(item.subdomain) === wanted)
+    if (match && (!seen || seen.id === match.id)) {
+      failure = undefined
+      seen = { id: match.id, hostname: match.subdomain, status: match.status, pendingRecords: [], recordsKnown: false }
+    }
+    return { subdomains: items.map(safeListItem) }
   }
   const id = z.string().trim().min(1).describe('Subdomain id, as returned by list_subdomains')
   const run = async (toolName: string, operation: () => Promise<Record<string, unknown>>) => {
@@ -70,7 +85,7 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       'list_subdomains',
       'Lists the custom subdomains in the workspace with their status. Call it before creating one.',
       {},
-      () => run('list_subdomains', async () => ({ subdomains: (await service.list()).map(safeListItem) }))
+      () => run('list_subdomains', async () => observeList(await service.list()))
     ),
     tool('get_subdomain', 'Gets one custom subdomain with its status and DNS records.', { id }, ({ id }) =>
       run('get_subdomain', async () => observe(await service.get(id)))
