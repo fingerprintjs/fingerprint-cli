@@ -14,8 +14,8 @@ import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
-import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain } from '../api/subdomains.js'
-import { serializeSubdomainError } from '../commands/subdomains.js'
+import { normalizeHostname, SubdomainsService, type Subdomain } from '../api/subdomains.js'
+import { CLOUDFLARE_DNS_ONLY_HINT, dnsRecordLines, dnsRecords, serializeSubdomainError } from '../commands/subdomains.js'
 import { clearPendingSubdomainSetup, pendingSubdomainSetup, savePendingSubdomainSetup } from './subdomain-setups.js'
 import {
   createSubdomainsMcpServer,
@@ -148,14 +148,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
 
 async function askResumeSubdomain(hostname: string): Promise<boolean> {
   log.line()
-  const choice = await select({
-    message: `You have an unfinished custom subdomain setup: ${hostname}`,
-    choices: [
-      { name: 'Resume setup', value: 'resume' },
-      { name: 'Continue with other integration steps', value: 'other' },
-    ],
-  })
-  return choice === 'resume'
+  return confirm({ message: `Resume the custom subdomain setup for ${hostname}?`, default: true })
 }
 
 async function provisionAndRunSubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
@@ -190,23 +183,20 @@ async function runSubdomainStep(root: string, hostname: string): Promise<Integra
     }
     if (current.status === 'failed' || current.status === 'timed_out') return reportTerminalStatus(hostname, current.status)
     if (isCi()) {
-      log.info(`Resume with: fingerprint integrate --subdomain ${hostname}`)
+      log.info(resumeHint(hostname))
       return 'waiting'
     }
 
     log.line()
     const choice = await select({
-      message: `${hostname} is waiting for DNS. Add the records at your provider, then:`,
+      message: `${hostname} is waiting for its DNS records. What's next?`,
       choices: [
-        { name: "I've added the records, check now", value: 'check' },
+        { name: 'Check the DNS records now', value: 'check' },
         { name: 'Show the DNS records again', value: 'show' },
-        { name: 'Finish later', value: 'later' },
+        { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
       ],
     })
-    if (choice === 'later') {
-      log.info(`Resume with: fingerprint integrate --subdomain ${hostname}`)
-      return 'waiting'
-    }
+    if (choice === 'later') return 'waiting'
     if (choice === 'show') {
       printDnsRecords(current)
       continue
@@ -219,12 +209,16 @@ async function runSubdomainStep(root: string, hostname: string): Promise<Integra
 // reported as waiting rather than as an error of this run.
 function reportTerminalStatus(hostname: string, status: 'failed' | 'timed_out'): IntegrateOutcome {
   if (status === 'timed_out') {
-    log.warn(`${hostname} timed out before its DNS records validated. Delete it with \`fingerprint subdomains delete ${hostname}\` and set it up again.`)
+    log.warn(`${hostname} timed out before its DNS records validated — delete it (fingerprint subdomains delete ${hostname}) and set it up again.`)
     return 'waiting'
   }
-  log.error(`${hostname} failed. Check it with \`fingerprint subdomains get ${hostname}\`.`)
+  log.error(`${hostname} failed — check it with: fingerprint subdomains get ${hostname}`)
   process.exitCode = 1
   return 'failed'
+}
+
+function resumeHint(hostname: string): string {
+  return `Run fingerprint integrate --subdomain ${hostname} to continue later.`
 }
 
 async function applySubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
@@ -244,7 +238,7 @@ async function waitForDns(service: SubdomainsService, current: Subdomain): Promi
   // Overridable so tests do not wait; not documented as user options.
   const waitMs = Number(process.env.FINGERPRINT_DNS_WAIT_MS ?? 120_000)
   const pollMs = Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
-  log.info(`Checking DNS records (waiting up to ${Math.round(waitMs / 1000)}s for validation)...`)
+  log.step(`Checking DNS records (up to ${Math.round(waitMs / 1000)}s)`)
   let latest = current
   try {
     latest = await service.verify(current.id)
@@ -258,30 +252,26 @@ async function waitForDns(service: SubdomainsService, current: Subdomain): Promi
   }
   if (latest.status === 'active') log.success(`${latest.subdomain} is active.`)
   else if (latest.status === 'pending') {
-    const pending = pendingDnsRecords(latest)
+    const pending = dnsRecords(latest).filter((record) => record.status !== 'validated')
     if (pending.length) {
-      log.info('Not validated yet. Still waiting for:')
-      for (const record of pending) log.info(`  ${record.type}  ${record.host}  ${record.value}`)
-      log.info('On Cloudflare, set them to DNS only (proxying off). Propagation can take a few minutes.')
+      log.info('Not validated yet — still waiting for:')
+      printRecordLines(pending)
+      log.info(`${CLOUDFLARE_DNS_ONLY_HINT} Propagation can take a few minutes.`)
     } else {
-      log.info('DNS records are validated; certificate issuance is still in progress.')
+      log.info('DNS records are validated. Certificate issuance is still in progress.')
     }
   }
   return latest
 }
 
-function pendingDnsRecords(subdomain: Subdomain): DnsRecord[] {
-  const { verification, routing, caa } = subdomain.dns_records
-  return [verification, ...routing, ...(caa ? [caa] : [])].filter((record) => record.status !== 'validated')
+function printDnsRecords(subdomain: Subdomain): void {
+  log.info(`DNS records for ${subdomain.subdomain}:`)
+  printRecordLines(dnsRecords(subdomain))
+  log.info(CLOUDFLARE_DNS_ONLY_HINT)
 }
 
-function printDnsRecords(subdomain: Subdomain): void {
-  const { verification, routing, caa } = subdomain.dns_records
-  log.info(`DNS records for ${subdomain.subdomain}:`)
-  for (const record of [verification, ...routing, ...(caa ? [caa] : [])]) {
-    log.info(`  ${record.type}  ${record.host}  ${record.value}  (${record.status})`)
-  }
-  log.info('On Cloudflare, set them to DNS only (proxying off).')
+function printRecordLines(records: Pick<Subdomain['dns_records']['routing'][number], 'type' | 'host' | 'value' | 'status'>[]): void {
+  for (const record of records) for (const line of dnsRecordLines(record)) log.info(`  ${line}`)
 }
 
 // The steps the CLI can offer after one lands. `step` is what the agent is told to do; `more` has
@@ -478,13 +468,13 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
 function writeSubdomainEndpoint(root: string, hostname: string): void {
   const result = provisionActiveSubdomainEndpoint(root, hostname)
   if (result.outcome === 'configured') {
-    log.success(`${result.updated ? 'Wrote' : 'Kept'} ${result.envVar}=${result.endpoint} → ${result.envFile}`)
+    if (result.updated) log.success(`Wrote ${result.envVar} → ${result.envFile}`)
+    else log.info(`${result.envVar} already set in ${result.envFile}.`)
   } else if (result.outcome === 'no_frontend') {
-    log.warn(`No frontend detected; set endpoints to https://${hostname} in the provider options yourself.`)
+    log.warn(`No frontend detected — set endpoints to https://${hostname} in the provider options manually.`)
   } else {
-    log.warn(`No env convention for ${result.framework ?? 'this frontend'}; set endpoints to https://${hostname} in the provider options yourself.`)
+    log.warn(`No env convention for ${result.framework ?? 'this frontend'} — set endpoints to https://${hostname} in the provider options manually.`)
   }
-  log.info(`Verify: restart the dev server and check in the Network tab that agent requests go to https://${hostname}.`)
 }
 
 // What the agent's subdomain work means for the step. A tool error that was not recovered from is
@@ -492,7 +482,7 @@ function writeSubdomainEndpoint(root: string, hostname: string): void {
 // proxy integration instead) falls through to the normal completion path.
 function subdomainOutcome(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined): IntegrateOutcome | undefined {
   if (failure) {
-    log.error(`Custom subdomain setup failed (${failure.tool}: ${failure.kind}). ${failure.message}`)
+    log.error(`Custom subdomain setup failed: ${failure.message}${isVerbose() ? ` (${failure.tool}: ${failure.kind})` : ''}`)
     process.exitCode = 1
     return 'failed'
   }
@@ -500,14 +490,14 @@ function subdomainOutcome(seen: SeenSubdomain | undefined, failure: SubdomainFai
   if (seen.status === 'pending') {
     if (seen.pendingRecords.length) {
       log.info(`${seen.hostname} is waiting for these DNS records:`)
-      for (const record of seen.pendingRecords) log.info(`  ${record.type}  ${record.host}  ${record.value}`)
-      log.info('On Cloudflare, set them to DNS only (proxying off).')
+      printRecordLines(seen.pendingRecords)
+      log.info(CLOUDFLARE_DNS_ONLY_HINT)
     } else if (!seen.recordsKnown) {
-      log.info(`${seen.hostname} is still pending. See its DNS records with: fingerprint subdomains get ${seen.hostname}`)
+      log.info(`${seen.hostname} is still pending — see its DNS records with: fingerprint subdomains get ${seen.hostname}`)
     } else {
-      log.info(`${seen.hostname}: DNS records are validated; certificate issuance is still in progress.`)
+      log.info(`${seen.hostname}: DNS records are validated. Certificate issuance is still in progress.`)
     }
-    if (isCi()) log.info(`Resume with: fingerprint integrate --subdomain ${seen.hostname}`)
+    if (isCi()) log.info(resumeHint(seen.hostname))
     return 'waiting'
   }
   return reportTerminalStatus(seen.hostname, seen.status)

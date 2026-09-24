@@ -18,6 +18,11 @@ interface DeleteOptions extends OutputOptions {
   yes?: boolean
 }
 
+// Shared with the wizard, so both surfaces say the same thing about the one DNS mistake that
+// silently prevents validation.
+export const CLOUDFLARE_DNS_ONLY_HINT =
+  'On Cloudflare, set the records to DNS only (proxying off) — proxied records do not validate.'
+
 const UNAVAILABLE_MESSAGE =
   'Custom subdomain service is unavailable. This may be temporary, or the feature may be disabled. ' +
   'Check availability with Fingerprint support before retrying.'
@@ -203,14 +208,7 @@ function printSubdomain(subdomain: Subdomain): void {
 
   console.log('\nDNS records')
   for (const record of dnsRecords(subdomain)) {
-    console.log(`  ${record.type}  ${record.status}`)
-    printFields(
-      [
-        ['Host', record.host],
-        ['Value', record.value],
-      ],
-      '    '
-    )
+    for (const line of dnsRecordLines(record)) console.log(`  ${line}`)
   }
   printNextStep(subdomain)
 }
@@ -221,7 +219,7 @@ function printNextStep(subdomain: Subdomain): void {
     case 'pending':
       if (dnsRecords(subdomain).some((record) => record.status !== 'validated')) {
         console.log('\nSetup is not complete. Add or correct the unvalidated DNS records above at your DNS provider.')
-        console.log('On Cloudflare, set the records to DNS only (proxying off); proxied records do not validate.')
+        console.log(CLOUDFLARE_DNS_ONLY_HINT)
         console.log('If you already added them, allow time for DNS propagation. Then run:')
         console.log(`  fingerprint subdomains verify ${hostname}`)
       } else {
@@ -264,7 +262,12 @@ function printFields(fields: Array<[string, string]>, indent = ''): void {
   for (const [label, value] of fields) console.log(`${indent}${label.padEnd(width)}  ${value}`)
 }
 
-function dnsRecords(subdomain: Subdomain): DnsRecord[] {
+// One record as the lines the CLI prints for it, without indentation; the wizard prints the same.
+export function dnsRecordLines(record: DnsRecord): string[] {
+  return [`${record.type}  ${record.status}`, `  Host   ${record.host}`, `  Value  ${record.value}`]
+}
+
+export function dnsRecords(subdomain: Subdomain): DnsRecord[] {
   return [
     subdomain.dns_records.verification,
     ...subdomain.dns_records.routing,

@@ -12,7 +12,7 @@ const ID = 'certv2_123'
 const DOWN = '\x1b[B'
 const APPLYING = /Applying .* via fingerprint-get-started/g
 const FINISHED = /Agent finished applying the integration/g
-const DNS_MENU = /Add the records at your provider/
+const DNS_MENU = /is waiting for its DNS records\. What's next\?/
 const LATER = `${DOWN}${DOWN}\n`
 const HOSTNAME_PROMPT = /Custom subdomain to use/
 
@@ -41,9 +41,9 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   assert.equal(result.stdout.match(APPLYING)?.length, 2, result.stdout)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout)
   assert.match(result.stdout, /metrics\.example\.com is waiting for these DNS records/)
-  assert.match(result.stdout, /CNAME {2}_acme-challenge\.metrics\.example\.com/)
+  assert.match(result.stdout, /CNAME {2}pending_validation\n.*Host {3}_acme-challenge\.metrics\.example\.com/)
   assert.match(result.stdout, /DNS only/)
-  assert.match(result.stdout, /Resume with: fingerprint integrate --subdomain metrics\.example\.com/)
+  assert.match(result.stdout, /Finish later \(resume: fingerprint integrate --subdomain/)
   assert.equal(api.createCalls(), 1)
   const sent = gateway.bodies().join('\n')
   assert.match(sent, new RegExp(`The custom subdomain is ${HOSTNAME.replace('.', '\\.')}`))
@@ -82,8 +82,8 @@ test('an active subdomain is configured as the endpoint and completes the step',
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: 'https:\/\/metrics\.example\.com'/)
   // The CLI wrote the endpoint variable itself and told the agent which one to reference.
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /^VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com$/m)
-  assert.match(result.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com → web\/\.env/)
-  assert.match(result.stdout, /Verify: restart the dev server/)
+  assert.match(result.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
+  assert.doesNotMatch(result.stdout, /pub_123/)
   assert.match(gateway.bodies().join('\n'), /reference VITE_FINGERPRINT_ENDPOINTS in the provider options/)
 })
 
@@ -106,7 +106,7 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: `${DOWN}\n` }, // show the records
-      { when: /DNS records for metrics\.example\.com[\s\S]*Add the records at your provider/, send: LATER },
+      { when: /DNS records for metrics\.example\.com[\s\S]*is waiting for its DNS records/, send: LATER },
     ],
   })
 
@@ -114,8 +114,8 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
   // Step 1 ran the agent; the pending subdomain did not: its state came from the API.
   assert.equal(result.stdout.match(APPLYING)?.length, 1, result.stdout)
   assert.match(result.stdout, /DNS records for metrics\.example\.com/)
-  assert.match(result.stdout, /A {2}metrics\.example\.com {2}192\.0\.2\.1 {2}\(pending_validation\)/)
-  assert.match(result.stdout, /Resume with: fingerprint integrate --subdomain/)
+  assert.match(result.stdout, /A {2}pending_validation\n.*Host {3}metrics\.example\.com\n.*Value {2}192\.0\.2\.1/)
+  assert.match(result.stdout, /proxied records do not validate/)
   assert.equal(api.createCalls(), 0)
   assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
 })
@@ -181,7 +181,7 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     cwd: repo,
     env,
     respond: [
-      { when: /unfinished custom subdomain setup: metrics\.example\.com/, send: '\n' },
+      { when: /Resume the custom subdomain setup for metrics\.example\.com\?/, send: 'y\n' },
       { when: DNS_MENU, send: LATER },
     ],
   })
@@ -197,14 +197,14 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     cwd: repo,
     env,
     respond: [
-      { when: /unfinished custom subdomain setup: metrics\.example\.com/, send: '\n' },
+      { when: /Resume the custom subdomain setup for metrics\.example\.com\?/, send: 'y\n' },
       { when: /Agent finished[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
   assert.equal(third.status, 0, third.stderr)
   assert.equal(third.stdout.match(APPLYING)?.length, 1, third.stdout)
   assert.doesNotMatch(third.stdout, HOSTNAME_PROMPT)
-  assert.match(third.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.match(third.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
   assert.equal(api.createCalls(), 1)
 
   const fourth = await runCli(['integrate'], {
@@ -213,7 +213,7 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     env,
     respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }],
   })
-  assert.doesNotMatch(fourth.stdout, /unfinished custom subdomain setup/)
+  assert.doesNotMatch(fourth.stdout, /Resume the custom subdomain setup/)
 })
 
 test('--subdomain goes straight to the step, in CI too', async (t) => {
@@ -230,13 +230,13 @@ test('--subdomain goes straight to the step, in CI too', async (t) => {
   const pending = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
   assert.equal(pending.status, 0, pending.stderr)
   assert.equal(pending.stdout.match(APPLYING), null, pending.stdout)
-  assert.match(pending.stdout, /Resume with: fingerprint integrate --subdomain metrics\.example\.com/)
+  assert.match(pending.stdout, /Run fingerprint integrate --subdomain metrics\.example\.com to continue later\./)
 
   api.seedStatus('active')
   const active = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
   assert.equal(active.status, 0, active.stderr)
   assert.equal(active.stdout.match(APPLYING)?.length, 1, active.stdout)
-  assert.match(active.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.match(active.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
   assert.equal(active.stdout.match(FINISHED)?.length, 1, active.stdout)
 })
 
@@ -310,7 +310,7 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
   })
 
   assert.equal(result.status, 1, result.stdout)
-  assert.match(result.stdout + result.stderr, /Custom subdomain setup failed \(create_subdomain: unavailable\)/)
+  assert.match(result.stdout + result.stderr, /Custom subdomain setup failed: Custom subdomain service is unavailable/)
   assert.doesNotMatch(result.stdout, FINISHED)
 })
 

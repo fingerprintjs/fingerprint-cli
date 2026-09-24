@@ -89,7 +89,7 @@ test('lastSeen follows the latest subdomain the agent read or changed', async ()
     id: item.id,
     hostname: 'metrics.example.com',
     status: 'pending',
-    pendingRecords: [{ type: 'CNAME', host: '_acme-challenge.metrics.example.com', value: 'validation.example.com' }],
+    pendingRecords: [{ type: 'CNAME', host: '_acme-challenge.metrics.example.com', value: 'validation.example.com', status: 'pending_validation' }],
     recordsKnown: true,
   })
 

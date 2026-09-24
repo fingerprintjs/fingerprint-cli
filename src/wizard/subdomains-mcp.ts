@@ -24,7 +24,7 @@ export interface SeenSubdomain {
   hostname: string
   status: SubdomainStatus
   // Empty when the agent only listed: a list entry carries the status but not the records.
-  pendingRecords: Pick<DnsRecord, 'type' | 'host' | 'value'>[]
+  pendingRecords: Pick<DnsRecord, 'type' | 'host' | 'value' | 'status'>[]
   recordsKnown: boolean
 }
 
@@ -52,7 +52,7 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       status: subdomain.status,
       pendingRecords: records
         .filter((record): record is DnsRecord => Boolean(record) && record!.status !== 'validated')
-        .map(({ type, host, value }) => ({ type, host, value })),
+        .map(({ type, host, value, status }) => ({ type, host, value, status })),
       recordsKnown: true,
     }
     return { subdomain: safeSubdomain(subdomain) }
