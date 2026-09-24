@@ -180,19 +180,15 @@ async function runSubdomainStep(root: string, hostname: string): Promise<Integra
 
   while (true) {
     if (current.status === 'active') {
+      // The agent points the app at the subdomain; the CLI writes the endpoint variable, host-side,
+      // like the other keys.
       const outcome = await applySubdomainStep(root, hostname)
-      if (outcome === 'completed') clearPendingSubdomainSetup(root)
+      if (outcome !== 'completed') return outcome
+      writeSubdomainEndpoint(root, hostname)
+      clearPendingSubdomainSetup(root)
       return outcome
     }
-    if (current.status === 'failed') {
-      log.error(`${hostname} failed. Check it with \`fingerprint subdomains get ${hostname}\`.`)
-      process.exitCode = 1
-      return 'failed'
-    }
-    if (current.status === 'timed_out') {
-      log.warn(`${hostname} timed out before its DNS records validated. Delete it with \`fingerprint subdomains delete ${hostname}\` and set it up again.`)
-      return 'waiting'
-    }
+    if (current.status === 'failed' || current.status === 'timed_out') return reportTerminalStatus(hostname, current.status)
     if (isCi()) {
       log.info(`Resume with: fingerprint integrate --subdomain ${hostname}`)
       return 'waiting'
@@ -219,6 +215,18 @@ async function runSubdomainStep(root: string, hostname: string): Promise<Integra
   }
 }
 
+// `failed` needs support; `timed_out` is recoverable by deleting and creating again, so it is
+// reported as waiting rather than as an error of this run.
+function reportTerminalStatus(hostname: string, status: 'failed' | 'timed_out'): IntegrateOutcome {
+  if (status === 'timed_out') {
+    log.warn(`${hostname} timed out before its DNS records validated. Delete it with \`fingerprint subdomains delete ${hostname}\` and set it up again.`)
+    return 'waiting'
+  }
+  log.error(`${hostname} failed. Check it with \`fingerprint subdomains get ${hostname}\`.`)
+  process.exitCode = 1
+  return 'failed'
+}
+
 async function applySubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
   return applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname })
 }
@@ -233,6 +241,7 @@ async function findSubdomain(service: SubdomainsService, hostname: string): Prom
 // One verify (the API allows one per minute), then read the status until it settles or the wait
 // runs out. Running out is not a failure: DNS propagation is outside anyone's control here.
 async function waitForDns(service: SubdomainsService, current: Subdomain): Promise<Subdomain> {
+  // Overridable so tests do not wait; not documented as user options.
   const waitMs = Number(process.env.FINGERPRINT_DNS_WAIT_MS ?? 120_000)
   const pollMs = Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
   log.info(`Checking DNS records (waiting up to ${Math.round(waitMs / 1000)}s for validation)...`)
@@ -445,9 +454,9 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
     const outcome = subdomainOutcome(seen, subdomains.lastFailure())
     if (outcome === 'waiting' && seen) savePendingSubdomainSetup(analysis.root, seen.hostname)
     if (outcome) return outcome
-    // Active: the agent referenced the endpoint variable in code; the CLI writes it, host-side,
-    // like the other keys. The step is done when the app talks to the subdomain, so say how to check.
-    if (seen?.status === 'active') {
+    // Active outside the subdomain step (the agent verified it while doing something else): write
+    // the endpoint variable here. In the subdomain step runSubdomainStep does it once the agent is done.
+    if (seen?.status === 'active' && step !== NEXT_STEPS.proxy.step) {
       writeSubdomainEndpoint(analysis.root, seen.hostname)
       clearPendingSubdomainSetup(analysis.root)
     }
@@ -470,8 +479,10 @@ function writeSubdomainEndpoint(root: string, hostname: string): void {
   const result = provisionActiveSubdomainEndpoint(root, hostname)
   if (result.outcome === 'configured') {
     log.success(`${result.updated ? 'Wrote' : 'Kept'} ${result.envVar}=${result.endpoint} → ${result.envFile}`)
+  } else if (result.outcome === 'no_frontend') {
+    log.warn(`No frontend detected; set endpoints to https://${hostname} in the provider options yourself.`)
   } else {
-    log.warn(`No env convention for this frontend; set endpoints to https://${hostname} in the provider options.`)
+    log.warn(`No env convention for ${result.framework ?? 'this frontend'}; set endpoints to https://${hostname} in the provider options yourself.`)
   }
   log.info(`Verify: restart the dev server and check in the Network tab that agent requests go to https://${hostname}.`)
 }
@@ -499,13 +510,7 @@ function subdomainOutcome(seen: SeenSubdomain | undefined, failure: SubdomainFai
     if (isCi()) log.info(`Resume with: fingerprint integrate --subdomain ${seen.hostname}`)
     return 'waiting'
   }
-  if (seen.status === 'timed_out') {
-    log.warn(`${seen.hostname} timed out before its DNS records validated. Delete it with \`fingerprint subdomains delete ${seen.hostname}\` and set it up again.`)
-    return 'waiting'
-  }
-  log.error(`${seen.hostname} failed. Check it with \`fingerprint subdomains get ${seen.hostname}\`.`)
-  process.exitCode = 1
-  return 'failed'
+  return reportTerminalStatus(seen.hostname, seen.status)
 }
 
 // Drive the agent's message stream to completion. In default mode this shows a live spinner with

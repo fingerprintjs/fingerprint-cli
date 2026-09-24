@@ -7,6 +7,7 @@ import { getAuthState } from '../auth/tokenStore.js'
 // where it stopped instead of restarting the onboarding. Only the choice is stored (workspace,
 // project, hostname); the subdomain's state always comes from the API. Kept under the user's
 // config dir, never inside the project, and removed once the endpoint is configured.
+// Only `hostname` is read back; the rest makes the file readable for someone inspecting it.
 export interface PendingSubdomainSetup {
   workspaceId: string
   root: string
