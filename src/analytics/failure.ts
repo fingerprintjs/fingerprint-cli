@@ -4,6 +4,8 @@ type Failure = { code: string; message?: string }
 
 let failure: Failure | undefined
 
+// A thrown error is reported on its own. Any path that handles its error and ends the run with
+// `process.exitCode = 1` must call this first, or the run reports `error_code: unknown` with no message.
 export function markFailure(code: string, detail?: unknown): void {
   if (failure) {
     return
