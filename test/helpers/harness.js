@@ -204,6 +204,7 @@ export function makeSkillsDir(packages = {}) {
   const skills = [
     ['fingerprint-react', 'frontend'],
     ['fingerprint-node', 'backend'],
+    ['fingerprint-python', 'backend'],
     ['fingerprint-get-started', 'orchestrator'],
   ]
   for (const [id, role] of skills) {
