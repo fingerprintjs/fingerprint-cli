@@ -16,7 +16,13 @@ import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
 import { normalizeHostname } from '../api/subdomains.js'
 import { pendingSubdomainSetup } from './subdomain-setups.js'
-import { askResumeSubdomain, askSubdomainHostname, runSubdomainStep, settleAgentSubdomainWork } from './subdomain-step.js'
+import {
+  askResumeSubdomain,
+  askSubdomainHostname,
+  runSubdomainStep,
+  settleAgentSubdomainWork,
+  type SubdomainStepPurpose,
+} from './subdomain-step.js'
 import { createSubdomainsMcpServer, FINGERPRINT_MCP_SERVER_NAME, SUBDOMAIN_TOOL_NAMES } from './subdomains-mcp.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
@@ -152,8 +158,8 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
 }
 
 // The agent's part of the subdomain step: create the subdomain, or point the app at it once active.
-function applySubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
-  return applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname })
+function applySubdomainStep(root: string, hostname: string, purpose: SubdomainStepPurpose): Promise<IntegrateOutcome> {
+  return applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname, purpose })
 }
 
 async function provisionThen(root: string, next: () => Promise<IntegrateOutcome>): Promise<IntegrateOutcome> {
@@ -231,7 +237,7 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
 async function applyIntegration(
   root: string,
-  opts: { yes?: boolean; step?: string; subdomain?: string } = {}
+  opts: { yes?: boolean; step?: string; subdomain?: string; purpose?: SubdomainStepPurpose } = {}
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
@@ -271,7 +277,11 @@ async function applyIntegration(
     (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skills.join(' + ')})? (edits files)`, default: true }))
   if (!proceed) return 'skipped'
 
-  log.step('Apply integration')
+  // The subdomain step says what is happening to the subdomain; "applying" would suggest the
+  // integration is being redone.
+  if (opts.subdomain && opts.purpose === 'configure') log.step(`Updating your app to use ${opts.subdomain}`)
+  else if (opts.subdomain) log.step(`Setting up ${opts.subdomain}`)
+  else log.step('Apply integration')
   return runAgent(analysis, opts.step, opts.subdomain)
 }
 
@@ -293,7 +303,7 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
   installSkills(analysis.root, ids)
   const metas = ids.map(skillMeta)
 
-  log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
+  if (!subdomain) log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
   // The subdomain tools run in-process with the CLI's own session, so the agent can list, create
   // and verify without ever seeing a Management API key.
@@ -314,7 +324,7 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
     },
   })
 
-  const run = await consume(response, 'Setting up the integration')
+  const run = await consume(response, subdomain ? 'Working on the custom subdomain' : 'Setting up the integration')
   if (!run.ok) {
     process.exitCode = 1
     return 'failed'

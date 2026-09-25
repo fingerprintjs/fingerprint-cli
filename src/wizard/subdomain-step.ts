@@ -5,6 +5,7 @@ import { isCi } from '../utils/ci.js'
 import { CLOUDFLARE_DNS_ONLY_HINT, dnsRecordLines, dnsRecords, pendingDnsRecords } from '../utils/dns-records.js'
 import { isVerbose } from '../utils/verbose.js'
 import { log } from './log.js'
+import { Spinner } from './spinner.js'
 import { provisionActiveSubdomainEndpoint } from './provision.js'
 import { clearPendingSubdomainSetup, savePendingSubdomainSetup } from './subdomain-setups.js'
 import type { createSubdomainsMcpServer, SeenSubdomain, SubdomainFailure } from './subdomains-mcp.js'
@@ -14,7 +15,9 @@ import type { IntegrateOutcome } from './runner.js'
 // the finish; the agent runs only to create the subdomain (following the skill) and, once it is
 // active, to point the app at it. Between those, checking DNS is an API call, not a model call.
 
-type ApplyStep = (root: string, hostname: string) => Promise<IntegrateOutcome>
+// What the agent is asked to do in its run: create the subdomain, or point the app at it.
+export type SubdomainStepPurpose = 'create' | 'configure'
+type ApplyStep = (root: string, hostname: string, purpose: SubdomainStepPurpose) => Promise<IntegrateOutcome>
 
 // The subdomain step needs a hostname the agent must not guess, so the CLI asks before the run.
 export async function askSubdomainHostname(): Promise<string> {
@@ -36,7 +39,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
   let current = await findSubdomain(service, hostname)
   if (!current) {
     // The agent creates it. Whatever its run reported, the API decides whether it exists now.
-    const outcome = await applyStep(root, hostname)
+    const outcome = await applyStep(root, hostname, 'create')
     if (outcome === 'failed') return outcome
     current = await findSubdomain(service, hostname)
     if (!current) {
@@ -46,9 +49,10 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     }
   }
 
+  let explained = false
   while (true) {
     if (current.status === 'active') {
-      const outcome = await applyStep(root, hostname)
+      const outcome = await applyStep(root, hostname, 'configure')
       if (outcome === 'completed') finishSubdomainSetup(root, hostname)
       return outcome
     }
@@ -61,21 +65,34 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       return 'waiting'
     }
 
-    log.line()
-    const choice = await select({
-      message: `${hostname} is waiting for its DNS records. What's next?`,
-      choices: [
-        { name: 'Check the DNS records now', value: 'check' },
-        { name: 'Show the DNS records again', value: 'show' },
-        { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
-      ],
-    })
-    if (choice === 'later') return 'waiting'
-    if (choice === 'show') {
-      reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
-      continue
+    // Wait for the records to validate while the user adds them; the wait is DNS propagation at
+    // their provider, so say so once. Only when the wait runs out does the user get asked.
+    if (!explained) {
+      log.line()
+      log.info('Waiting for your DNS provider to publish the records. This usually takes a few minutes')
+      log.info('and continues on its own once the subdomain is active.')
+      explained = true
     }
     current = await waitForDns(service, current)
+    if (current.status !== 'pending') continue
+
+    log.warn(
+      `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
+    )
+    let choice: 'wait' | 'show' | 'later'
+    do {
+      log.line()
+      choice = await select({
+        message: `${hostname} is still pending. What's next?`,
+        choices: [
+          { name: 'Keep waiting', value: 'wait' },
+          { name: 'Show the DNS records again', value: 'show' },
+          { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
+        ],
+      })
+      if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
+    } while (choice === 'show')
+    if (choice === 'later') return 'waiting'
   }
 }
 
@@ -140,31 +157,55 @@ async function findSubdomain(service: SubdomainsService, hostname: string): Prom
   return service.get(found.subdomain.id)
 }
 
+// Overridable so tests do not wait; not documented as user options.
+const dnsWaitMs = () => Number(process.env.FINGERPRINT_DNS_WAIT_MS ?? 300_000)
+const dnsPollMs = () => Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
+
 // One verify (the API allows one per minute), then read the status until it settles or the wait
-// runs out. Running out is not a failure: DNS propagation is outside anyone's control here.
+// runs out. Running out is not a failure: DNS propagation is outside anyone's control here. A live
+// line shows what is being waited for; without a TTY, one plain line per change instead.
 async function waitForDns(service: SubdomainsService, current: Subdomain): Promise<Subdomain> {
-  // Overridable so tests do not wait; not documented as user options.
-  const waitMs = Number(process.env.FINGERPRINT_DNS_WAIT_MS ?? 120_000)
-  const pollMs = Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
-  log.step(`Checking DNS records (up to ${Math.round(waitMs / 1000)}s)`)
+  const spinner = process.stdout.isTTY && !isCi() ? new Spinner() : null
+  const started = Date.now()
+  let shown = ''
+  const show = (subdomain: Subdomain) => {
+    if (subdomain.status !== 'pending') return
+    const records = dnsRecords(subdomain)
+    const validated = records.filter((record) => record.status === 'validated').length
+    const progress =
+      validated < records.length
+        ? `Waiting for DNS propagation · ${validated} of ${records.length} records validated`
+        : 'DNS records validated · waiting for the certificate'
+    if (spinner) spinner.setMessage(`${progress} · ${elapsed(started)}`)
+    else if (progress !== shown) log.info(progress)
+    shown = progress
+  }
+
   let latest = current
   try {
     latest = await service.verify(current.id)
   } catch (error) {
     if (serializeSubdomainError(error).kind !== 'rate_limited') throw error
   }
-  const deadline = Date.now() + waitMs
-  while (latest.status === 'pending' && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))))
-    latest = await service.get(current.id)
+  spinner?.start('Waiting for DNS propagation')
+  show(latest)
+  const deadline = Date.now() + dnsWaitMs()
+  try {
+    while (latest.status === 'pending' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(dnsPollMs(), Math.max(0, deadline - Date.now()))))
+      latest = await service.get(current.id)
+      show(latest)
+    }
+  } finally {
+    spinner?.stop()
   }
   if (latest.status === 'active') log.success(`${latest.subdomain} is active.`)
-  else if (latest.status === 'pending') {
-    const pending = pendingDnsRecords(latest)
-    if (pending.length) reportPending(latest.subdomain, pending, { heading: 'Not validated yet — still waiting for:', propagationNote: true })
-    else log.info('DNS records are validated. Certificate issuance is still in progress.')
-  }
   return latest
+}
+
+function elapsed(since: number): string {
+  const seconds = Math.round((Date.now() - since) / 1000)
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
 }
 
 // The single way DNS records are presented in the wizard: heading, records, Cloudflare hint.

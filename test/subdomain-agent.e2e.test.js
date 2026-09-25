@@ -12,7 +12,9 @@ const ID = 'certv2_123'
 const DOWN = '\x1b[B'
 const APPLYING = /Applying .* via fingerprint-get-started/g
 const FINISHED = /Agent finished applying the integration/g
-const DNS_MENU = /is waiting for its DNS records\. What's next\?/
+const DNS_MENU = /is still pending\. What's next\?/
+const CREATING = /Setting up metrics\.example\.com/
+const CONFIGURING = /Updating your app to use metrics\.example\.com/
 const LATER = `${DOWN}${DOWN}\n`
 const HOSTNAME_PROMPT = /Custom subdomain to use/
 
@@ -28,7 +30,7 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   const result = await runCli(['integrate'], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` }, // [server-side verification, custom subdomain]
@@ -38,9 +40,12 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(result.stdout.match(APPLYING)?.length, 2, result.stdout)
+  assert.equal(result.stdout.match(APPLYING)?.length, 1, result.stdout)
+  assert.match(result.stdout, CREATING)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout)
   assert.match(result.stdout, /metrics\.example\.com is waiting for these DNS records/)
+  assert.match(result.stdout, /Waiting for your DNS provider to publish the records/)
+  assert.match(result.stdout, /is not active after 0 minutes\. Check that the records match exactly/)
   assert.match(result.stdout, /CNAME {2}pending_validation\n.*Host {3}_acme-challenge\.metrics\.example\.com/)
   assert.match(result.stdout, /DNS only/)
   assert.match(result.stdout, /Finish later \(resume: fingerprint integrate --subdomain/)
@@ -64,7 +69,7 @@ test('an active subdomain is configured as the endpoint and completes the step',
   const result = await runCli(['integrate'], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
@@ -100,13 +105,13 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
   const result = await runCli(['integrate'], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: `${DOWN}\n` }, // show the records
-      { when: /DNS records for metrics\.example\.com[\s\S]*is waiting for its DNS records/, send: LATER },
+      { when: /DNS records for metrics\.example\.com[\s\S]*is still pending\. What's next\?/, send: LATER },
     ],
   })
 
@@ -120,7 +125,7 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
   assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
 })
 
-test('checking DNS from the menu picks up activation and finishes the step in the same run', async (t) => {
+test('the wait picks up activation and finishes the step in the same run', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   api.activateAfterVerify()
@@ -138,15 +143,16 @@ test('checking DNS from the menu picks up activation and finishes the step in th
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
-      { when: DNS_MENU, send: '\n' }, // check now
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
 
   assert.equal(result.status, 0, result.stderr)
   assert.equal(api.createCalls(), 1)
-  assert.match(result.stdout, /Checking DNS records/)
+  assert.match(result.stdout, /Waiting for your DNS provider to publish the records/)
   assert.match(result.stdout, /metrics\.example\.com is active\./)
+  assert.match(result.stdout, CONFIGURING)
+  assert.doesNotMatch(result.stdout, DNS_MENU)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
@@ -160,7 +166,7 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
   const repo = makeRepo()
   const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
   t.after(() => gateway.close())
-  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url }
+  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' }
 
   const first = await runCli(['integrate'], {
     home,
@@ -202,7 +208,8 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     ],
   })
   assert.equal(third.status, 0, third.stderr)
-  assert.equal(third.stdout.match(APPLYING)?.length, 1, third.stdout)
+  assert.equal(third.stdout.match(APPLYING), null, third.stdout)
+  assert.match(third.stdout, CONFIGURING)
   assert.doesNotMatch(third.stdout, HOSTNAME_PROMPT)
   assert.match(third.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
@@ -226,7 +233,7 @@ test('--subdomain goes straight to the step, in CI too', async (t) => {
   const repo = makeRepo()
   const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
   t.after(() => gateway.close())
-  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url }
+  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' }
 
   const pending = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
   assert.equal(pending.status, 0, pending.stderr)
@@ -237,7 +244,8 @@ test('--subdomain goes straight to the step, in CI too', async (t) => {
   api.seedStatus('active')
   const active = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
   assert.equal(active.status, 0, active.stderr)
-  assert.equal(active.stdout.match(APPLYING)?.length, 1, active.stdout)
+  assert.equal(active.stdout.match(APPLYING), null, active.stdout)
+  assert.match(active.stdout, CONFIGURING)
   assert.match(active.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
   assert.doesNotMatch(active.stdout, FINISHED)
 })
@@ -256,7 +264,7 @@ test('--subdomain on a stack without a curated skill fails instead of pretending
   const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
   })
 
   assert.equal(result.status, 1, result.stdout)
@@ -276,7 +284,7 @@ test('an agent run that never creates the subdomain is a failure, not a finished
   const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
   })
 
   assert.equal(result.status, 1, result.stdout)
@@ -307,7 +315,7 @@ test('the agent has no shell and no subagent, so .env cannot leak around the rea
   const result = await runCli(['--ci', 'integrate', '--yes'], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
   })
 
   assert.equal(result.status, 0, result.stderr)
@@ -332,7 +340,7 @@ test('a subdomain created while auditing still leaves the run waiting, not finis
   const result = await runCli(['--ci', 'integrate', '--yes'], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
   })
 
   assert.equal(result.status, 0, result.stderr)
@@ -354,7 +362,7 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
   const result = await runCli(['--ci', 'integrate', '--yes'], {
     home,
     cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
   })
 
   assert.equal(result.status, 1, result.stdout)
