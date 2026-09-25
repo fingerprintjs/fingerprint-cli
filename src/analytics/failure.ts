@@ -23,7 +23,3 @@ function withoutHome(text: string): string {
 export function runFailure(): Failure | undefined {
   return failure
 }
-
-export function resetFailureForTests(): void {
-  failure = undefined
-}
