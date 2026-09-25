@@ -22,6 +22,7 @@ export interface RepoAnalysis {
   frontend?: DetectedApp
   backend?: DetectedApp
   skills: string[] // resolved curated skill ids to apply ([] = none, use the docs fallback)
+  hasFrontendSkill: boolean // a curated skill covers the frontend (needed for the custom subdomain step)
 }
 
 const FRONTEND_FRAMEWORKS: Record<string, string> = {
@@ -191,6 +192,7 @@ export function analyzeRepo(root: string = process.cwd()): RepoAnalysis {
     frontend,
     backend,
     skills: resolveSkills(frontend, backend),
+    hasFrontendSkill: Boolean(frontend && (FULLSTACK_SKILLS[frontend.framework ?? ''] || FRONTEND_SKILLS[frontend.framework ?? ''])),
   }
 }
 

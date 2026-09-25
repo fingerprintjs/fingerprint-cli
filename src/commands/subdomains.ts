@@ -1,14 +1,15 @@
 import { confirm } from '@inquirer/prompts'
 import { Command } from 'commander'
 import { ManagementApiError, type ApiViolation } from '../api/management.js'
+import { apiErrorMessage, serializeSubdomainError, SubdomainError, UNAVAILABLE_MESSAGE } from '../api/subdomain-errors.js'
+import { CLOUDFLARE_DNS_ONLY_HINT, dnsRecordLines, dnsRecords } from '../utils/dns-records.js'
 import {
   SubdomainsService,
-  type DnsRecord,
   type Subdomain,
   type SubdomainListItem,
 } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
-import { NotAuthenticatedError, requireAuth } from '../utils/session.js'
+import { requireAuth } from '../utils/session.js'
 
 interface OutputOptions {
   json?: boolean
@@ -16,32 +17,6 @@ interface OutputOptions {
 
 interface DeleteOptions extends OutputOptions {
   yes?: boolean
-}
-
-const UNAVAILABLE_MESSAGE =
-  'Custom subdomain service is unavailable. This may be temporary, or the feature may be disabled. ' +
-  'Check availability with Fingerprint support before retrying.'
-
-type ErrorKind =
-  | 'not_authenticated'
-  | 'invalid_subdomain'
-  | 'duplicate'
-  | 'limit_reached'
-  | 'rate_limited'
-  | 'unavailable'
-  | 'not_found'
-  | 'ambiguous'
-  | 'confirmation_required'
-  | 'api_error'
-
-class SubdomainCommandError extends Error {
-  constructor(
-    public readonly kind: ErrorKind,
-    message: string
-  ) {
-    super(message)
-    this.name = 'SubdomainCommandError'
-  }
 }
 
 export function registerSubdomainsCommands(program: Command): void {
@@ -136,7 +111,7 @@ async function verifySubdomain(target: string, options: OutputOptions): Promise<
 async function deleteSubdomain(target: string, options: DeleteOptions): Promise<void> {
   await runCommand(options, async (service) => {
     if ((isCi() || options.json) && !options.yes) {
-      throw new SubdomainCommandError(
+      throw new SubdomainError(
         'confirmation_required',
         'Deleting a subdomain with --json or in non-interactive mode requires --yes.'
       )
@@ -167,10 +142,10 @@ async function resolveSubdomainId(service: SubdomainsService, target: string): P
 
   const result = await service.findByHostname(value)
   if (result.outcome === 'not_found') {
-    throw new SubdomainCommandError('not_found', `No custom subdomain named ${result.hostname} in this workspace.`)
+    throw new SubdomainError('not_found', `No custom subdomain named ${result.hostname} in this workspace.`)
   }
   if (result.outcome === 'ambiguous') {
-    throw new SubdomainCommandError(
+    throw new SubdomainError(
       'ambiguous',
       `Multiple subdomains match ${result.hostname}. Use an ID instead: ${result.matches.map(({ id }) => id).join(', ')}.`
     )
@@ -187,7 +162,7 @@ async function runCommand(
     await action(new SubdomainsService())
   } catch (error) {
     if (!options.json) throw new Error(formatError(error))
-    printJson({ error: serializeError(error) })
+    printJson({ error: serializeSubdomainError(error) })
     process.exitCode = 1
   }
 }
@@ -203,14 +178,7 @@ function printSubdomain(subdomain: Subdomain): void {
 
   console.log('\nDNS records')
   for (const record of dnsRecords(subdomain)) {
-    console.log(`  ${record.type}  ${record.status}`)
-    printFields(
-      [
-        ['Host', record.host],
-        ['Value', record.value],
-      ],
-      '    '
-    )
+    for (const line of dnsRecordLines(record)) console.log(`  ${line}`)
   }
   printNextStep(subdomain)
 }
@@ -221,7 +189,7 @@ function printNextStep(subdomain: Subdomain): void {
     case 'pending':
       if (dnsRecords(subdomain).some((record) => record.status !== 'validated')) {
         console.log('\nSetup is not complete. Add or correct the unvalidated DNS records above at your DNS provider.')
-        console.log('On Cloudflare, set the records to DNS only (proxying off); proxied records do not validate.')
+        console.log(CLOUDFLARE_DNS_ONLY_HINT)
         console.log('If you already added them, allow time for DNS propagation. Then run:')
         console.log(`  fingerprint subdomains verify ${hostname}`)
       } else {
@@ -264,37 +232,6 @@ function printFields(fields: Array<[string, string]>, indent = ''): void {
   for (const [label, value] of fields) console.log(`${indent}${label.padEnd(width)}  ${value}`)
 }
 
-function dnsRecords(subdomain: Subdomain): DnsRecord[] {
-  return [
-    subdomain.dns_records.verification,
-    ...subdomain.dns_records.routing,
-    ...(subdomain.dns_records.caa ? [subdomain.dns_records.caa] : []),
-  ]
-}
-
-function serializeError(error: unknown): Record<string, unknown> {
-  if (error instanceof SubdomainCommandError) return { kind: error.kind, message: error.message }
-  if (error instanceof NotAuthenticatedError) return { kind: 'not_authenticated', message: error.message }
-  if (!(error instanceof ManagementApiError)) {
-    return { kind: 'api_error', message: error instanceof Error ? error.message : String(error) }
-  }
-
-  return {
-    kind: errorKind(error),
-    message: apiErrorMessage(error),
-    ...(error.status === undefined ? {} : { status: error.status }),
-    ...(error.code === undefined ? {} : { code: error.code }),
-    ...(error.violations?.length ? { violations: error.violations } : {}),
-    ...(error.retryAfter === undefined ? {} : { retry_after: error.retryAfter }),
-  }
-}
-
-function apiErrorMessage(error: ManagementApiError): string {
-  if (error.status === 401) return `${error.message.replace(/[.!?]*$/, '')}. Run: fingerprint login`
-  if (error.status === 503) return UNAVAILABLE_MESSAGE
-  return error.message
-}
-
 function formatError(error: unknown): string {
   if (!(error instanceof ManagementApiError)) return error instanceof Error ? error.message : String(error)
   if (error.status === 503) return UNAVAILABLE_MESSAGE
@@ -307,23 +244,6 @@ function formatError(error: unknown): string {
 function formatViolations(violations?: ApiViolation[]): string {
   if (!violations?.length) return ''
   return `\n${violations.map((violation) => `${violation.property}: ${violation.message}`).join('\n')}`
-}
-
-function errorKind(error: ManagementApiError): ErrorKind {
-  if (error.status === 401) return 'not_authenticated'
-  // Runtime currently returns 400 for limits, while the published contract documents 409.
-  if (
-    (error.status === 400 || error.status === 409) &&
-    /limit.*subdomains|subdomains.*limit/i.test(error.message)
-  ) {
-    return 'limit_reached'
-  }
-  if (error.status === 422) return 'invalid_subdomain'
-  if (error.status === 409) return 'duplicate'
-  if (error.status === 429) return 'rate_limited'
-  if (error.status === 404) return 'not_found'
-  if (error.status === 503) return 'unavailable'
-  return 'api_error'
 }
 
 function printJson(value: unknown): void {
