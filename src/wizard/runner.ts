@@ -1,6 +1,6 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
@@ -95,7 +95,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean } = {
   const done = new Set<NextStep>()
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
-    if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
+    if (analysis.backend && hasServerApiSetup(analysis.backend)) done.add('server')
     const next = await askNextStep(done)
     if (next === 'stop') break
     // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
@@ -149,19 +149,37 @@ async function askBackendPath(): Promise<string | undefined> {
   return path ? resolve(path) : undefined
 }
 
-// Step 2 is already in place when the backend depends on the Fingerprint server SDK.
-function hasServerSdk(app: DetectedApp): boolean {
+// Step 2 is already in place when the backend's own code calls the Server API. The dependency is
+// no proof of that: the CLI installs every skill's packages after step 1, backend skill included.
+const SERVER_API_USE = /\bgetEvent\s*\(|\bget_event\s*\(|FINGERPRINT_SECRET_API_KEY|@fingerprint\/node-sdk/
+const SOURCE_FILE = /\.([cm]?[jt]sx?|py)$/
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.nuxt', 'coverage', 'venv', '.venv', '__pycache__', 'vendor'])
+const MAX_SOURCE_FILES = 500
+const MAX_SOURCE_BYTES = 512 * 1024
+
+function hasServerApiSetup(app: DetectedApp): boolean {
   try {
-    if (app.language === 'python') {
-      return ['requirements.txt', 'pyproject.toml'].some(
-        (f) => existsSync(join(app.dir, f)) && readFileSync(join(app.dir, f), 'utf8').includes('fingerprint-server-sdk')
-      )
-    }
-    const pkg = JSON.parse(readFileSync(join(app.dir, 'package.json'), 'utf8'))
-    return Boolean(pkg.dependencies?.['@fingerprint/node-sdk'])
+    return usesServerApi(app.dir, 0, { left: MAX_SOURCE_FILES })
   } catch {
     return false
   }
+}
+
+// Depth- and file-bounded scan of the app's own source, so the menu can't turn into a full-tree grep.
+function usesServerApi(dir: string, depth: number, budget: { left: number }): boolean {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (budget.left <= 0) return false
+    if (entry.isDirectory()) {
+      if (depth >= 4 || SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue
+      if (usesServerApi(join(dir, entry.name), depth + 1, budget)) return true
+    } else if (entry.isFile() && SOURCE_FILE.test(entry.name)) {
+      budget.left--
+      const file = join(dir, entry.name)
+      if (statSync(file).size > MAX_SOURCE_BYTES) continue
+      if (SERVER_API_USE.test(readFileSync(file, 'utf8'))) return true
+    }
+  }
+  return false
 }
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
