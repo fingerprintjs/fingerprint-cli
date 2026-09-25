@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VERSION } from '../dist/version.js'
@@ -219,6 +219,85 @@ test('a command that fails still reports, with status error', async () => {
   )
 
   srv.close()
+})
+
+function makeFailingGit() {
+  const dir = mkdtempSync(join(tmpdir(), 'fp-bin-'))
+  const file = join(dir, 'git')
+  writeFileSync(file, '#!/bin/sh\necho "fatal: destination path \'$6\' already exists and is not an empty directory." >&2\nexit 128\n')
+  chmodSync(file, 0o755)
+  return dir
+}
+
+const errorProps = (api) => {
+  const run = first(api, 'cli_command_run')
+  return run ? run.body.properties : undefined
+}
+
+test('an integrate that gives up for want of a session reports why, not just error', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['integrate'], {
+    home: makeHome(),
+    cwd: makeRepo(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
+  })
+  assert.equal(res.status, 1)
+
+  assert.match(errorProps(api).status, /error/)
+  assert.equal(errorProps(api).error_code, 'session_unavailable')
+
+  await api.close()
+})
+
+test('a skills clone that cannot reach the network is reported as its own failure', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['integrate', '--yes'], {
+    home,
+    cwd: makeRepo(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+  })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).error_code, 'skills_fetch_failed')
+
+  await api.close()
+})
+
+test('the reported message says what actually failed', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  await runCli(['integrate', '--yes'], {
+    home,
+    cwd: makeRepo(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+  })
+
+  assert.match(errorProps(api).error_message, /Could not fetch skills/)
+  const message = errorProps(api).error_message
+  assert.match(message, /fatal: destination path '~\/\.config\/fingerprint\/skills' already exists/)
+  assert.ok(!message.includes(home))
+
+  await api.close()
+})
+
+test('a mistyped command reports a code, not a bare error', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['intergrate'], { home })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).status, 'error')
+  assert.equal(errorProps(api).error_code, 'unknown_command')
+
+  await api.close()
 })
 
 test('an unauthenticated run reports through the anonymous route, with no key attached', async () => {
