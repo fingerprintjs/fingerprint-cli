@@ -151,7 +151,9 @@ async function askBackendPath(): Promise<string | undefined> {
 
 // Step 2 is already in place when the backend's own code calls the Server API. The dependency is
 // no proof of that: the CLI installs every skill's packages after step 1, backend skill included.
-const SERVER_API_USE = /\bgetEvent\s*\(|\bget_event\s*\(|FINGERPRINT_SECRET_API_KEY|@fingerprint\/node-sdk/
+const SERVER_API_CALL = /\bgetEvent\s*\(|\bget_event\s*\(|FINGERPRINT_SECRET_API_KEY/
+// Import syntax only: the bare package name also appears in comments telling the user to install it.
+const SERVER_SDK_IMPORT = /(?:from|import|require)\s*\(?\s*['"]@fingerprint\/node-sdk['"]|^\s*(?:import|from)\s+fingerprint_server_sdk\b/m
 const SOURCE_FILE = /\.([cm]?[jt]sx?|py)$/
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.nuxt', 'coverage', 'venv', '.venv', '__pycache__', 'vendor'])
 const MAX_SOURCE_FILES = 500
@@ -176,7 +178,8 @@ function usesServerApi(dir: string, depth: number, budget: { left: number }): bo
       budget.left--
       const file = join(dir, entry.name)
       if (statSync(file).size > MAX_SOURCE_BYTES) continue
-      if (SERVER_API_USE.test(readFileSync(file, 'utf8'))) return true
+      const source = readFileSync(file, 'utf8')
+      if (SERVER_API_CALL.test(source) || SERVER_SDK_IMPORT.test(source)) return true
     }
   }
   return false
