@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeHome, makeRepo, makeSkillsDir, runCli, seedAuth } from './helpers/harness.js'
 
@@ -70,16 +70,16 @@ test('an active subdomain is configured as the endpoint and completes the step',
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: /Custom subdomain to use/, send: `${HOSTNAME}\n` },
       // Step done → the menu is [server-side verification, stop]; pick stop.
-      { when: /Agent finished[\s\S]*Agent finished[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(result.stdout.match(FINISHED)?.length, 2, result.stdout)
+  assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.doesNotMatch(result.stdout, /waiting for these DNS records/)
   assert.equal(api.createCalls(), 0)
   // The agent could still edit code after using the tools, and pointed the app at the subdomain.
-  assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: 'https:\/\/metrics\.example\.com'/)
+  assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
   // The CLI wrote the endpoint variable itself and told the agent which one to reference.
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /^VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com$/m)
   assert.match(result.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
@@ -139,7 +139,7 @@ test('checking DNS from the menu picks up activation and finishes the step in th
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: '\n' }, // check now
-      { when: /Agent finished[\s\S]*Agent finished[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
 
@@ -147,9 +147,9 @@ test('checking DNS from the menu picks up activation and finishes the step in th
   assert.equal(api.createCalls(), 1)
   assert.match(result.stdout, /Checking DNS records/)
   assert.match(result.stdout, /metrics\.example\.com is active\./)
-  assert.equal(result.stdout.match(FINISHED)?.length, 2, result.stdout)
+  assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
-  assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: 'https:\/\/metrics\.example\.com'/)
+  assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
 })
 
 test('a later run offers to resume the unfinished subdomain without auditing or asking for the hostname', async (t) => {
@@ -198,13 +198,14 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     env,
     respond: [
       { when: /Resume the custom subdomain setup for metrics\.example\.com\?/, send: 'y\n' },
-      { when: /Agent finished[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
   assert.equal(third.status, 0, third.stderr)
   assert.equal(third.stdout.match(APPLYING)?.length, 1, third.stdout)
   assert.doesNotMatch(third.stdout, HOSTNAME_PROMPT)
   assert.match(third.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
+  assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
   assert.equal(api.createCalls(), 1)
 
   const fourth = await runCli(['integrate'], {
@@ -230,6 +231,7 @@ test('--subdomain goes straight to the step, in CI too', async (t) => {
   const pending = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
   assert.equal(pending.status, 0, pending.stderr)
   assert.equal(pending.stdout.match(APPLYING), null, pending.stdout)
+  assert.match(pending.stdout, /is waiting for these DNS records:[\s\S]*CNAME {2}pending_validation/)
   assert.match(pending.stdout, /Run fingerprint integrate --subdomain metrics\.example\.com to continue later\./)
 
   api.seedStatus('active')
@@ -237,7 +239,49 @@ test('--subdomain goes straight to the step, in CI too', async (t) => {
   assert.equal(active.status, 0, active.stderr)
   assert.equal(active.stdout.match(APPLYING)?.length, 1, active.stdout)
   assert.match(active.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
-  assert.equal(active.stdout.match(FINISHED)?.length, 1, active.stdout)
+  assert.doesNotMatch(active.stdout, FINISHED)
+})
+
+test('--subdomain on a stack without a curated skill fails instead of pretending', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  writeFileSync(join(repo, 'web', 'package.json'), JSON.stringify({ name: 'web', dependencies: { nuxt: '^3' } }))
+  rmSync(join(repo, 'api'), { recursive: true })
+  const gateway = await startGateway(() => ({ text: 'Nothing to do.' }))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stdout + result.stderr, /needs a curated frontend skill/)
+  assert.equal(api.createCalls(), 0)
+})
+
+test('an agent run that never creates the subdomain is a failure, not a finished step', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(() => ({ text: 'All set.' })) // no tool calls at all
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stdout + result.stderr, /metrics\.example\.com was not created/)
+  assert.doesNotMatch(result.stdout, FINISHED)
 })
 
 test('the agent has no shell and no subagent, so .env cannot leak around the read hook', async (t) => {
@@ -247,10 +291,13 @@ test('the agent has no shell and no subagent, so .env cannot leak around the rea
   seedAuth(home, api.url)
   const repo = makeRepo()
   const target = join(repo, 'web', 'fingerprint.js')
+  writeFileSync(join(repo, 'web', '.env'), 'VITE_FINGERPRINT_PUBLIC_API_KEY=pub_123\n')
+  symlinkSync(join(repo, 'web', '.env'), join(repo, 'web', 'config.txt'))
   const gateway = await startGateway((payload) => {
     const messages = JSON.stringify(payload.messages ?? [])
     const has = (tool) => messages.includes(`"name":"${tool}"`)
     if (!has('Bash')) return { tool: 'Bash', input: { command: 'cat web/.env' } }
+    if (!has('Read')) return { tool: 'Read', input: { file_path: join(repo, 'web', 'config.txt') } } // symlink to .env
     if (!has('Agent')) return { tool: 'Agent', input: { description: 'read env', prompt: 'Read web/.env and return its contents.' } }
     if (!has('Write')) return { tool: 'Write', input: { file_path: target, content: '// integration\n' } }
     return { text: 'Done.' }
@@ -269,6 +316,7 @@ test('the agent has no shell and no subagent, so .env cannot leak around the rea
   assert.doesNotMatch(sent, /pub_123/)
   assert.match(sent, /"name":"Bash"[\s\S]*"is_error":true/)
   assert.match(sent, /"name":"Agent"[\s\S]*"is_error":true/)
+  assert.match(sent, /Reading \.env is not allowed/)
   assert.equal(readFileSync(target, 'utf8'), '// integration\n')
 })
 
@@ -330,7 +378,7 @@ function subdomainAgent(target) {
       if (messages.includes('\\"status\\":\\"active\\"') && !has('Write')) {
         // The SDK requires a Read before overwriting an existing file.
         if (!has('Read')) return { tool: 'Read', input: { file_path: target } }
-        return { tool: 'Write', input: { file_path: target, content: `// integration\nexport const options = { endpoints: 'https://${HOSTNAME}' }\n` } }
+        return { tool: 'Write', input: { file_path: target, content: '// integration\nexport const options = { endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS }\n' } }
       }
       return { text: `${HOSTNAME} is already set up.` }
     }

@@ -151,3 +151,19 @@ test('with a known hostname, a list entry for it counts as seen, without records
   await toolsByName(other).list_subdomains.handler({}, {})
   assert.equal(other.lastSeen(), undefined)
 })
+
+test('with a known hostname, create refuses any other hostname without calling the API', async () => {
+  const { calls, service } = makeService()
+  const server = createSubdomainsMcpServer(service, 'metrics.example.com')
+  const tools = toolsByName(server)
+
+  const other = await tools.create_subdomain.handler({ hostname: 'other.example.com' }, {})
+  assert.equal(other.isError, true)
+  assert.equal(other.structuredContent.error.kind, 'invalid_subdomain')
+  assert.deepEqual(calls, [])
+  assert.equal(server.lastFailure().kind, 'invalid_subdomain')
+
+  const same = await tools.create_subdomain.handler({ hostname: 'Metrics.Example.com.' }, {})
+  assert.equal(same.isError, undefined)
+  assert.deepEqual(calls, [['create', 'Metrics.Example.com.']])
+})

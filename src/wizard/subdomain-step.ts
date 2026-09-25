@@ -35,10 +35,15 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
   const service = new SubdomainsService()
   let current = await findSubdomain(service, hostname)
   if (!current) {
+    // The agent creates it. Whatever its run reported, the API decides whether it exists now.
     const outcome = await applyStep(root, hostname)
-    if (outcome !== 'waiting') return outcome
+    if (outcome === 'failed') return outcome
     current = await findSubdomain(service, hostname)
-    if (!current) return 'waiting'
+    if (!current) {
+      log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
+      process.exitCode = 1
+      return 'failed'
+    }
   }
 
   while (true) {
@@ -49,6 +54,9 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     }
     if (current.status === 'failed' || current.status === 'timed_out') return reportTerminalStatus(hostname, current.status)
     if (isCi()) {
+      const pending = pendingDnsRecords(current)
+      if (pending.length) reportPending(hostname, pending)
+      else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
       log.info(resumeHint(hostname))
       return 'waiting'
     }
@@ -110,7 +118,8 @@ function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | unde
 
 // The one place a subdomain setup is completed: the endpoint variable is written, host-side, like
 // the other keys, and the project stops being "unfinished". The agent has already pointed the app
-// at the variable.
+// at the variable. When there is nothing the CLI can write to (no frontend, or no env convention)
+// the user is told the one manual step; resuming could not do more, so the reference goes too.
 function finishSubdomainSetup(root: string, hostname: string): void {
   const result = provisionActiveSubdomainEndpoint(root, hostname)
   if (result.outcome === 'configured') {

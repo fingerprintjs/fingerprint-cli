@@ -1,6 +1,6 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
@@ -53,7 +53,9 @@ const denyEnvReads: HookCallbackMatcher = {
       if (input.tool_name !== 'Read' && input.tool_name !== 'Grep') return {}
       const i = (input.tool_input ?? {}) as { file_path?: string; path?: string }
       const target = i.file_path ?? i.path ?? ''
-      if (!ENV_FILE.test(target)) return {}
+      // Match the name the agent asked for and the file it resolves to: a symlink with a harmless
+      // name pointing at .env is still .env.
+      if (!ENV_FILE.test(target) && !ENV_FILE.test(realPathOrSelf(target))) return {}
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -63,6 +65,14 @@ const denyEnvReads: HookCallbackMatcher = {
       }
     },
   ],
+}
+
+function realPathOrSelf(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
 }
 
 // Permission-related query options. Auto mode (default): edits + reads run without prompting.
@@ -225,6 +235,14 @@ async function applyIntegration(
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
+  // The subdomain step points the frontend at the subdomain; without a curated frontend skill the
+  // agent has neither the tools nor the instructions, and claiming the step done would be a lie.
+  if (opts.subdomain && !analysis.hasFrontendSkill) {
+    log.error('The custom subdomain step needs a curated frontend skill, and none matches this stack.')
+    process.exitCode = 1
+    return 'failed'
+  }
+
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
   // best-effort, docs-researched integration instead of giving up.
   if (!analysis.skills.length) {
@@ -324,7 +342,8 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
     process.exitCode = 1
     return 'failed'
   }
-  log.success('Agent finished applying the integration.')
+  // In the subdomain step the CLI reports the result itself once it has checked the API.
+  if (step !== NEXT_STEPS.proxy.step) log.success('Agent finished applying the integration.')
   return installed
 }
 

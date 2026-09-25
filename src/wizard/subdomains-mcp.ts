@@ -1,6 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { serializeSubdomainError, type SubdomainErrorKind } from '../api/subdomain-errors.js'
+import { serializeSubdomainError, SubdomainError, type SubdomainErrorKind } from '../api/subdomain-errors.js'
 import {
   normalizeHostname,
   SubdomainsService,
@@ -94,7 +94,14 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       'create_subdomain',
       'Creates a custom subdomain and returns the DNS records the user must add.',
       { hostname: z.string().trim().min(1).describe('Fully qualified hostname, e.g. metrics.example.com') },
-      ({ hostname }) => mutate('create_subdomain', async () => observe(await service.create(hostname)))
+      ({ hostname }) =>
+        mutate('create_subdomain', async () => {
+          // The user chose the hostname; the model may not create a different one.
+          if (wanted && normalizeHostname(hostname) !== wanted) {
+            throw new SubdomainError('invalid_subdomain', `This run sets up ${wanted}; create that hostname or none.`)
+          }
+          return observe(await service.create(hostname))
+        })
     ),
     tool(
       'verify_subdomain',
