@@ -12,7 +12,7 @@ const ID = 'certv2_123'
 const DOWN = '\x1b[B'
 const APPLYING = /Applying .* via fingerprint-get-started/g
 const FINISHED = /Agent finished applying the integration/g
-const DNS_MENU = /is still pending\. What's next\?/
+const DNS_MENU = /is waiting for its DNS records\. What's next\?/
 const CREATING = /Setting up metrics\.example\.com/
 const CONFIGURING = /Updating your app to use metrics\.example\.com/
 const LATER = `${DOWN}${DOWN}\n`
@@ -44,8 +44,8 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   assert.match(result.stdout, CREATING)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout)
   assert.match(result.stdout, /metrics\.example\.com is waiting for these DNS records/)
-  assert.match(result.stdout, /Waiting for your DNS provider to publish the records/)
-  assert.match(result.stdout, /is not active after 0 minutes\. Check that the records match exactly/)
+  assert.match(result.stdout, /Add the records at your DNS provider, then check/)
+  assert.doesNotMatch(result.stdout, /is not active after/)
   assert.match(result.stdout, /CNAME {2}pending_validation\n.*Host {3}_acme-challenge\.metrics\.example\.com/)
   assert.match(result.stdout, /DNS only/)
   assert.match(result.stdout, /Finish later \(resume: fingerprint integrate --subdomain/)
@@ -111,7 +111,7 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: `${DOWN}\n` }, // show the records
-      { when: /DNS records for metrics\.example\.com[\s\S]*is still pending\. What's next\?/, send: LATER },
+      { when: /DNS records for metrics\.example\.com[\s\S]*is waiting for its DNS records\. What's next\?/, send: LATER },
     ],
   })
 
@@ -125,7 +125,7 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
   assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
 })
 
-test('the wait picks up activation and finishes the step in the same run', async (t) => {
+test('checking DNS from the menu picks up activation and finishes the step in the same run', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   api.activateAfterVerify()
@@ -143,16 +143,15 @@ test('the wait picks up activation and finishes the step in the same run', async
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: '\n' }, // check now
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
 
   assert.equal(result.status, 0, result.stderr)
   assert.equal(api.createCalls(), 1)
-  assert.match(result.stdout, /Waiting for your DNS provider to publish the records/)
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(result.stdout, CONFIGURING)
-  assert.doesNotMatch(result.stdout, DNS_MENU)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)

@@ -65,27 +65,20 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       return 'waiting'
     }
 
-    // Wait for the records to validate while the user adds them; the wait is DNS propagation at
-    // their provider, so say so once. Only when the wait runs out does the user get asked.
+    // The user adds the records at their provider, then asks for a check; the check itself waits
+    // for propagation with a live line. Nothing happens until they ask.
     if (!explained) {
       log.line()
-      log.info('Waiting for your DNS provider to publish the records. This usually takes a few minutes')
-      log.info('and continues on its own once the subdomain is active.')
+      log.info('Add the records at your DNS provider, then check. Propagation usually takes a few minutes.')
       explained = true
     }
-    current = await waitForDns(service, current)
-    if (current.status !== 'pending') continue
-
-    log.warn(
-      `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
-    )
-    let choice: 'wait' | 'show' | 'later'
+    let choice: 'check' | 'show' | 'later'
     do {
       log.line()
       choice = await select({
-        message: `${hostname} is still pending. What's next?`,
+        message: `${hostname} is waiting for its DNS records. What's next?`,
         choices: [
-          { name: 'Keep waiting', value: 'wait' },
+          { name: 'Check the DNS records now', value: 'check' },
           { name: 'Show the DNS records again', value: 'show' },
           { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
         ],
@@ -93,6 +86,13 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
     } while (choice === 'show')
     if (choice === 'later') return 'waiting'
+
+    current = await waitForDns(service, current)
+    if (current.status === 'pending') {
+      log.warn(
+        `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
+      )
+    }
   }
 }
 
