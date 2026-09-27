@@ -8,9 +8,8 @@ import {
   type Subdomain,
   type SubdomainListItem,
 } from '../api/subdomains.js'
-import open from 'open'
 import { isCi } from '../utils/ci.js'
-import { listenForDomainConnect } from '../utils/domain-connect.js'
+import { DOMAIN_CONNECT_TIMEOUT_MS, listenForDomainConnect, openDomainConnectLink } from '../utils/domain-connect.js'
 import { requireAuth } from '../utils/session.js'
 
 interface OutputOptions {
@@ -24,8 +23,6 @@ interface DeleteOptions extends OutputOptions {
 interface ConnectOptions extends OutputOptions {
   open?: boolean
 }
-
-const DOMAIN_CONNECT_TIMEOUT_MS = 10 * 60 * 1000
 
 export function registerSubdomainsCommands(program: Command): void {
   const subdomains = program
@@ -140,13 +137,7 @@ async function connectSubdomain(target: string, options: ConnectOptions): Promis
       if (options.json) return printJson({ data: link })
 
       const provider = link.dns_provider ?? 'your DNS provider'
-      if (options.open === false || isCi()) {
-        console.log(`Open this link to add the records at ${provider}:\n  ${link.domain_connect_url}`)
-      } else {
-        console.log(`Opening ${provider} in your browser... If it doesn't open, visit:\n  ${link.domain_connect_url}`)
-        await open(link.domain_connect_url).catch(() => {})
-      }
-      console.log('Authorize the change there, then come back here.')
+      for (const line of await openDomainConnectLink(link.domain_connect_url, provider, options.open !== false)) console.log(line)
 
       const result = await loopback.callback
       if (result.outcome === 'timeout') {

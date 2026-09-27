@@ -157,6 +157,38 @@ test('checking DNS from the menu picks up activation and finishes the step in th
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
 })
 
+test('when the DNS provider supports Domain Connect, the browser adds the records and the step finishes', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.enableDomainConnect()
+  api.activateAfterVerify()
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0', FINGERPRINT_NO_BROWSER: '1' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: /Cloudflare can add the DNS records for you/, send: '\n' }, // let Cloudflare add them
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Open this link to add the records at Cloudflare:\n.*https:\/\/dc\.example\.test\/apply\?port=\d+/)
+  assert.match(result.stdout, /Cloudflare added the records\./)
+  assert.match(result.stdout, /metrics\.example\.com is active\./)
+  assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.doesNotMatch(result.stdout, DNS_MENU)
+})
+
 test('a later run offers to resume the unfinished subdomain without auditing or asking for the hostname', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
@@ -412,6 +444,7 @@ function startSubdomainApi() {
   let createCalls = 0
   let createFailure
   let activateOnVerify = false
+  let domainConnect = false
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
@@ -430,6 +463,12 @@ function startSubdomainApi() {
         return json(200, { data: detail(status) })
       }
       if (route === `GET /subdomains/${ID}`) return json(200, { data: detail(status) })
+      if (route === `POST /subdomains/${ID}/domain-connect`) {
+        if (!domainConnect) return json(409, { error: { code: 'general.conflict', message: 'Domain Connect is not available for this subdomain' } })
+        const port = JSON.parse(body).port
+        setTimeout(() => fetch(`http://127.0.0.1:${port}/domain-connect/callback`).catch(() => {}), 150)
+        return json(200, { data: { domain_connect_url: `https://dc.example.test/apply?port=${port}`, dns_provider: 'Cloudflare' } })
+      }
       if (route === `POST /subdomains/${ID}/verify`) {
         const response = detail(status)
         if (activateOnVerify) status = 'active' // the refreshed GET after verify sees it
@@ -456,6 +495,9 @@ function startSubdomainApi() {
         },
         activateAfterVerify() {
           activateOnVerify = true
+        },
+        enableDomainConnect() {
+          domainConnect = true
         },
         close: () => new Promise((done) => server.close(done)),
       })

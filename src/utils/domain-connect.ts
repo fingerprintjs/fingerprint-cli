@@ -1,5 +1,7 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import open from 'open'
+import { isCi } from './ci.js'
 
 // Domain Connect hands the user to their DNS provider in the browser; the provider adds the
 // records and redirects back to a loopback URL the Management API signs into the link. This is
@@ -49,3 +51,14 @@ export function listenForDomainConnect(timeoutMs: number): Promise<{
     })
   })
 }
+
+// Open the link in the browser, or just print it: in CI, when asked not to, or when
+// FINGERPRINT_NO_BROWSER is set (tests, SSH sessions). Returns the lines to show the user.
+export async function openDomainConnectLink(url: string, provider: string, openBrowser: boolean): Promise<string[]> {
+  const print = !openBrowser || isCi() || Boolean(process.env.FINGERPRINT_NO_BROWSER)
+  if (print) return [`Open this link to add the records at ${provider}:`, `  ${url}`, 'Authorize the change there, then come back here.']
+  await open(url).catch(() => {})
+  return [`Opening ${provider} in your browser... If it doesn't open, visit:`, `  ${url}`, 'Authorize the change there, then come back here.']
+}
+
+export const DOMAIN_CONNECT_TIMEOUT_MS = 10 * 60 * 1000

@@ -1,8 +1,10 @@
 import { confirm, input, select } from '@inquirer/prompts'
+import { ManagementApiError } from '../api/management.js'
 import { serializeSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
 import { CLOUDFLARE_DNS_ONLY_HINT, dnsRecordLines, dnsRecords, pendingDnsRecords } from '../utils/dns-records.js'
+import { DOMAIN_CONNECT_TIMEOUT_MS, listenForDomainConnect, openDomainConnectLink } from '../utils/domain-connect.js'
 import { isVerbose } from '../utils/verbose.js'
 import { log } from './log.js'
 import { Spinner } from './spinner.js'
@@ -50,6 +52,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
   }
 
   let explained = false
+  let offeredDomainConnect = false
   while (true) {
     if (current.status === 'active') {
       const outcome = await applyStep(root, hostname, 'configure')
@@ -63,6 +66,15 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
       log.info(resumeHint(hostname))
       return 'waiting'
+    }
+
+    // When the DNS provider supports Domain Connect, the browser can add the records; offered once.
+    if (!offeredDomainConnect) {
+      offeredDomainConnect = true
+      if (await offerDomainConnect(service, current)) {
+        current = await waitForDns(service, current)
+        continue
+      }
     }
 
     // The user adds the records at their provider, then asks for a check; the check itself waits
@@ -93,6 +105,47 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
         `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
       )
     }
+  }
+}
+
+// Ask the API for a Domain Connect link; when the provider has one, let the user choose the
+// browser flow. Returns true once the provider redirected back, meaning the records are in and the
+// caller can wait for validation. Any other way out returns false and the manual path continues.
+async function offerDomainConnect(service: SubdomainsService, current: Subdomain): Promise<boolean> {
+  const loopback = await listenForDomainConnect(DOMAIN_CONNECT_TIMEOUT_MS)
+  try {
+    const link = await service.domainConnect(current.id, loopback.port).catch((error) => {
+      if (error instanceof ManagementApiError && error.status === 409) return undefined // no Domain Connect here
+      throw error
+    })
+    if (!link) return false
+    const provider = link.dns_provider ?? 'your DNS provider'
+
+    log.line()
+    const choice = await select({
+      message: `${provider} can add the DNS records for you. How do you want to add them?`,
+      choices: [
+        { name: `Open ${provider} and let it add them for me`, value: 'browser' },
+        { name: "Show me the records and I'll add them myself", value: 'manual' },
+      ],
+    })
+    if (choice === 'manual') return false
+
+    for (const line of await openDomainConnectLink(link.domain_connect_url, provider, true)) log.info(line)
+    const spinner = process.stdout.isTTY && !isCi() ? new Spinner() : null
+    spinner?.start(`Waiting for ${provider}`)
+    const result = await loopback.callback
+    spinner?.stop()
+    if (result.outcome === 'done') {
+      log.success(`${provider} added the records.`)
+      return true
+    }
+    if (result.outcome === 'error') log.warn(`${provider} did not add the records: ${result.error}. You can add them yourself:`)
+    else log.warn(`No response from ${provider} after ${DOMAIN_CONNECT_TIMEOUT_MS / 60_000} minutes. You can add the records yourself:`)
+    reportPending(current.subdomain, dnsRecords(current), { heading: `DNS records for ${current.subdomain}:` })
+    return false
+  } finally {
+    loopback.close()
   }
 }
 
