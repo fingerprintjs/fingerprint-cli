@@ -13,6 +13,7 @@ export type SubdomainErrorKind =
   | 'not_found'
   | 'ambiguous'
   | 'confirmation_required'
+  | 'unsupported'
   | 'api_error'
 
 export interface SerializedSubdomainError {

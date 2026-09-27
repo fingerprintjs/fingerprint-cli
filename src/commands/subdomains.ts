@@ -8,7 +8,9 @@ import {
   type Subdomain,
   type SubdomainListItem,
 } from '../api/subdomains.js'
+import open from 'open'
 import { isCi } from '../utils/ci.js'
+import { listenForDomainConnect } from '../utils/domain-connect.js'
 import { requireAuth } from '../utils/session.js'
 
 interface OutputOptions {
@@ -18,6 +20,12 @@ interface OutputOptions {
 interface DeleteOptions extends OutputOptions {
   yes?: boolean
 }
+
+interface ConnectOptions extends OutputOptions {
+  open?: boolean
+}
+
+const DOMAIN_CONNECT_TIMEOUT_MS = 10 * 60 * 1000
 
 export function registerSubdomainsCommands(program: Command): void {
   const subdomains = program
@@ -60,6 +68,14 @@ export function registerSubdomainsCommands(program: Command): void {
     .argument('<id-or-hostname>', 'subdomain hostname or ID')
     .option('--json', 'print machine-readable JSON')
     .action((target: string, options: OutputOptions) => verifySubdomain(target, options))
+
+  subdomains
+    .command('connect')
+    .description('Add the DNS records through your DNS provider (Domain Connect), then verify')
+    .argument('<id-or-hostname>', 'subdomain hostname or ID')
+    .option('--json', 'print the Domain Connect link and exit')
+    .option('--no-open', 'print the link instead of opening the browser')
+    .action((target: string, options: ConnectOptions) => connectSubdomain(target, options))
 
   subdomains
     .command('delete')
@@ -105,6 +121,44 @@ async function verifySubdomain(target: string, options: OutputOptions): Promise<
     if (options.json) return printJson({ data: subdomain })
     console.log('Verification requested.\n')
     printSubdomain(subdomain)
+  })
+}
+
+// The provider adds the records; the CLI only hands the user over and comes back to verify. The
+// link is signed for this run's loopback port, so `--json` prints it for another machine and the
+// redirect goes nowhere; verify afterwards with `subdomains verify`.
+async function connectSubdomain(target: string, options: ConnectOptions): Promise<void> {
+  await runCommand(options, async (service) => {
+    const id = await resolveSubdomainId(service, target)
+    const loopback = await listenForDomainConnect(DOMAIN_CONNECT_TIMEOUT_MS)
+    try {
+      const link = await service.domainConnect(id, loopback.port).catch((error) => {
+        // 409 here means "not while pending" or "no Domain Connect for this provider", not a duplicate.
+        if (error instanceof ManagementApiError && error.status === 409) throw new SubdomainError('unsupported', error.message)
+        throw error
+      })
+      if (options.json) return printJson({ data: link })
+
+      const provider = link.dns_provider ?? 'your DNS provider'
+      if (options.open === false || isCi()) {
+        console.log(`Open this link to add the records at ${provider}:\n  ${link.domain_connect_url}`)
+      } else {
+        console.log(`Opening ${provider} in your browser... If it doesn't open, visit:\n  ${link.domain_connect_url}`)
+        await open(link.domain_connect_url).catch(() => {})
+      }
+      console.log('Authorize the change there, then come back here.')
+
+      const result = await loopback.callback
+      if (result.outcome === 'timeout') {
+        throw new SubdomainError('api_error', `No response from ${provider} after ${DOMAIN_CONNECT_TIMEOUT_MS / 60_000} minutes. Run the command again, or add the records manually: fingerprint subdomains get ${target}`)
+      }
+      if (result.outcome === 'error') throw new SubdomainError('api_error', `${provider} did not add the records: ${result.error}`)
+
+      console.log(`\n${provider} added the records. Checking...\n`)
+      printSubdomain(await service.verify(id))
+    } finally {
+      loopback.close()
+    }
   })
 }
 

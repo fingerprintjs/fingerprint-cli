@@ -59,6 +59,7 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 | `fingerprint subdomains list` | List custom subdomains and their status |
 | `fingerprint subdomains get <id-or-hostname>` | Show a custom subdomain and its DNS records |
 | `fingerprint subdomains verify <id-or-hostname>` | Run an on-demand DNS check and show the fresh status |
+| `fingerprint subdomains connect <id-or-hostname>` | Add the DNS records through your DNS provider (Domain Connect), then verify |
 | `fingerprint subdomains delete <id-or-hostname>` | Delete a custom subdomain and revoke its certificate |
 | `fingerprint login` / `signup` | Sign in or create an account through the browser |
 | `fingerprint whoami` | Show the signed-in workspace |

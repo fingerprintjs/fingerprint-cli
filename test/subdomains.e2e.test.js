@@ -615,3 +615,85 @@ test('create explains a 503 may mean the feature is disabled without suggesting 
   assert.doesNotMatch(result.stdout + result.stderr, /Try again later|Retry after|not_enabled/)
   assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), ['POST /subdomains'])
 })
+
+// Domain Connect: the provider adds the records in the browser and redirects to the CLI's loopback.
+// The fake API plays the provider too: when the link is requested it "redirects" to the port the
+// CLI asked for, after a moment, like a browser would.
+function domainConnectApi({ status = 'pending', redirect = 'done', link = true } = {}) {
+  let callbackPort
+  let current = status
+  return startApi((request) => {
+    if (request.method === 'GET' && request.path === `/subdomains/${ID}`) return { body: { data: subdomain({ status: current }) } }
+    if (request.method === 'POST' && request.path === `/subdomains/${ID}/domain-connect`) {
+      if (!link) return { status: 409, body: { error: { code: 'general.conflict', message: 'Domain Connect is not available for this subdomain' } } }
+      callbackPort = request.body.port
+      if (redirect) {
+        const query = redirect === 'done' ? '' : '?error=access_denied&error_description=The%20user%20declined'
+        setTimeout(() => fetch(`http://127.0.0.1:${callbackPort}/domain-connect/callback${query}`).catch(() => {}), 150)
+      }
+      return { body: { data: { domain_connect_url: `https://dc.example.test/apply?port=${callbackPort}`, dns_provider: 'Cloudflare' } } }
+    }
+    if (request.method === 'POST' && request.path === `/subdomains/${ID}/verify`) {
+      current = 'active'
+      return { body: { data: subdomain({ status: current }) } }
+    }
+  }).then((api) => Object.assign(api, { callbackPort: () => callbackPort }))
+}
+
+test('connect hands the user to the DNS provider and verifies once it redirects back', async (t) => {
+  const api = await domainConnectApi()
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'connect', ID, '--no-open'])
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Open this link to add the records at Cloudflare:\n {2}https:\/\/dc\.example\.test\/apply\?port=\d+/)
+  assert.match(result.stdout, /Cloudflare added the records\. Checking\.\.\./)
+  assert.match(result.stdout, /Status {5}active/)
+  const link = api.requests.find((r) => r.path.endsWith('/domain-connect'))
+  assert.equal(link.body.port, api.callbackPort())
+  assert.deepEqual(
+    api.requests.map(({ method, path }) => `${method} ${path}`),
+    [`POST /subdomains/${ID}/domain-connect`, `POST /subdomains/${ID}/verify`, `GET /subdomains/${ID}`]
+  )
+})
+
+test('connect reports a provider that declined, and does not verify', async (t) => {
+  const api = await domainConnectApi({ redirect: 'error' })
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'connect', ID, '--no-open'])
+
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /Cloudflare did not add the records: The user declined/)
+  assert.equal(api.requests.some((r) => r.path.endsWith('/verify')), false)
+})
+
+test('connect explains when Domain Connect is not available instead of calling it a duplicate', async (t) => {
+  const api = await domainConnectApi({ link: false })
+  t.after(() => api.close())
+
+  const human = await run(api, ['subdomains', 'connect', ID, '--no-open'])
+  assert.equal(human.status, 1)
+  assert.match(human.stderr, /Domain Connect is not available for this subdomain/)
+
+  const json = await run(api, ['subdomains', 'connect', ID, '--json'])
+  assert.equal(json.status, 1)
+  assert.deepEqual(JSON.parse(json.stdout).error, {
+    kind: 'unsupported',
+    message: 'Domain Connect is not available for this subdomain',
+  })
+})
+
+test('connect --json prints the link and exits without waiting for the redirect', async (t) => {
+  const api = await domainConnectApi({ redirect: false })
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'connect', ID, '--json'])
+
+  assert.equal(result.status, 0, result.stderr)
+  const { data } = JSON.parse(result.stdout)
+  assert.equal(data.dns_provider, 'Cloudflare')
+  assert.match(data.domain_connect_url, /^https:\/\/dc\.example\.test\/apply\?port=\d+$/)
+  assert.equal(api.requests.some((r) => r.path.endsWith('/verify')), false)
+})

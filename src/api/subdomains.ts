@@ -47,6 +47,13 @@ interface ListResponse {
   }
 }
 
+// A signed link that sends the user to their DNS provider to add the records; the provider
+// redirects to http://127.0.0.1:{port}/domain-connect/callback when done.
+export interface DomainConnectLink {
+  domain_connect_url: string
+  dns_provider?: string
+}
+
 export type SubdomainLookupResult =
   | { outcome: 'not_found'; hostname: string }
   | { outcome: 'found'; hostname: string; subdomain: SubdomainListItem }
@@ -96,6 +103,14 @@ export class SubdomainsService {
     const path = `/subdomains/${encodeURIComponent(id)}`
     await this.client.request<DataResponse<Subdomain>>(`${path}/verify`, { method: 'POST' })
     return this.get(id)
+  }
+
+  async domainConnect(id: string, port: number): Promise<DomainConnectLink> {
+    const response = await this.client.request<DataResponse<DomainConnectLink>>(
+      `/subdomains/${encodeURIComponent(id)}/domain-connect`,
+      { method: 'POST', body: JSON.stringify({ port }) }
+    )
+    return response.data
   }
 
   async delete(id: string): Promise<void> {
