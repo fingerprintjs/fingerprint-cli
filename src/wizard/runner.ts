@@ -1,6 +1,6 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
@@ -15,6 +15,16 @@ import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
 import { markFailure } from '../analytics/failure.js'
+import { normalizeHostname } from '../api/subdomains.js'
+import { clearPendingSubdomainSetup, pendingSubdomainSetup } from './subdomain-setups.js'
+import {
+  askResumeSubdomain,
+  askSubdomainHostname,
+  runSubdomainStep,
+  settleAgentSubdomainWork,
+  type SubdomainStepPurpose,
+} from './subdomain-step.js'
+import { createSubdomainsMcpServer, FINGERPRINT_MCP_SERVER_NAME, SUBDOMAIN_TOOL_NAMES } from './subdomains-mcp.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
@@ -50,7 +60,9 @@ const denyEnvReads: HookCallbackMatcher = {
       if (input.tool_name !== 'Read' && input.tool_name !== 'Grep') return {}
       const i = (input.tool_input ?? {}) as { file_path?: string; path?: string }
       const target = i.file_path ?? i.path ?? ''
-      if (!ENV_FILE.test(target)) return {}
+      // Match the name the agent asked for and the file it resolves to: a symlink with a harmless
+      // name pointing at .env is still .env.
+      if (!ENV_FILE.test(target) && !ENV_FILE.test(realPathOrSelf(target))) return {}
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -62,6 +74,14 @@ const denyEnvReads: HookCallbackMatcher = {
   ],
 }
 
+function realPathOrSelf(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
 // Permission-related query options. Auto mode (default): edits + reads run without prompting.
 // Interactive mode: reads/web stay auto-allowed, but Edit/Write route through askBeforeEdit.
 // `extraReadonly` adds read-only tools that should also run without prompting (e.g. WebFetch).
@@ -69,31 +89,56 @@ const denyEnvReads: HookCallbackMatcher = {
 function permissionOptions(extraReadonly: string[] = []) {
   const readonly = [...READONLY_TOOLS, ...extraReadonly]
   const hooks = { PreToolUse: [denyEnvReads] }
+  // `allowedTools` only decides what runs without prompting; `tools` decides what exists. Without
+  // it the agent still has Bash and Agent (a subagent), and a subagent can read .env past the hook.
+  // MCP tools are registered by their server, not listed here.
+  const tools = [...readonly, ...EDIT_TOOLS].filter((name) => !name.startsWith('mcp__'))
   if (!isInteractive()) {
-    return { permissionMode: 'acceptEdits' as const, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
+    return { permissionMode: 'acceptEdits' as const, tools, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
   }
-  return { permissionMode: 'default' as const, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
+  return { permissionMode: 'default' as const, tools, allowedTools: readonly, canUseTool: askBeforeEdit, hooks }
 }
 
 // How an integration run ended. `skipped` covers the user declining a prompt (the integration
 // itself, or an interactive install) — a choice, not a failure, so it keeps a zero exit code.
 // `failed` means the agent or a package install broke; the run must not claim success or exit 0.
-export type IntegrateOutcome = 'completed' | 'skipped' | 'failed'
+// `waiting` is a custom subdomain that is not active yet: nothing is broken, but the step is not done.
+export type IntegrateOutcome = 'completed' | 'skipped' | 'waiting' | 'failed'
 
 // Top-level integration flow for a single command invocation: provision env keys, apply one Get
 // Started step for `root`, then keep going one step at a time for as long as the user says so.
 // Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at; it never
 // assumes a particular layout. The CLI adds no closing guidance of its own — the Get Started skill
 // the agent follows already tells the user how to verify each step.
-export async function integrateProject(root: string, opts: { yes?: boolean } = {}): Promise<IntegrateOutcome> {
-  let outcome = await provisionAndApply(root, opts)
+export async function integrateProject(root: string, opts: { yes?: boolean; subdomain?: string } = {}): Promise<IntegrateOutcome> {
+  let outcome: IntegrateOutcome
+  // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
+  // is behind us it drops out of the menu.
+  const done = new Set<NextStep>()
+  const unfinished = opts.subdomain ? undefined : pendingSubdomainSetup(root)
+  const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep)
+  if (opts.subdomain) {
+    // Direct entry: start or resume the custom subdomain step for this hostname, nothing else.
+    outcome = await provisionThen(root, () => subdomainStep(normalizeHostname(opts.subdomain!)))
+    done.add('proxy')
+  } else if (unfinished && !opts.yes && !autoYes() && (await askResumeSubdomain(unfinished.hostname))) {
+    outcome = await provisionThen(root, () => subdomainStep(unfinished.hostname))
+    done.add('proxy')
+  } else {
+    // Declining the resume is a decision: stop offering it.
+    if (unfinished && !opts.yes && !autoYes()) clearPendingSubdomainSetup(root)
+    outcome = await provisionAndApply(root, opts)
+    // The agent may have created a subdomain while auditing; stay on that step instead of exiting.
+    const started = outcome === 'waiting' && !autoYes() ? pendingSubdomainSetup(root) : undefined
+    if (started) {
+      outcome = await subdomainStep(started.hostname)
+      done.add('proxy')
+    }
+  }
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
   // checklist ran dry.
   if (opts.yes || autoYes()) return outcome
 
-  // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
-  // is behind us it drops out of the menu.
-  const done = new Set<NextStep>()
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
     if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
@@ -107,9 +152,23 @@ export async function integrateProject(root: string, opts: { yes?: boolean } = {
       if (backend) outcome = await provisionAndApply(backend, opts)
       continue
     }
-    outcome = await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
+    outcome =
+      next === 'proxy'
+        ? await subdomainStep(await askSubdomainHostname())
+        : await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
   }
   return outcome
+}
+
+// The agent's part of the subdomain step: create the subdomain, or point the app at it once active.
+function applySubdomainStep(root: string, hostname: string, purpose: SubdomainStepPurpose): Promise<IntegrateOutcome> {
+  return applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname, purpose })
+}
+
+async function provisionThen(root: string, next: () => Promise<IntegrateOutcome>): Promise<IntegrateOutcome> {
+  log.step('Set up environment variables')
+  await provisionForRepo(root)
+  return next()
 }
 
 // The steps the CLI can offer after one lands. `step` is what the agent is told to do; `more` has
@@ -179,8 +238,20 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent, so the flow is continuous: set up env → "integrate this repo?" → apply.
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
-async function applyIntegration(root: string, opts: { yes?: boolean; step?: string } = {}): Promise<IntegrateOutcome> {
+async function applyIntegration(
+  root: string,
+  opts: { yes?: boolean; step?: string; subdomain?: string; purpose?: SubdomainStepPurpose } = {}
+): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
+
+  // The subdomain step points the frontend at the subdomain; without a curated frontend skill the
+  // agent has neither the tools nor the instructions, and claiming the step done would be a lie.
+  if (opts.subdomain && !analysis.hasFrontendSkill) {
+    log.error('The custom subdomain step needs a curated frontend skill, and none matches this stack.')
+    markFailure('subdomain_no_frontend_skill')
+    process.exitCode = 1
+    return 'failed'
+  }
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
   // best-effort, docs-researched integration instead of giving up.
@@ -210,8 +281,12 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
     (await confirm({ message: `Integrate Fingerprint into this repo (${analysis.skills.join(' + ')})? (edits files)`, default: true }))
   if (!proceed) return 'skipped'
 
-  log.step('Apply integration')
-  return runAgent(analysis, opts.step)
+  // The subdomain step says what is happening to the subdomain; "applying" would suggest the
+  // integration is being redone.
+  if (opts.subdomain && opts.purpose === 'configure') log.step(`Updating your app to use ${opts.subdomain}`)
+  else if (opts.subdomain) log.step(`Setting up ${opts.subdomain}`)
+  else log.step('Apply integration')
+  return runAgent(analysis, opts.step, opts.subdomain)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -219,7 +294,7 @@ async function applyIntegration(root: string, opts: { yes?: boolean; step?: stri
 // and how to verify each live there, not in a hand-rolled prompt.
 const GET_STARTED_SKILL = 'fingerprint-get-started'
 
-export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<IntegrateOutcome> {
+export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?: string): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
@@ -232,10 +307,14 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
   installSkills(analysis.root, ids)
   const metas = ids.map(skillMeta)
 
-  log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
+  if (!subdomain) log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
+  // The subdomain tools run in-process with the CLI's own session, so the agent can list, create
+  // and verify without ever seeing a Management API key.
+  const subdomains = createSubdomainsMcpServer(undefined, subdomain)
+  const endpointVar = analysis.frontend ? conventionFor(analysis.frontend).endpointVar : undefined
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar),
     options: {
       model: llm.model,
       env: llm.env,
@@ -243,15 +322,30 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      ...permissionOptions(['Skill']), // the orchestrator dispatches via the Skill tool
+      mcpServers: { [FINGERPRINT_MCP_SERVER_NAME]: subdomains.server },
+      // The orchestrator dispatches via the Skill tool; the subdomain tools need no prompting either.
+      ...permissionOptions(['Skill', ...SUBDOMAIN_TOOL_NAMES]),
     },
   })
 
-  const run = await runAgentTurn(response, 'Setting up the integration')
+  const run = await runAgentTurn(response, subdomain ? 'Working on the custom subdomain' : 'Setting up the integration')
   if (!run.ok) {
     markFailure('agent_failed')
     process.exitCode = 1
     return 'failed'
+  }
+
+  // The subdomain decides the outcome when this is the subdomain step, or when the agent created
+  // or verified one in any step. Merely reading an existing pending subdomain while auditing must
+  // not hold an unrelated step back.
+  if (step === NEXT_STEPS.proxy.step || subdomains.mutated()) {
+    const settled = settleAgentSubdomainWork(analysis.root, subdomains, {
+      inSubdomainStep: step === NEXT_STEPS.proxy.step,
+      // The agent's message first, the CLI's status last: the status comes from the API and is
+      // what the user should act on.
+      beforeStatus: () => run.text && log.info(renderMarkdown(run.text)),
+    })
+    if (settled) return settled
   }
 
   const installed = await installOrFail(analysis, metas)
@@ -264,7 +358,8 @@ export async function runAgent(analysis: RepoAnalysis, step?: string): Promise<I
     process.exitCode = 1
     return 'failed'
   }
-  log.success('Agent finished applying the integration.')
+  // In the subdomain step the CLI reports the result itself once it has checked the API.
+  if (step !== NEXT_STEPS.proxy.step) log.success('Agent finished applying the integration.')
   return installed
 }
 
@@ -317,9 +412,14 @@ const SYSTEM_PROMPT = [
   '- Make minimal, focused changes; match the existing code style.',
   '- The secret key is server-side only; never reference it in frontend code.',
   '- Do NOT read or print .env. Reference keys by env-var name only.',
+  '- For a custom subdomain, use the fingerprint tools (list_subdomains, get_subdomain,',
+  '  create_subdomain, verify_subdomain). Never ask for a Management API key. Only an active',
+  '  subdomain may be configured as the endpoint; if it is pending, report the DNS records and stop.',
   '- Only edit application code. Do not run shell commands, install packages, or touch package',
   '  manifests, lockfiles or package-manager config — the CLI installs the required packages itself',
   '  after you finish. ("v4" in a skill is the Fingerprint platform, not an npm major version.)',
+  '- Identification results use snake_case: visitor_id and event_id. visitorId and requestId are',
+  '  v3 names and do not exist in v4.',
   '- Do not invent app surface: if the repo has no backend, no form, or no sensitive action,',
   "  integrate what's actually there and say what's missing — never scaffold one.",
 ].join('\n')
@@ -329,7 +429,7 @@ const SYSTEM_PROMPT = [
 // and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
 // agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
 // the CLI's stack detection, and where the provisioned keys live (it may not open .env).
-function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
+function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?: string, endpointVar?: string): string {
   const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
   const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
@@ -342,6 +442,15 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string): string {
     `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
     'The .env files are already provisioned: the public key is in',
     `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+    ...(subdomain
+      ? [
+          `The custom subdomain is ${subdomain}. Look it up with list_subdomains and create it only if it is not there.`,
+          'While it is pending, do not change any code. The CLI prints the DNS records and the next step itself, so keep your report to a sentence or two.',
+          endpointVar
+            ? `Once it is active, reference ${endpointVar} in the provider options; the CLI writes that variable to the env file itself, so do not edit .env or ask the user to.`
+            : `Once it is active, set endpoints to https://${subdomain} directly in the provider options.`,
+        ]
+      : []),
   ].join('\n')
 }
 
