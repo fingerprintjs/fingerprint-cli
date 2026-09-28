@@ -40,6 +40,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
   savePendingSubdomainSetup(root, hostname)
   const service = new SubdomainsService()
   let current = await findSubdomain(service, hostname)
+  let recordsShown = false
   if (!current) {
     // The agent creates it. Whatever its run reported, the API decides whether it exists now.
     const outcome = await applyStep(root, hostname, 'create')
@@ -51,6 +52,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       process.exitCode = 1
       return 'failed'
     }
+    recordsShown = true // the agent's run printed them
   }
 
   let explained = false
@@ -68,6 +70,11 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
       log.info(resumeHint(hostname))
       return 'waiting'
+    }
+
+    if (!recordsShown) {
+      reportPending(hostname, pendingDnsRecords(current))
+      recordsShown = true
     }
 
     // When the DNS provider supports Domain Connect, the browser can add the records; offered once.
@@ -114,11 +121,14 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
 // browser flow. Returns true once the provider redirected back, meaning the records are in and the
 // caller can wait for validation. Any other way out returns false and the manual path continues.
 async function offerDomainConnect(service: SubdomainsService, current: Subdomain): Promise<boolean> {
-  const loopback = await listenForDomainConnect(DOMAIN_CONNECT_TIMEOUT_MS)
+  const loopback = await listenForDomainConnect()
   try {
     const link = await service.domainConnect(current.id, loopback.port).catch((error) => {
       if (error instanceof ManagementApiError && error.status === 409) return undefined // no Domain Connect here
-      throw error
+      if (error instanceof ManagementApiError && error.status === 401) throw error
+      // Anything else is the shortcut being unavailable, not the setup failing: the records are known.
+      log.warn(`Domain Connect is not available right now (${serializeSubdomainError(error).message}). You can add the records yourself.`)
+      return undefined
     })
     if (!link) return false
     const provider = link.dns_provider ?? 'your DNS provider'
@@ -134,6 +144,7 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
     if (choice === 'manual') return false
 
     for (const line of await openDomainConnectLink(link.domain_connect_url, provider, true)) log.info(line)
+    loopback.startTimeout(DOMAIN_CONNECT_TIMEOUT_MS)
     const spinner = process.stdout.isTTY && !isCi() ? new Spinner() : null
     spinner?.start(`Waiting for ${provider}`)
     const result = await loopback.callback

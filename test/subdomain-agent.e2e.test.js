@@ -118,6 +118,8 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
   assert.equal(result.status, 0, result.stderr)
   // Step 1 ran the agent; the pending subdomain did not: its state came from the API.
   assert.equal(result.stdout.match(APPLYING)?.length, 1, result.stdout)
+  // The records were shown before the first question, not only on request.
+  assert.match(result.stdout, /is waiting for these DNS records:[\s\S]*is waiting for its DNS records\. What's next\?/)
   assert.match(result.stdout, /DNS records for metrics\.example\.com/)
   assert.match(result.stdout, /A {2}pending_validation\n.*Host {3}metrics\.example\.com\n.*Value {2}192\.0\.2\.1/)
   assert.match(result.stdout, /proxied records do not validate/)
@@ -187,6 +189,34 @@ test('when the DNS provider supports Domain Connect, the browser adds the record
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.doesNotMatch(result.stdout, DNS_MENU)
+})
+
+test('a Domain Connect outage falls back to the manual records instead of failing the step', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.failDomainConnect(503)
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: LATER },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Domain Connect is not available right now/)
+  assert.match(result.stdout, DNS_MENU)
+  assert.equal(api.createCalls(), 1)
 })
 
 test('a later run offers to resume the unfinished subdomain without auditing or asking for the hostname', async (t) => {
@@ -445,6 +475,7 @@ function startSubdomainApi() {
   let createFailure
   let activateOnVerify = false
   let domainConnect = false
+  let domainConnectFailure
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
@@ -464,6 +495,7 @@ function startSubdomainApi() {
       }
       if (route === `GET /subdomains/${ID}`) return json(200, { data: detail(status) })
       if (route === `POST /subdomains/${ID}/domain-connect`) {
+        if (domainConnectFailure) return json(domainConnectFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
         if (!domainConnect) return json(409, { error: { code: 'general.conflict', message: 'Domain Connect is not available for this subdomain' } })
         const port = JSON.parse(body).port
         setTimeout(() => fetch(`http://127.0.0.1:${port}/domain-connect/callback`).catch(() => {}), 150)
@@ -498,6 +530,9 @@ function startSubdomainApi() {
         },
         enableDomainConnect() {
           domainConnect = true
+        },
+        failDomainConnect(status) {
+          domainConnectFailure = status
         },
         close: () => new Promise((done) => server.close(done)),
       })
