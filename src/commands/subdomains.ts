@@ -9,6 +9,7 @@ import {
   type SubdomainListItem,
 } from '../api/subdomains.js'
 import open from 'open'
+import { markFailure } from '../analytics/failure.js'
 import { isCi } from '../utils/ci.js'
 import { listenForDomainConnect } from '../utils/domain-connect.js'
 import { requireAuth } from '../utils/session.js'
@@ -215,8 +216,11 @@ async function runCommand(
     requireAuth()
     await action(new SubdomainsService())
   } catch (error) {
+    // Handled here, so the run's failure reason is recorded here too (see analytics/failure.ts).
+    const serialized = serializeSubdomainError(error)
+    markFailure(`subdomain_${serialized.kind}`, serialized.message)
     if (!options.json) throw new Error(formatError(error))
-    printJson({ error: serializeSubdomainError(error) })
+    printJson({ error: serialized })
     process.exitCode = 1
   }
 }

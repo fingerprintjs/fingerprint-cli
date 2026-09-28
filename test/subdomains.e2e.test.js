@@ -697,3 +697,22 @@ test('connect --json prints the link and exits without waiting for the redirect'
   assert.match(data.domain_connect_url, /^https:\/\/dc\.example\.test\/apply\?port=\d+$/)
   assert.equal(api.requests.some((r) => r.path.endsWith('/verify')), false)
 })
+
+test('a handled command error still reports its kind as the run failure, also with --json', async (t) => {
+  const api = await startApi((request) => {
+    if (request.method === 'POST' && request.path === '/subdomains') {
+      return { status: 503, body: { error: { code: 'general.unavailable', message: 'Service unavailable' } } }
+    }
+  })
+  t.after(() => api.close())
+
+  for (const args of [['subdomains', 'create', 'metrics.example.com'], ['subdomains', 'create', 'metrics.example.com', '--json']]) {
+    api.events.length = 0
+    const result = await run(api, args)
+    assert.equal(result.status, 1)
+    const runEvent = api.events.find((event) => event.event === 'cli_command_run')
+    assert.equal(runEvent.properties.status, 'error')
+    assert.equal(runEvent.properties.error_code, 'subdomain_unavailable')
+    assert.match(runEvent.properties.error_message, /Custom subdomain service is unavailable/)
+  }
+})

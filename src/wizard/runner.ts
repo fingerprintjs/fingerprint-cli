@@ -14,6 +14,7 @@ import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
+import { markFailure } from '../analytics/failure.js'
 import { normalizeHostname } from '../api/subdomains.js'
 import { pendingSubdomainSetup } from './subdomain-setups.js'
 import {
@@ -245,6 +246,7 @@ async function applyIntegration(
   // agent has neither the tools nor the instructions, and claiming the step done would be a lie.
   if (opts.subdomain && !analysis.hasFrontendSkill) {
     log.error('The custom subdomain step needs a curated frontend skill, and none matches this stack.')
+    markFailure('subdomain_no_frontend_skill')
     process.exitCode = 1
     return 'failed'
   }
@@ -324,8 +326,9 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
     },
   })
 
-  const run = await consume(response, subdomain ? 'Working on the custom subdomain' : 'Setting up the integration')
+  const run = await runAgentTurn(response, subdomain ? 'Working on the custom subdomain' : 'Setting up the integration')
   if (!run.ok) {
+    markFailure('agent_failed')
     process.exitCode = 1
     return 'failed'
   }
@@ -343,11 +346,12 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
     if (settled) return settled
   }
 
-  const installed = await installPackages(analysis, metas)
+  const installed = await installOrFail(analysis, metas)
   // The agent's final message — what changed and how to verify it — goes after the install output,
   // so it is what the user is reading when asked what to do next.
   if (run.text) log.info(renderMarkdown(run.text))
   if (installed === 'failed') {
+    markFailure('install_failed')
     log.warn('The code changes were applied, but package installs failed — the integration cannot run until they are installed (see above).')
     process.exitCode = 1
     return 'failed'
@@ -364,6 +368,24 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
 // the caller to print once its own output (package installs) is done; unset when --verbose already
 // streamed it.
 type AgentRun = { ok: boolean; text?: string }
+
+async function runAgentTurn(response: unknown, message: string) {
+  try {
+    return await consume(response, message)
+  } catch (err) {
+    markFailure('agent_failed', err)
+    throw err
+  }
+}
+
+async function installOrFail(analysis: RepoAnalysis, skills: SkillMeta[]) {
+  try {
+    return await installPackages(analysis, skills)
+  } catch (err) {
+    markFailure('install_failed', err)
+    throw err
+  }
+}
 
 async function consume(response: unknown, initialMessage: string): Promise<AgentRun> {
   const spinner = !isVerbose() && process.stdout.isTTY && !isCi() ? new Spinner() : null
@@ -447,8 +469,9 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<Integrat
     },
   })
 
-  const run = await consume(response, 'Researching docs and applying the integration')
+  const run = await runAgentTurn(response, 'Researching docs and applying the integration')
   if (!run.ok) {
+    markFailure('agent_failed')
     process.exitCode = 1
     return 'failed'
   }
