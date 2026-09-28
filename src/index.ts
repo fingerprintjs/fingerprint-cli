@@ -35,8 +35,6 @@ program.hook('preAction', () => {
   setInteractive(Boolean(opts.interactive) && !ci)
 })
 
-// An unrecognized command resolves through the default action, so it reaches the hook looking
-// like a bare `fingerprint`.
 let ranUnknownCommand = false
 
 // Recorded here and reported once the run settles. postAction would be tidier but is skipped when
@@ -45,6 +43,8 @@ let ranUnknownCommand = false
 let invokedCommand: string | undefined
 program.hook('preAction', async (_thisCommand, actionCommand) => {
   invokedCommand = actionCommand === program ? undefined : actionCommand.name()
+  ranUnknownCommand = actionCommand === program && Boolean(actionCommand.args[0])
+  if (ranUnknownCommand) return
   // Before the action runs, so it lands whether or not the run ever reaches an account, and whether
   // or not it finishes. `cli_command_run` only reports runs that settle, which misses the person who
   // reads the prompt and closes the terminal.
@@ -104,8 +104,6 @@ async function defaultCommand(unknownCommand?: string) {
   // positional that reaches here is an unrecognized command (typically a typo). Fail with a friendly
   // hint instead of commander's bare "too many arguments".
   if (unknownCommand) {
-    // Reporting a typo as `default` would read as launcher usage, which is the opposite of what it is.
-    ranUnknownCommand = true
     reportUnknownCommand(unknownCommand)
     return
   }
@@ -172,10 +170,11 @@ program
 function reportUnknownCommand(name: string): void {
   const known = program.commands.flatMap((c) => [c.name(), ...c.aliases()])
   const suggestion = closestCommand(name, known)
-  console.error(`Unknown command "${name}".`)
+  const message = `Unknown command "${name}".`
+  console.error(message)
   if (suggestion) console.error(`Did you mean "${suggestion}"?`)
   console.error('\nRun `fingerprint --help` to see the available commands.')
-  markFailure('unknown_command')
+  markFailure('unknown_command', message)
   process.exitCode = 1
 }
 

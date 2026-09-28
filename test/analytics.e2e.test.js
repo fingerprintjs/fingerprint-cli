@@ -178,14 +178,40 @@ test('logout reports with the credential it just dropped', async () => {
   await api.close()
 })
 
-test('a mistyped command is not reported as a bare run', async () => {
+test('a mistyped command reports only how it ended', async () => {
   const api = await startManagementApi()
   const home = makeHome()
   seedAuth(home, api.url)
 
   const res = await runCli(['integrat'], { home })
   assert.equal(res.status, 1, res.stdout)
+  assert.match(res.stderr, /Did you mean "integrate"\?/)
+  assert.deepEqual(names(api), ['cli_command_run'])
   assert.deepEqual(commands(api), ['unknown'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
+
+  await api.close()
+})
+
+test('a mistyped command reports only how it ended when signed out too', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['integrat'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1, res.stdout)
+  assert.deepEqual(names(api), ['cli_command_run'])
+  assert.deepEqual(commands(api), ['unknown'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
+
+  await api.close()
+})
+
+test('an empty command argument still counts as a bare run', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['', '--ci'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1, res.stdout)
+  assert.deepEqual(names(api), ['cli_run_started', 'cli_command_run'])
+  assert.deepEqual(commands(api), ['default'])
 
   await api.close()
 })
@@ -286,7 +312,7 @@ test('the reported message says what actually failed', async () => {
   await api.close()
 })
 
-test('a mistyped command reports a code, not a bare error', async () => {
+test('a mistyped command reports a code and what was typed', async () => {
   const api = await startManagementApi()
   const home = makeHome()
   seedAuth(home, api.url)
@@ -296,6 +322,7 @@ test('a mistyped command reports a code, not a bare error', async () => {
 
   assert.equal(errorProps(api).status, 'error')
   assert.equal(errorProps(api).error_code, 'unknown_command')
+  assert.equal(errorProps(api).error_message, 'Unknown command "intergrate".')
 
   await api.close()
 })
