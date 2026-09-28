@@ -97,6 +97,11 @@ test('a real install failure fails the run', async () => {
   assert.ok(!res.stdout.includes('Agent finished applying the integration'), res.stdout)
   assert.match(res.stdout, /code changes were applied/i)
   assert.match(res.stdout, /run manually/)
+
+  const runs = api.analyticsEvents().filter((e) => e.body.event === 'cli_command_run')
+  const run = runs[runs.length - 1]
+  assert.equal(run.body.properties.status, 'error')
+  assert.equal(run.body.properties.error_code, 'install_failed')
 })
 
 test('declining an interactive install is not a failure', async () => {
