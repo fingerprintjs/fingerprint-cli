@@ -64,7 +64,7 @@ test('exposes list, get, create and verify under the fingerprint server', () => 
 
 test('handlers call the service and return only public fields', async () => {
   const { calls, service } = makeService()
-  const tools = toolsByName(createSubdomainsMcpServer(service))
+  const tools = toolsByName(createSubdomainsMcpServer(service, 'metrics.example.com'))
 
   const listed = await tools.list_subdomains.handler({}, {})
   const created = await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {})
@@ -107,7 +107,7 @@ test('service errors come back as tool errors with the CLI error shape', async (
       throw new Error('boom')
     },
   })
-  const tools = toolsByName(createSubdomainsMcpServer(service))
+  const tools = toolsByName(createSubdomainsMcpServer(service, 'metrics.example.com'))
 
   const result = await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {})
   assert.equal(result.isError, true)
@@ -120,7 +120,7 @@ test('lastFailure remembers a failed tool call until a subdomain is read or chan
       throw new Error('boom')
     },
   })
-  const server = createSubdomainsMcpServer(service)
+  const server = createSubdomainsMcpServer(service, 'metrics.example.com')
   const tools = toolsByName(server)
 
   await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {})
@@ -128,10 +128,7 @@ test('lastFailure remembers a failed tool call until a subdomain is read or chan
   assert.equal(server.mutated(), true)
 
   await tools.list_subdomains.handler({}, {})
-  assert.ok(server.lastFailure(), 'a list does not clear the failure')
-
-  await tools.get_subdomain.handler({ id: item.id }, {})
-  assert.equal(server.lastFailure(), undefined)
+  assert.equal(server.lastFailure(), undefined, 'reading the chosen hostname successfully clears it')
 })
 
 test('with a known hostname, a list entry for it counts as seen, without records', async () => {
@@ -166,4 +163,18 @@ test('with a known hostname, create refuses any other hostname without calling t
   const same = await tools.create_subdomain.handler({ hostname: 'Metrics.Example.com.' }, {})
   assert.equal(same.isError, undefined)
   assert.deepEqual(calls, [['create', 'Metrics.Example.com.']])
+})
+
+test('without a chosen hostname, create is refused as guidance, not recorded as a failure', async () => {
+  const { calls, service } = makeService()
+  const server = createSubdomainsMcpServer(service)
+  const tools = toolsByName(server)
+
+  const refused = await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {})
+  assert.equal(refused.isError, true)
+  assert.equal(refused.structuredContent.error.kind, 'confirmation_required')
+  assert.match(refused.structuredContent.error.message, /integrate --subdomain/)
+  assert.deepEqual(calls, [])
+  assert.equal(server.lastFailure(), undefined)
+  assert.equal(server.mutated(), false)
 })

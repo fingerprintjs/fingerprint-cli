@@ -16,7 +16,7 @@ import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
 import { markFailure } from '../analytics/failure.js'
 import { normalizeHostname } from '../api/subdomains.js'
-import { pendingSubdomainSetup } from './subdomain-setups.js'
+import { clearPendingSubdomainSetup, pendingSubdomainSetup } from './subdomain-setups.js'
 import {
   askResumeSubdomain,
   askSubdomainHostname,
@@ -125,6 +125,8 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     outcome = await provisionThen(root, () => subdomainStep(unfinished.hostname))
     done.add('proxy')
   } else {
+    // Declining the resume is a decision: stop offering it.
+    if (unfinished && !opts.yes && !autoYes()) clearPendingSubdomainSetup(root)
     outcome = await provisionAndApply(root, opts)
     // The agent may have created a subdomain while auditing; stay on that step instead of exiting.
     const started = outcome === 'waiting' && !autoYes() ? pendingSubdomainSetup(root) : undefined
