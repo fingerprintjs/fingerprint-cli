@@ -178,7 +178,7 @@ test('logout reports with the credential it just dropped', async () => {
   await api.close()
 })
 
-test('a mistyped command sends nothing', async () => {
+test('a mistyped command reports only how it ended', async () => {
   const api = await startManagementApi()
   const home = makeHome()
   seedAuth(home, api.url)
@@ -186,17 +186,19 @@ test('a mistyped command sends nothing', async () => {
   const res = await runCli(['integrat'], { home })
   assert.equal(res.status, 1, res.stdout)
   assert.match(res.stderr, /Did you mean "integrate"\?/)
-  assert.deepEqual(names(api), [])
+  assert.deepEqual(names(api), ['cli_command_run'])
+  assert.deepEqual(commands(api), ['unknown'])
 
   await api.close()
 })
 
-test('a mistyped command sends nothing when signed out either', async () => {
+test('a mistyped command reports only how it ended when signed out too', async () => {
   const api = await startManagementApi()
 
   const res = await runCli(['integrat'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
   assert.equal(res.status, 1, res.stdout)
-  assert.deepEqual(names(api), [])
+  assert.deepEqual(names(api), ['cli_command_run'])
+  assert.deepEqual(commands(api), ['unknown'])
 
   await api.close()
 })

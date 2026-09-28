@@ -34,7 +34,7 @@ program.hook('preAction', () => {
 })
 
 // An unrecognized command resolves through the default action with the typo as its argument. It
-// only prints a hint, so it sends nothing.
+// only prints a hint, so it skips the start event and reports just how it ended.
 let ranUnknownCommand = false
 
 // Recorded here and reported once the run settles. postAction would be tidier but is skipped when
@@ -54,9 +54,8 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 // After the run settles, so `login` has written credentials by the time we look for a workspace. A
 // run that never got them reports through the unauthenticated route instead of going unrecorded.
 async function reportRun(status: 'ok' | 'error'): Promise<void> {
-  if (ranUnknownCommand) return
   await track('cli_command_run', {
-    command: invokedCommand ?? 'default',
+    command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
     status,
   })
 }
