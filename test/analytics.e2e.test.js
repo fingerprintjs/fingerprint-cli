@@ -188,6 +188,7 @@ test('a mistyped command reports only how it ended', async () => {
   assert.match(res.stderr, /Did you mean "integrate"\?/)
   assert.deepEqual(names(api), ['cli_command_run'])
   assert.deepEqual(commands(api), ['unknown'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
 
   await api.close()
 })
@@ -199,6 +200,7 @@ test('a mistyped command reports only how it ended when signed out too', async (
   assert.equal(res.status, 1, res.stdout)
   assert.deepEqual(names(api), ['cli_command_run'])
   assert.deepEqual(commands(api), ['unknown'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
 
   await api.close()
 })
