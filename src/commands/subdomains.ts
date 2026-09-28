@@ -8,10 +8,9 @@ import {
   type Subdomain,
   type SubdomainListItem,
 } from '../api/subdomains.js'
-import open from 'open'
 import { markFailure } from '../analytics/failure.js'
 import { isCi } from '../utils/ci.js'
-import { listenForDomainConnect } from '../utils/domain-connect.js'
+import { DOMAIN_CONNECT_TIMEOUT_MS, listenForDomainConnect, openDomainConnectLink } from '../utils/domain-connect.js'
 import { requireAuth } from '../utils/session.js'
 
 interface OutputOptions {
@@ -25,8 +24,6 @@ interface DeleteOptions extends OutputOptions {
 interface ConnectOptions extends OutputOptions {
   open?: boolean
 }
-
-const DOMAIN_CONNECT_TIMEOUT_MS = 10 * 60 * 1000
 
 export function registerSubdomainsCommands(program: Command): void {
   const subdomains = program
@@ -75,7 +72,7 @@ export function registerSubdomainsCommands(program: Command): void {
     .description('Add the DNS records through your DNS provider (Domain Connect), then verify')
     .argument('<id-or-hostname>', 'subdomain hostname or ID')
     .option('--json', 'print the Domain Connect link and exit')
-    .option('--no-open', 'print the link instead of opening the browser')
+    .option('--no-open', 'print the link instead of opening the browser (also with FINGERPRINT_NO_BROWSER)')
     .action((target: string, options: ConnectOptions) => connectSubdomain(target, options))
 
   subdomains
@@ -131,7 +128,7 @@ async function verifySubdomain(target: string, options: OutputOptions): Promise<
 async function connectSubdomain(target: string, options: ConnectOptions): Promise<void> {
   await runCommand(options, async (service) => {
     const id = await resolveSubdomainId(service, target)
-    const loopback = await listenForDomainConnect(DOMAIN_CONNECT_TIMEOUT_MS)
+    const loopback = await listenForDomainConnect()
     try {
       const link = await service.domainConnect(id, loopback.port).catch((error) => {
         // 409 here means "not while pending" or "no Domain Connect for this provider", not a duplicate.
@@ -141,13 +138,8 @@ async function connectSubdomain(target: string, options: ConnectOptions): Promis
       if (options.json) return printJson({ data: link })
 
       const provider = link.dns_provider ?? 'your DNS provider'
-      if (options.open === false || isCi()) {
-        console.log(`Open this link to add the records at ${provider}:\n  ${link.domain_connect_url}`)
-      } else {
-        console.log(`Opening ${provider} in your browser... If it doesn't open, visit:\n  ${link.domain_connect_url}`)
-        await open(link.domain_connect_url).catch(() => {})
-      }
-      console.log('Authorize the change there, then come back here.')
+      for (const line of await openDomainConnectLink(link.domain_connect_url, provider, options.open !== false)) console.log(line)
+      loopback.startTimeout(DOMAIN_CONNECT_TIMEOUT_MS)
 
       const result = await loopback.callback
       if (result.outcome === 'timeout') {

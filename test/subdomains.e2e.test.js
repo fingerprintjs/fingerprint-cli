@@ -644,7 +644,7 @@ test('connect hands the user to the DNS provider and verifies once it redirects 
   const api = await domainConnectApi()
   t.after(() => api.close())
 
-  const result = await run(api, ['subdomains', 'connect', ID, '--no-open'])
+  const result = await run(api, ['subdomains', 'connect', ID], { env: { FINGERPRINT_NO_BROWSER: '1' } })
 
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /Open this link to add the records at Cloudflare:\n {2}https:\/\/dc\.example\.test\/apply\?port=\d+/)
