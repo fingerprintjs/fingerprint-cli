@@ -170,10 +170,11 @@ program
 function reportUnknownCommand(name: string): void {
   const known = program.commands.flatMap((c) => [c.name(), ...c.aliases()])
   const suggestion = closestCommand(name, known)
-  console.error(`Unknown command "${name}".`)
+  const message = `Unknown command "${name}".`
+  console.error(message)
   if (suggestion) console.error(`Did you mean "${suggestion}"?`)
   console.error('\nRun `fingerprint --help` to see the available commands.')
-  markFailure('unknown_command')
+  markFailure('unknown_command', message)
   process.exitCode = 1
 }
 

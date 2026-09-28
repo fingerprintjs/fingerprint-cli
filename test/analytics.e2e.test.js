@@ -312,7 +312,7 @@ test('the reported message says what actually failed', async () => {
   await api.close()
 })
 
-test('a mistyped command reports a code, not a bare error', async () => {
+test('a mistyped command reports a code and what was typed', async () => {
   const api = await startManagementApi()
   const home = makeHome()
   seedAuth(home, api.url)
@@ -322,6 +322,7 @@ test('a mistyped command reports a code, not a bare error', async () => {
 
   assert.equal(errorProps(api).status, 'error')
   assert.equal(errorProps(api).error_code, 'unknown_command')
+  assert.equal(errorProps(api).error_message, 'Unknown command "intergrate".')
 
   await api.close()
 })
