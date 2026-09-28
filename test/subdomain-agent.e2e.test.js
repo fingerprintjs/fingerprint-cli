@@ -285,6 +285,51 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
   assert.doesNotMatch(fourth.stdout, /Resume the custom subdomain setup/)
 })
 
+test('declining the resume, or a timed-out subdomain, stops the offer', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' }
+  const resumeOffer = /Resume the custom subdomain setup for metrics\.example\.com\?/
+
+  await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env,
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: LATER },
+    ],
+  })
+
+  // Saying no forgets the setup.
+  const declined = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env,
+    respond: [
+      { when: resumeOffer, send: 'n\n' },
+      { when: /Integrate Fingerprint into this repo/, send: 'n\n' },
+    ],
+  })
+  assert.match(declined.stdout, resumeOffer)
+  const after = await runCli(['integrate'], { home, cwd: repo, env, respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }] })
+  assert.doesNotMatch(after.stdout, resumeOffer)
+
+  // A timed-out subdomain is told to be deleted; it is not offered again either.
+  api.seedStatus('timed_out')
+  const timedOut = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
+  assert.match(timedOut.stdout, /timed out before its DNS records validated/)
+  const afterTimeout = await runCli(['integrate'], { home, cwd: repo, env, respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }] })
+  assert.doesNotMatch(afterTimeout.stdout, resumeOffer)
+})
+
 test('--subdomain goes straight to the step, in CI too', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
@@ -389,7 +434,7 @@ test('the agent has no shell and no subagent, so .env cannot leak around the rea
   assert.equal(readFileSync(target, 'utf8'), '// integration\n')
 })
 
-test('a subdomain created while auditing still leaves the run waiting, not finished', async (t) => {
+test('the agent cannot create a subdomain outside the subdomain step; the audit run finishes normally', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   const home = makeHome()
@@ -405,9 +450,10 @@ test('a subdomain created while auditing still leaves the run waiting, not finis
   })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(api.createCalls(), 1)
-  assert.match(result.stdout, /waiting for these DNS records/)
-  assert.doesNotMatch(result.stdout, FINISHED)
+  assert.equal(api.createCalls(), 0)
+  assert.doesNotMatch(result.stdout, /waiting for these DNS records/)
+  assert.match(result.stdout, FINISHED)
+  assert.match(gateway.bodies().join('\n'), /set up in their own step/)
 })
 
 test('a failed create ends the run as failed instead of finished', async (t) => {
@@ -420,7 +466,7 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
   const gateway = await startGateway(createsDuringAuditAgent(join(repo, 'web', 'fingerprint.js')))
   t.after(() => gateway.close())
 
-  const result = await runCli(['--ci', 'integrate', '--yes'], {
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
     home,
     cwd: repo,
     env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },

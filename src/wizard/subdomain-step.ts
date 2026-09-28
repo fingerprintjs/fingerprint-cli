@@ -63,7 +63,10 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       if (outcome === 'completed') finishSubdomainSetup(root, hostname)
       return outcome
     }
-    if (current.status === 'failed' || current.status === 'timed_out') return reportTerminalStatus(hostname, current.status)
+    if (current.status === 'failed' || current.status === 'timed_out') {
+      clearPendingSubdomainSetup(root)
+      return reportTerminalStatus(hostname, current.status)
+    }
     if (isCi()) {
       const pending = pendingDnsRecords(current)
       if (pending.length) reportPending(hostname, pending)
@@ -177,7 +180,8 @@ export function settleAgentSubdomainWork(
   const failure = server.lastFailure()
   if (failure || seen?.status !== 'active') options.beforeStatus()
   const outcome = judge(seen, failure)
-  if (outcome === 'waiting' && seen) savePendingSubdomainSetup(root, seen.hostname)
+  if (seen?.status === 'failed' || seen?.status === 'timed_out') clearPendingSubdomainSetup(root)
+  else if (outcome === 'waiting' && seen) savePendingSubdomainSetup(root, seen.hostname)
   if (outcome) return outcome
   // Active outside the subdomain step (the agent verified it while doing something else). Inside
   // the step, runSubdomainStep finishes once the agent's run completes.
