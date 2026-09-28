@@ -33,8 +33,6 @@ program.hook('preAction', () => {
   setInteractive(Boolean(opts.interactive) && !ci)
 })
 
-// An unrecognized command resolves through the default action with the typo as its argument. It
-// only prints a hint, so it skips the start event and reports just how it ended.
 let ranUnknownCommand = false
 
 // Recorded here and reported once the run settles. postAction would be tidier but is skipped when
