@@ -51,7 +51,7 @@ const VANILLA_FRONTEND_LIBRARIES: Record<string, string> = {
 // `index.html` at the app root; webpack/parcel templates conventionally sit in src/). Only
 // consulted when no framework dependency matched, so a framework app is never called vanilla.
 // `public/index.html` is deliberately not here: it's as often a Node server's static directory as
-// it is a bundler template, and misreading a backend as a frontend is the costlier mistake.
+// it is a bundler template, so it can't make the package itself a frontend. See `servedStaticApp`.
 const HTML_ENTRIES = [['index.html'], ['src', 'index.html']]
 
 const BACKEND_FRAMEWORKS: Record<string, string> = {
@@ -140,6 +140,16 @@ function classifyStaticApp(dir: string, rel: string): DetectedApp | undefined {
   return { dir, rel, role: 'frontend', language: 'js', framework: 'html' }
 }
 
+// A Node package whose `public/index.html` is plain HTML it serves (`express.static`,
+// `@fastify/static`) rather than a bundler template: reported as a static site of its own at
+// public/, so the page gets the inlined key and CDN agent while the server keeps its own skill and
+// .env. A framework or HTML-entry match means public/ belongs to a bundled app, so it's left alone.
+function servedStaticApp(app: DetectedApp): DetectedApp | undefined {
+  if (app.role === 'frontend' || app.role === 'fullstack') return undefined
+  const dir = join(app.dir, 'public')
+  return classifyStaticApp(dir, app.rel === '.' ? 'public' : join(app.rel, 'public'))
+}
+
 // Walk the repo to depth 2 (skipping noise dirs) collecting app manifests.
 function findApps(root: string): DetectedApp[] {
   const apps: DetectedApp[] = []
@@ -151,7 +161,10 @@ function findApps(root: string): DetectedApp[] {
     let found = insideApp
     if (existsSync(join(dir, 'package.json'))) {
       try {
-        apps.push(classifyNodeApp(dir, rel))
+        const app = classifyNodeApp(dir, rel)
+        apps.push(app)
+        const served = servedStaticApp(app)
+        if (served) apps.push(served)
         found = true
       } catch {
         /* unreadable/invalid package.json — skip */
@@ -228,8 +241,10 @@ export function analyzeRepo(root: string = process.cwd()): RepoAnalysis {
   const frontend = apps.find((a) => a.role === 'frontend') ?? apps.find((a) => a.role === 'fullstack')
   const backend = apps.find((a) => a.role === 'backend')
 
+  // A server's own public/ page is one app with it, not a second package.
+  const packages = apps.filter((a) => !apps.some((o) => o !== a && a.dir === join(o.dir, 'public')))
   const monorepo =
-    apps.length > 1 ||
+    packages.length > 1 ||
     existsSync(join(root, 'pnpm-workspace.yaml')) ||
     ['apps', 'packages'].some((d) => existsSync(join(root, d)) && statSync(join(root, d)).isDirectory())
 

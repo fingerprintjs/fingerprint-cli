@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { startManagementApi, startGateway, makeHome, seedAuth, makeVanillaRepo, makeStaticRepo, makeSkillsDir, runCli } from './helpers/harness.js'
+import { startManagementApi, startGateway, makeHome, seedAuth, makeVanillaRepo, makeStaticRepo, makeServedStaticRepo, makeSkillsDir, runCli } from './helpers/harness.js'
 
 // Browser code with no framework SDK is a supported stack: it resolves to `fingerprint-javascript`
 // rather than dead-ending in "no supported app". The two shapes need different handling — a
@@ -73,4 +73,38 @@ test('a static site gets the public key in the prompt, no .env and no package.js
   assert.ok(bodies[0].includes("region 'us'"), `region was not handed to the agent:\n${bodies[0]}`)
   // The secret key must never reach the model, inline values or not.
   assert.ok(!bodies.some((b) => b.includes('sec_456')), 'secret key leaked into the prompt')
+})
+
+test("a server's public/index.html is a static frontend alongside the backend", async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeServedStaticRepo()
+  // The frontend skill's package must not be installed: public/ has no manifest and no bundler.
+  const skillsDir = makeSkillsDir({ 'fingerprint-javascript': ['@fingerprint/agent'] })
+  const gw = await startGateway(join(repo, 'public', 'index.html'), '<!-- integrated -->\n')
+
+  const res = await runCli(['integrate', '--yes'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+  })
+  const bodies = gw.bodies()
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  // Both halves: the page gets the JS Agent, the server keeps its own SDK.
+  assert.match(res.stdout, /fingerprint-javascript/)
+  assert.match(res.stdout, /fingerprint-node/)
+  assert.doesNotMatch(res.stdout, /monorepo/)
+
+  // The server's .env carries the secret; nothing a static page can't read (no VITE_* vars).
+  const env = readFileSync(join(repo, '.env'), 'utf8')
+  assert.match(env, /FINGERPRINT_SECRET_API_KEY=srv_1/)
+  assert.doesNotMatch(env, /VITE_/)
+  assert.ok(!existsSync(join(repo, 'public', 'package.json')), 'created a package.json in public/')
+  assert.match(res.stdout, /No package.json in public/)
+
+  assert.ok(bodies.length > 0, 'gateway was never called')
+  assert.ok(bodies[0].includes('pub_123'), `public key was not handed to the agent:\n${bodies[0]}`)
+  assert.ok(!bodies.some((b) => b.includes('srv_1')), 'secret key leaked into the prompt')
 })

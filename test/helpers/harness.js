@@ -244,6 +244,16 @@ export function makeStaticRepo() {
   return root
 }
 
+// A Node server that serves plain HTML from public/ (the fp-*-starter shape): no bundler, so the
+// page is a static site even though the package has a manifest.
+export function makeServedStaticRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'fp-served-'))
+  mkdirSync(join(root, 'public'))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', dependencies: { fastify: '^5', '@fastify/static': '^8' } }))
+  writeFileSync(join(root, 'public', 'index.html'), '<!doctype html>\n<html><body><script type="module" src="/index.js"></script></body></html>\n')
+  return root
+}
+
 // Async (not spawnSync): the fake servers run in this same process, so the event loop must stay
 // free to answer the child's HTTP requests while it runs — spawnSync would deadlock.
 // `respond` scripts interactive prompts: [{ when: /pattern/, send: 'n\n' }, ...] — each entry
