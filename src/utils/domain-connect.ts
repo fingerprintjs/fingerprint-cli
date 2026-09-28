@@ -7,12 +7,16 @@ import { isCi } from './ci.js'
 // records and redirects back to a loopback URL the Management API signs into the link. This is
 // that loopback: one request, then the caller checks the subdomain with the API.
 export const DOMAIN_CONNECT_CALLBACK_PATH = '/domain-connect/callback'
+export const DOMAIN_CONNECT_TIMEOUT_MS = 10 * 60 * 1000
 
 export type DomainConnectCallback = { outcome: 'done' } | { outcome: 'error'; error: string } | { outcome: 'timeout' }
 
-export function listenForDomainConnect(timeoutMs: number): Promise<{
+// The port is needed before the link can be requested, but the clock only starts once the user
+// is actually sent to the provider: call `startTimeout` right after opening the link.
+export function listenForDomainConnect(): Promise<{
   port: number
   callback: Promise<DomainConnectCallback>
+  startTimeout: (ms: number) => void
   close: () => void
 }> {
   return new Promise((resolve, reject) => {
@@ -20,6 +24,7 @@ export function listenForDomainConnect(timeoutMs: number): Promise<{
     const callback = new Promise<DomainConnectCallback>((res) => {
       settle = res
     })
+    let timer: ReturnType<typeof setTimeout> | undefined
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       if (url.pathname !== DOMAIN_CONNECT_CALLBACK_PATH) {
@@ -36,15 +41,17 @@ export function listenForDomainConnect(timeoutMs: number): Promise<{
       )
       settle(error ? { outcome: 'error', error: url.searchParams.get('error_description') ?? error } : { outcome: 'done' })
     })
-    const timer = setTimeout(() => settle({ outcome: 'timeout' }), timeoutMs)
-    timer.unref?.()
     server.once('error', reject)
     server.listen(0, '127.0.0.1', () => {
       resolve({
         port: (server.address() as AddressInfo).port,
         callback,
+        startTimeout: (ms) => {
+          timer = setTimeout(() => settle({ outcome: 'timeout' }), ms)
+          timer.unref?.()
+        },
         close: () => {
-          clearTimeout(timer)
+          if (timer) clearTimeout(timer)
           server.close()
         },
       })
@@ -60,5 +67,3 @@ export async function openDomainConnectLink(url: string, provider: string, openB
   await open(url).catch(() => {})
   return [`Opening ${provider} in your browser... If it doesn't open, visit:`, `  ${url}`, 'Authorize the change there, then come back here.']
 }
-
-export const DOMAIN_CONNECT_TIMEOUT_MS = 10 * 60 * 1000

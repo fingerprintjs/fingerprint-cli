@@ -72,7 +72,7 @@ export function registerSubdomainsCommands(program: Command): void {
     .description('Add the DNS records through your DNS provider (Domain Connect), then verify')
     .argument('<id-or-hostname>', 'subdomain hostname or ID')
     .option('--json', 'print the Domain Connect link and exit')
-    .option('--no-open', 'print the link instead of opening the browser')
+    .option('--no-open', 'print the link instead of opening the browser (also with FINGERPRINT_NO_BROWSER)')
     .action((target: string, options: ConnectOptions) => connectSubdomain(target, options))
 
   subdomains
@@ -128,7 +128,7 @@ async function verifySubdomain(target: string, options: OutputOptions): Promise<
 async function connectSubdomain(target: string, options: ConnectOptions): Promise<void> {
   await runCommand(options, async (service) => {
     const id = await resolveSubdomainId(service, target)
-    const loopback = await listenForDomainConnect(DOMAIN_CONNECT_TIMEOUT_MS)
+    const loopback = await listenForDomainConnect()
     try {
       const link = await service.domainConnect(id, loopback.port).catch((error) => {
         // 409 here means "not while pending" or "no Domain Connect for this provider", not a duplicate.
@@ -139,6 +139,7 @@ async function connectSubdomain(target: string, options: ConnectOptions): Promis
 
       const provider = link.dns_provider ?? 'your DNS provider'
       for (const line of await openDomainConnectLink(link.domain_connect_url, provider, options.open !== false)) console.log(line)
+      loopback.startTimeout(DOMAIN_CONNECT_TIMEOUT_MS)
 
       const result = await loopback.callback
       if (result.outcome === 'timeout') {
