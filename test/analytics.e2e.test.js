@@ -178,14 +178,25 @@ test('logout reports with the credential it just dropped', async () => {
   await api.close()
 })
 
-test('a mistyped command is not reported as a bare run', async () => {
+test('a mistyped command sends nothing', async () => {
   const api = await startManagementApi()
   const home = makeHome()
   seedAuth(home, api.url)
 
   const res = await runCli(['integrat'], { home })
   assert.equal(res.status, 1, res.stdout)
-  assert.deepEqual(commands(api), ['unknown'])
+  assert.match(res.stderr, /Did you mean "integrate"\?/)
+  assert.deepEqual(names(api), [])
+
+  await api.close()
+})
+
+test('a mistyped command sends nothing when signed out either', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['integrat'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1, res.stdout)
+  assert.deepEqual(names(api), [])
 
   await api.close()
 })
