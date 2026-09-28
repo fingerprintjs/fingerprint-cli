@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.1.2
+
+### Patch Changes
+
+- A mistyped command no longer reports a `cli_run_started` event, which it used to file as a bare `fingerprint` run. It still reports `cli_command_run` with `command: unknown`, and a signed-in run now includes what was typed, so the error logs show which command people tried. ([912e19a](https://github.com/fingerprintjs/fingerprint-cli/commit/912e19a4ab1940f11ebaeb113da79a50fb526ffc))
+
 ## 0.1.1
 
 ### Patch Changes
