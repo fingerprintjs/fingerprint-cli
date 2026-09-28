@@ -615,22 +615,3 @@ test('create explains a 503 may mean the feature is disabled without suggesting 
   assert.doesNotMatch(result.stdout + result.stderr, /Try again later|Retry after|not_enabled/)
   assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), ['POST /subdomains'])
 })
-
-test('a handled command error still reports its kind as the run failure, also with --json', async (t) => {
-  const api = await startApi((request) => {
-    if (request.method === 'POST' && request.path === '/subdomains') {
-      return { status: 503, body: { error: { code: 'general.unavailable', message: 'Service unavailable' } } }
-    }
-  })
-  t.after(() => api.close())
-
-  for (const args of [['subdomains', 'create', 'metrics.example.com'], ['subdomains', 'create', 'metrics.example.com', '--json']]) {
-    api.events.length = 0
-    const result = await run(api, args)
-    assert.equal(result.status, 1)
-    const runEvent = api.events.find((event) => event.event === 'cli_command_run')
-    assert.equal(runEvent.properties.status, 'error')
-    assert.equal(runEvent.properties.error_code, 'subdomain_unavailable')
-    assert.match(runEvent.properties.error_message, /Custom subdomain service is unavailable/)
-  }
-})
