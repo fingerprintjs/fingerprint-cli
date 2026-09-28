@@ -125,7 +125,10 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
   try {
     const link = await service.domainConnect(current.id, loopback.port).catch((error) => {
       if (error instanceof ManagementApiError && error.status === 409) return undefined // no Domain Connect here
-      if (error instanceof ManagementApiError && error.status === 401) throw error
+      if (error instanceof ManagementApiError && error.status === 401) {
+        markFailure('subdomain_not_authenticated', error)
+        throw error
+      }
       // Anything else is the shortcut being unavailable, not the setup failing: the records are known.
       log.warn(`Domain Connect is not available right now (${serializeSubdomainError(error).message}). You can add the records yourself.`)
       return undefined
