@@ -1,5 +1,17 @@
 # fingerprint
 
+## 0.1.2
+
+### Patch Changes
+
+- A mistyped command no longer reports a `cli_run_started` event, which it used to file as a bare `fingerprint` run. It still reports `cli_command_run` with `command: unknown`, and a signed-in run now includes what was typed, so the error logs show which command people tried. ([912e19a](https://github.com/fingerprintjs/fingerprint-cli/commit/912e19a4ab1940f11ebaeb113da79a50fb526ffc))
+
+## 0.1.1
+
+### Patch Changes
+
+- A failed run now reports why. `cli_command_run` carries `error_code`, a short identifier for the kind of failure (skills fetch, install, agent, missing session, unknown command), plus the error message. Previously a failure reported `status: error` and nothing else. ([190ce43](https://github.com/fingerprintjs/fingerprint-cli/commit/190ce43a31daead1bacd7696402afde12673e72c))
+
 ## 0.1.0
 
 First release of the Fingerprint CLI. Run `npx fingerprint` from your project's root to add Fingerprint device intelligence to your app.
