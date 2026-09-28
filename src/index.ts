@@ -43,7 +43,7 @@ let ranUnknownCommand = false
 let invokedCommand: string | undefined
 program.hook('preAction', async (_thisCommand, actionCommand) => {
   invokedCommand = actionCommand === program ? undefined : actionCommand.name()
-  ranUnknownCommand = actionCommand === program && actionCommand.args.length > 0
+  ranUnknownCommand = actionCommand === program && Boolean(actionCommand.args[0])
   if (ranUnknownCommand) return
   // Before the action runs, so it lands whether or not the run ever reaches an account, and whether
   // or not it finishes. `cli_command_run` only reports runs that settle, which misses the person who

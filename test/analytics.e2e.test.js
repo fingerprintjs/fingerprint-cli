@@ -205,6 +205,17 @@ test('a mistyped command reports only how it ended when signed out too', async (
   await api.close()
 })
 
+test('an empty command argument still counts as a bare run', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['', '--ci'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1, res.stdout)
+  assert.deepEqual(names(api), ['cli_run_started', 'cli_command_run'])
+  assert.deepEqual(commands(api), ['default'])
+
+  await api.close()
+})
+
 test('a command that fails still reports, with status error', async () => {
   // Serves analytics and fails everything else, so `keys` throws after auth exists. This is what
   // used to report nothing at all: a throw skips commander's postAction hook.
