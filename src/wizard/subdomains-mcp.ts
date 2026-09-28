@@ -94,14 +94,28 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       'create_subdomain',
       'Creates a custom subdomain and returns the DNS records the user must add.',
       { hostname: z.string().trim().min(1).describe('Fully qualified hostname, e.g. metrics.example.com') },
-      ({ hostname }) =>
-        mutate('create_subdomain', async () => {
-          // The user chose the hostname; the model may not create a different one.
-          if (wanted && normalizeHostname(hostname) !== wanted) {
+      async ({ hostname }) => {
+        // The hostname is always the user's choice, made in the subdomain step. Outside it there is
+        // no chosen hostname, so creating is refused; that is guidance for the model, not a failure.
+        if (!wanted) {
+          return result(
+            {
+              error: {
+                kind: 'confirmation_required',
+                message:
+                  'Custom subdomains are set up in their own step, where the user picks the hostname. Ask the user to choose that step from the menu, or to run: fingerprint integrate --subdomain <hostname>',
+              },
+            },
+            true
+          )
+        }
+        return mutate('create_subdomain', async () => {
+          if (normalizeHostname(hostname) !== wanted) {
             throw new SubdomainError('invalid_subdomain', `This run sets up ${wanted}; create that hostname or none.`)
           }
           return observe(await service.create(hostname))
         })
+      }
     ),
     tool(
       'verify_subdomain',
