@@ -1,4 +1,5 @@
 import { confirm, input, select } from '@inquirer/prompts'
+import { markFailure } from '../analytics/failure.js'
 import { ManagementApiError } from '../api/management.js'
 import { serializeSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
@@ -46,6 +47,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     current = await findSubdomain(service, hostname)
     if (!current) {
       log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
+      markFailure('subdomain_not_created')
       process.exitCode = 1
       return 'failed'
     }
@@ -172,6 +174,7 @@ export function settleAgentSubdomainWork(
 function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined): IntegrateOutcome | undefined {
   if (failure) {
     log.error(`Custom subdomain setup failed: ${failure.message}${isVerbose() ? ` (${failure.tool}: ${failure.kind})` : ''}`)
+    markFailure(`subdomain_${failure.kind}`, failure.message)
     process.exitCode = 1
     return 'failed'
   }
@@ -280,6 +283,7 @@ function reportTerminalStatus(hostname: string, status: Extract<SubdomainStatus,
     return 'waiting'
   }
   log.error(`${hostname} failed — check it with: fingerprint subdomains get ${hostname}`)
+  markFailure('subdomain_failed')
   process.exitCode = 1
   return 'failed'
 }
