@@ -11,6 +11,8 @@ import { setInteractive } from './utils/interactive.js'
 import { color } from './utils/color.js'
 import { printFiglet } from './utils/figlet.js'
 import { track } from './analytics/track.js'
+import { markFailure, runFailure } from './analytics/failure.js'
+import { CodedError } from './errors.js'
 import { VERSION } from './version.js'
 
 const program = new Command()
@@ -52,9 +54,13 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 // After the run settles, so `login` has written credentials by the time we look for a workspace. A
 // run that never got them reports through the unauthenticated route instead of going unrecorded.
 async function reportRun(status: 'ok' | 'error'): Promise<void> {
+  const failure = status === 'error' ? (runFailure() ?? { code: 'unknown' }) : undefined
+
   await track('cli_command_run', {
     command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
     status,
+    ...(failure ? { error_code: failure.code } : {}),
+    ...(failure?.message ? { error_message: failure.message } : {}),
   })
 }
 
@@ -169,6 +175,7 @@ function reportUnknownCommand(name: string): void {
   console.error(`Unknown command "${name}".`)
   if (suggestion) console.error(`Did you mean "${suggestion}"?`)
   console.error('\nRun `fingerprint --help` to see the available commands.')
+  markFailure('unknown_command')
   process.exitCode = 1
 }
 
@@ -204,5 +211,6 @@ program
   .catch(async (err) => {
     console.error(err.message)
     process.exitCode = 1
+    markFailure(err instanceof CodedError ? err.code : 'unknown', err)
     await reportRun('error')
   })
