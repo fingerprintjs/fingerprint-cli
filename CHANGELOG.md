@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.1.1
+
+### Patch Changes
+
+- A failed run now reports why. `cli_command_run` carries `error_code`, a short identifier for the kind of failure (skills fetch, install, agent, missing session, unknown command), plus the error message. Previously a failure reported `status: error` and nothing else. ([190ce43](https://github.com/fingerprintjs/fingerprint-cli/commit/190ce43a31daead1bacd7696402afde12673e72c))
+
 ## 0.1.0
 
 First release of the Fingerprint CLI. Run `npx fingerprint` from your project's root to add Fingerprint device intelligence to your app.
