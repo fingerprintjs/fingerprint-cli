@@ -1,5 +1,6 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { markFailure } from '../analytics/failure.js'
+import { addRunProperties } from '../analytics/track.js'
 import { serializeSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
@@ -34,20 +35,46 @@ export async function askResumeSubdomain(hostname: string): Promise<boolean> {
   return confirm({ message: `Resume the custom subdomain setup for ${hostname}?`, default: true })
 }
 
+// Where the subdomain step ended in this run, for the run's analytics event. One value per run:
+// `waiting` when the user has to come back, `configured` when the app points at the subdomain.
+export type SubdomainRunOutcome = 'waiting' | 'configured' | 'failed' | 'timed_out'
+
+export function recordSubdomainRun(properties: {
+  outcome: SubdomainRunOutcome
+  resumed: boolean
+  dns?: 'manual' | 'domain_connect'
+  provider?: string
+}): void {
+  addRunProperties({
+    subdomain_outcome: properties.outcome,
+    subdomain_resumed: properties.resumed,
+    ...(properties.dns ? { subdomain_dns: properties.dns } : {}),
+    ...(properties.provider ? { subdomain_provider: properties.provider } : {}),
+  })
+}
+
 export async function runSubdomainStep(root: string, hostname: string, applyStep: ApplyStep): Promise<IntegrateOutcome> {
   savePendingSubdomainSetup(root, hostname)
   const service = new SubdomainsService()
   let current = await findSubdomain(service, hostname)
+  // Picked up from an earlier run, as opposed to created in this one.
+  const resumed = Boolean(current)
+  let dns: 'manual' | 'domain_connect' | undefined
+  const end = (outcome: IntegrateOutcome, ended: SubdomainRunOutcome): IntegrateOutcome => {
+    recordSubdomainRun({ outcome: ended, resumed, dns })
+    return outcome
+  }
+
   if (!current) {
     // The agent creates it. Whatever its run reported, the API decides whether it exists now.
     const outcome = await applyStep(root, hostname, 'create')
-    if (outcome === 'failed') return outcome
+    if (outcome === 'failed') return end(outcome, 'failed')
     current = await findSubdomain(service, hostname)
     if (!current) {
       log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
       markFailure('subdomain_not_created')
       process.exitCode = 1
-      return 'failed'
+      return end('failed', 'failed')
     }
   }
 
@@ -56,18 +83,19 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     if (current.status === 'active') {
       const outcome = await applyStep(root, hostname, 'configure')
       if (outcome === 'completed') finishSubdomainSetup(root, hostname)
-      return outcome
+      return end(outcome, outcome === 'completed' ? 'configured' : 'failed')
     }
     if (current.status === 'failed' || current.status === 'timed_out') {
       clearPendingSubdomainSetup(root)
-      return reportTerminalStatus(hostname, current.status)
+      return end(reportTerminalStatus(hostname, current.status), current.status)
     }
+    dns ??= 'manual'
     if (isCi()) {
       const pending = pendingDnsRecords(current)
       if (pending.length) reportPending(hostname, pending)
       else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
       log.info(resumeHint(hostname))
-      return 'waiting'
+      return end('waiting', 'waiting')
     }
 
     // The user adds the records at their provider, then asks for a check; the check itself waits
@@ -90,7 +118,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       })
       if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
     } while (choice === 'show')
-    if (choice === 'later') return 'waiting'
+    if (choice === 'later') return end('waiting', 'waiting')
 
     current = await waitForDns(service, current)
     if (current.status === 'pending') {
@@ -115,6 +143,9 @@ export function settleAgentSubdomainWork(
   const outcome = judge(seen, failure)
   if (seen?.status === 'failed' || seen?.status === 'timed_out') clearPendingSubdomainSetup(root)
   else if (outcome === 'waiting' && seen) savePendingSubdomainSetup(root, seen.hostname)
+  if (outcome && !options.inSubdomainStep) {
+    recordSubdomainRun({ outcome: seen?.status === 'timed_out' ? 'timed_out' : outcome === 'waiting' ? 'waiting' : 'failed', resumed: true })
+  }
   if (outcome) return outcome
   // Active outside the subdomain step (the agent verified it while doing something else). Inside
   // the step, runSubdomainStep finishes once the agent's run completes.
