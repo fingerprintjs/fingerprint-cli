@@ -80,6 +80,20 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
     return run(toolName, operation)
   }
 
+  // The hostname is always the user's choice, made in the subdomain step. Outside it nothing may
+  // change a subdomain: creating or verifying is refused with guidance, which is not a failure.
+  const outsideSubdomainStep = () =>
+    result(
+      {
+        error: {
+          kind: 'confirmation_required',
+          message:
+            'Custom subdomains are set up in their own step, where the user picks the hostname. Ask the user to choose that step from the menu, or to run: fingerprint integrate --subdomain <hostname>',
+        },
+      },
+      true
+    )
+
   const tools = [
     tool(
       'list_subdomains',
@@ -95,20 +109,7 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       'Creates a custom subdomain and returns the DNS records the user must add.',
       { hostname: z.string().trim().min(1).describe('Fully qualified hostname, e.g. metrics.example.com') },
       async ({ hostname }) => {
-        // The hostname is always the user's choice, made in the subdomain step. Outside it there is
-        // no chosen hostname, so creating is refused; that is guidance for the model, not a failure.
-        if (!wanted) {
-          return result(
-            {
-              error: {
-                kind: 'confirmation_required',
-                message:
-                  'Custom subdomains are set up in their own step, where the user picks the hostname. Ask the user to choose that step from the menu, or to run: fingerprint integrate --subdomain <hostname>',
-              },
-            },
-            true
-          )
-        }
+        if (!wanted) return outsideSubdomainStep()
         return mutate('create_subdomain', async () => {
           if (normalizeHostname(hostname) !== wanted) {
             throw new SubdomainError('invalid_subdomain', `This run sets up ${wanted}; create that hostname or none.`)
@@ -121,7 +122,10 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       'verify_subdomain',
       'Checks the DNS records now and returns the refreshed subdomain. Call it once, after the records were added.',
       { id },
-      ({ id }) => mutate('verify_subdomain', async () => observe(await service.verify(id)))
+      async ({ id }) => {
+        if (!wanted) return outsideSubdomainStep()
+        return mutate('verify_subdomain', async () => observe(await service.verify(id)))
+      }
     ),
   ]
 
