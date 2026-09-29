@@ -41,7 +41,8 @@ review and commit.
 
 ## Supported stacks
 
-**Frontend** — React, Vue, Angular, Svelte, Next.js
+**Frontend** — React, Vue, Angular, Svelte, Next.js, and plain JavaScript (Solid, Lit, Alpine,
+htmx, jQuery, or a static HTML page)
 
 **Backend** — Node (Express, Fastify, Koa, NestJS, Hapi), Python (FastAPI, Django, Flask)
 
@@ -125,7 +126,7 @@ keys. Nothing is reported before you sign in.
 
 ## Support
 
-- [Fingerprint documentation](https://dev.fingerprint.com/docs)
+- [Fingerprint documentation](https://docs.fingerprint.com)
 - [Report an issue](https://github.com/fingerprintjs/fingerprint-cli/issues)
 
 ## License

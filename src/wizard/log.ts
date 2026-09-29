@@ -16,7 +16,7 @@ import { debugLog } from '../utils/log-file.js'
 
 const BAR = '│'
 const LABEL_WIDTH = 11
-const DOCS_DEFAULT = 'https://dev.fingerprint.com/docs'
+const DOCS_DEFAULT = 'https://docs.fingerprint.com'
 
 // True after a section header until `end` — next header gets a connector rail instead of a blank.
 let sectionOpen = false
