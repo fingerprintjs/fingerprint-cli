@@ -54,7 +54,8 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.162",
     "@inquirer/prompts": "^8.0.1",
     "commander": "^14.0.1",
-    "open": "^10.2.0"
+    "open": "^10.2.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

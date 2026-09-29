@@ -8,7 +8,7 @@ import { addRunProperties, track } from '../analytics/track.js'
 import { markFailure } from '../analytics/failure.js'
 
 export async function integrateCommand(
-  opts: { path?: string; analyze?: boolean; yes?: boolean; skipHeading?: boolean; chained?: boolean } = {}
+  opts: { path?: string; analyze?: boolean; yes?: boolean; subdomain?: string; skipHeading?: boolean; chained?: boolean } = {}
 ) {
   const root = resolve(opts.path ?? process.cwd())
 
@@ -70,7 +70,7 @@ export async function integrateCommand(
 
   // Provision keys + apply the integration for this repo, then offer the missing half of the
   // stack (if any) and point at the skills plugin for the rest of Get Started.
-  const outcome = await integrateProject(root, { yes: opts.yes })
+  const outcome = await integrateProject(root, { yes: opts.yes, subdomain: opts.subdomain })
   // Rides cli_command_run (new event names need a Management API allowlist entry; properties
   // don't) — the completion pair to cli_integrate_started.
   addRunProperties({ integrate_status: outcome })
