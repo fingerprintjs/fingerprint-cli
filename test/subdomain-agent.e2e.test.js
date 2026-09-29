@@ -47,11 +47,12 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   assert.match(result.stdout, /metrics\.example\.com is waiting for these DNS records/)
   assert.match(result.stdout, /Add the records at your DNS provider, then check/)
   assert.doesNotMatch(result.stdout, /is not active after/)
-  assert.deepEqual(pick(api.lastRun(), 'integrate_status', 'subdomain_outcome', 'subdomain_resumed', 'subdomain_dns'), {
+  assert.deepEqual(pick(api.lastRun(), 'integrate_status', 'subdomain_outcome', 'subdomain_resumed', 'subdomain_dns', 'wizard_steps'), {
     integrate_status: 'waiting',
     subdomain_outcome: 'waiting',
     subdomain_resumed: false,
     subdomain_dns: 'manual',
+    wizard_steps: 'install,subdomain,dns_manual,finish_later',
   })
   assert.match(result.stdout, /CNAME {2}pending_validation\n.*Host {3}_acme-challenge\.metrics\.example\.com/)
   assert.match(result.stdout, /DNS only/)
@@ -159,6 +160,7 @@ test('checking DNS from the menu picks up activation and finishes the step in th
   assert.equal(api.createCalls(), 1)
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(result.stdout, CONFIGURING)
+  assert.equal(api.lastRun().wizard_steps, 'install,subdomain,dns_manual,dns_check,stop')
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
@@ -214,9 +216,10 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     ],
   })
   assert.equal(third.status, 0, third.stderr)
-  assert.deepEqual(pick(api.lastRun(), 'subdomain_outcome', 'subdomain_resumed', 'subdomain_dns'), {
+  assert.deepEqual(pick(api.lastRun(), 'subdomain_outcome', 'subdomain_resumed', 'subdomain_dns', 'wizard_steps'), {
     subdomain_outcome: 'configured',
     subdomain_resumed: true,
+    wizard_steps: 'resume,stop',
   })
   assert.equal(third.stdout.match(APPLYING), null, third.stdout)
   assert.match(third.stdout, CONFIGURING)
@@ -268,6 +271,7 @@ test('declining the resume, or a timed-out subdomain, stops the offer', async (t
     ],
   })
   assert.match(declined.stdout, resumeOffer)
+  assert.equal(api.lastRun().wizard_steps, 'resume_declined,install')
   const after = await runCli(['integrate'], { home, cwd: repo, env, respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }] })
   assert.doesNotMatch(after.stdout, resumeOffer)
 

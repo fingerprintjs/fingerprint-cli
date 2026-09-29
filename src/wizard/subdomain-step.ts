@@ -1,6 +1,6 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { markFailure } from '../analytics/failure.js'
-import { addRunProperties } from '../analytics/track.js'
+import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 import { serializeSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
@@ -89,7 +89,10 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       clearPendingSubdomainSetup(root)
       return end(reportTerminalStatus(hostname, current.status), current.status)
     }
-    dns ??= 'manual'
+    if (!dns) {
+      dns = 'manual'
+      recordWizardStep('dns_manual')
+    }
     if (isCi()) {
       const pending = pendingDnsRecords(current)
       if (pending.length) reportPending(hostname, pending)
@@ -118,8 +121,12 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       })
       if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
     } while (choice === 'show')
-    if (choice === 'later') return end('waiting', 'waiting')
+    if (choice === 'later') {
+      recordWizardStep('finish_later')
+      return end('waiting', 'waiting')
+    }
 
+    recordWizardStep('dns_check')
     current = await waitForDns(service, current)
     if (current.status === 'pending') {
       log.warn(

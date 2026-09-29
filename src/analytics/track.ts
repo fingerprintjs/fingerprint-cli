@@ -22,6 +22,14 @@ export function addRunProperties(properties: Record<string, unknown>): void {
   runProperties = { ...runProperties, ...properties }
 }
 
+// The choices the user made in the wizard this run, in order, as one comma-separated property
+// (`wizard_steps`): which step they picked, whether they resumed, how they handled DNS. Read
+// together with `integrate_status` it says where a run went, without an event per click.
+export function recordWizardStep(step: string): void {
+  const steps = typeof runProperties.wizard_steps === 'string' ? `${runProperties.wizard_steps},${step}` : step
+  runProperties = { ...runProperties, wizard_steps: steps }
+}
+
 // Option names only, never their values.
 function cliFlags(): string {
   const names = process.argv
