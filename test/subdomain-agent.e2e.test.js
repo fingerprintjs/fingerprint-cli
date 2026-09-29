@@ -389,6 +389,7 @@ test('the agent cannot create a subdomain outside the subdomain step; the audit 
 
   assert.equal(result.status, 0, result.stderr)
   assert.equal(api.createCalls(), 0)
+  assert.equal(api.verifyCalls(), 0)
   assert.doesNotMatch(result.stdout, /waiting for these DNS records/)
   assert.match(result.stdout, FINISHED)
   assert.match(gateway.bodies().join('\n'), /set up in their own step/)
@@ -401,7 +402,7 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
-  const gateway = await startGateway(createsDuringAuditAgent(join(repo, 'web', 'fingerprint.js')))
+  const gateway = await startGateway(createsDuringAuditAgent(join(repo, 'web', 'fingerprint.js'), { verify: false }))
   t.after(() => gateway.close())
 
   const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
@@ -442,11 +443,12 @@ function subdomainAgent(target) {
 
 // An agent that creates the subdomain during the first, audit-driven step instead of waiting for
 // the user to pick that step.
-function createsDuringAuditAgent(target) {
+function createsDuringAuditAgent(target, { verify = true } = {}) {
   return (payload) => {
     const messages = JSON.stringify(payload.messages ?? [])
     const has = (tool) => messages.includes(`"name":"${tool}"`)
     if (!has('mcp__fingerprint__create_subdomain')) return { tool: 'mcp__fingerprint__create_subdomain', input: { hostname: HOSTNAME } }
+    if (verify && !has('mcp__fingerprint__verify_subdomain')) return { tool: 'mcp__fingerprint__verify_subdomain', input: { id: ID } }
     if (!has('Write')) return { tool: 'Write', input: { file_path: target, content: '// integration\n' } }
     return { text: 'Done.' }
   }
@@ -456,6 +458,7 @@ function startSubdomainApi() {
   let status = 'pending'
   let created = false
   let createCalls = 0
+  let verifyCalls = 0
   let createFailure
   let activateOnVerify = false
   const server = createServer((req, res) => {
@@ -477,6 +480,7 @@ function startSubdomainApi() {
       }
       if (route === `GET /subdomains/${ID}`) return json(200, { data: detail(status) })
       if (route === `POST /subdomains/${ID}/verify`) {
+        verifyCalls += 1
         const response = detail(status)
         if (activateOnVerify) status = 'active' // the refreshed GET after verify sees it
         return json(200, { data: response })
@@ -497,6 +501,7 @@ function startSubdomainApi() {
           status = next
         },
         createCalls: () => createCalls,
+        verifyCalls: () => verifyCalls,
         failCreate(code, error) {
           createFailure = { code, error }
         },
