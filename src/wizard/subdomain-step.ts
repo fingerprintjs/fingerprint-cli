@@ -75,86 +75,82 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     return outcome
   }
   try {
-    return await runSubdomainStepInner()
+    current = await findSubdomain(service, hostname)
+    resumed = Boolean(current)
+
+    if (!current) {
+      // The agent creates it. Whatever its run reported, the API decides whether it exists now.
+      const outcome = await applyStep(root, hostname, 'create')
+      if (outcome === 'failed') return end(outcome, 'failed')
+      current = await findSubdomain(service, hostname)
+      if (!current) {
+        log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
+        markFailure('subdomain_not_created')
+        process.exitCode = 1
+        return end('failed', 'failed')
+      }
+    }
+
+    let explained = false
+    while (true) {
+      if (current.status === 'active') {
+        const outcome = await applyStep(root, hostname, 'configure')
+        const endpointWritten = outcome === 'completed' ? finishSubdomainSetup(root, hostname) : false
+        return end(outcome, configureRunOutcome(outcome, endpointWritten))
+      }
+      if (current.status === 'failed' || current.status === 'timed_out') {
+        clearPendingSubdomainSetup(root)
+        return end(reportTerminalStatus(hostname, current.status), current.status)
+      }
+      if (!dns) {
+        dns = 'manual'
+        recordWizardStep('dns_manual')
+      }
+      if (isCi()) {
+        const pending = pendingDnsRecords(current)
+        if (pending.length) reportPending(hostname, pending)
+        else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
+        log.info(resumeHint(hostname))
+        return end('waiting', 'waiting')
+      }
+
+      // The user adds the records at their provider, then asks for a check; the check itself waits
+      // for propagation with a live line. Nothing happens until they ask.
+      if (!explained) {
+        log.line()
+        log.info('Add the records at your DNS provider, then check. Propagation usually takes a few minutes.')
+        explained = true
+      }
+      let choice: 'check' | 'show' | 'later'
+      do {
+        log.line()
+        choice = await select({
+          message: `${hostname} is waiting for its DNS records. What's next?`,
+          choices: [
+            { name: 'Check the DNS records now', value: 'check' },
+            { name: 'Show the DNS records again', value: 'show' },
+            { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
+          ],
+        })
+        if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
+      } while (choice === 'show')
+      if (choice === 'later') {
+        recordWizardStep('finish_later')
+        return end('waiting', 'waiting')
+      }
+
+      recordWizardStep('dns_check')
+      current = await waitForDns(service, current)
+      if (current.status === 'pending') {
+        log.warn(
+          `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
+        )
+      }
+    }
   } catch (error) {
     // An API or agent error ends the step too; the run's failure reason is recorded by the caller.
     recordSubdomainRun({ outcome: 'failed', resumed, dns })
     throw error
-  }
-
-  async function runSubdomainStepInner(): Promise<IntegrateOutcome> {
-  current = await findSubdomain(service, hostname)
-  resumed = Boolean(current)
-
-  if (!current) {
-    // The agent creates it. Whatever its run reported, the API decides whether it exists now.
-    const outcome = await applyStep(root, hostname, 'create')
-    if (outcome === 'failed') return end(outcome, 'failed')
-    current = await findSubdomain(service, hostname)
-    if (!current) {
-      log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
-      markFailure('subdomain_not_created')
-      process.exitCode = 1
-      return end('failed', 'failed')
-    }
-  }
-
-  let explained = false
-  while (true) {
-    if (current.status === 'active') {
-      const outcome = await applyStep(root, hostname, 'configure')
-      const endpointWritten = outcome === 'completed' ? finishSubdomainSetup(root, hostname) : false
-      return end(outcome, configureRunOutcome(outcome, endpointWritten))
-    }
-    if (current.status === 'failed' || current.status === 'timed_out') {
-      clearPendingSubdomainSetup(root)
-      return end(reportTerminalStatus(hostname, current.status), current.status)
-    }
-    if (!dns) {
-      dns = 'manual'
-      recordWizardStep('dns_manual')
-    }
-    if (isCi()) {
-      const pending = pendingDnsRecords(current)
-      if (pending.length) reportPending(hostname, pending)
-      else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
-      log.info(resumeHint(hostname))
-      return end('waiting', 'waiting')
-    }
-
-    // The user adds the records at their provider, then asks for a check; the check itself waits
-    // for propagation with a live line. Nothing happens until they ask.
-    if (!explained) {
-      log.line()
-      log.info('Add the records at your DNS provider, then check. Propagation usually takes a few minutes.')
-      explained = true
-    }
-    let choice: 'check' | 'show' | 'later'
-    do {
-      log.line()
-      choice = await select({
-        message: `${hostname} is waiting for its DNS records. What's next?`,
-        choices: [
-          { name: 'Check the DNS records now', value: 'check' },
-          { name: 'Show the DNS records again', value: 'show' },
-          { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
-        ],
-      })
-      if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
-    } while (choice === 'show')
-    if (choice === 'later') {
-      recordWizardStep('finish_later')
-      return end('waiting', 'waiting')
-    }
-
-    recordWizardStep('dns_check')
-    current = await waitForDns(service, current)
-    if (current.status === 'pending') {
-      log.warn(
-        `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
-      )
-    }
-  }
   }
 }
 
@@ -172,9 +168,6 @@ export function settleAgentSubdomainWork(
   const outcome = judge(seen, failure)
   if (seen?.status === 'failed' || seen?.status === 'timed_out') clearPendingSubdomainSetup(root)
   else if (outcome === 'waiting' && seen) savePendingSubdomainSetup(root, seen.hostname)
-  if (outcome && !options.inSubdomainStep) {
-    recordSubdomainRun({ outcome: seen?.status === 'timed_out' ? 'timed_out' : outcome === 'waiting' ? 'waiting' : 'failed', resumed: true })
-  }
   if (outcome) return outcome
   // Active outside the subdomain step (the agent verified it while doing something else). Inside
   // the step, runSubdomainStep finishes once the agent's run completes.
