@@ -1,5 +1,16 @@
 # fingerprint
 
+## 0.2.0
+
+### Minor Changes
+
+- The integration wizard can now set up a custom subdomain: the agent lists, creates and verifies it through Fingerprint tools, and a pending subdomain leaves the step waiting instead of done. ([c70a2ed](https://github.com/fingerprintjs/fingerprint-cli/commit/c70a2ed23b19c6ff4f34db2151c2461a83205d16))
+
+### Patch Changes
+
+- Add commands to create, list, inspect, verify, and delete custom subdomains through the Management API.
+  Accept hostnames as well as IDs, show DNS setup guidance, and list subdomains when no operation is given. ([1ce0f2a](https://github.com/fingerprintjs/fingerprint-cli/commit/1ce0f2ab57f1798994bbabcbac2f61ced6970621))
+
 ## 0.1.2
 
 ### Patch Changes

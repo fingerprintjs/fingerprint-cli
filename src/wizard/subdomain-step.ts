@@ -1,5 +1,6 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { markFailure } from '../analytics/failure.js'
+import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 import { serializeSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
@@ -34,70 +35,122 @@ export async function askResumeSubdomain(hostname: string): Promise<boolean> {
   return confirm({ message: `Resume the custom subdomain setup for ${hostname}?`, default: true })
 }
 
+// Where the subdomain step ended in this run, for the run's analytics event. One value per run:
+// `waiting` when the user has to come back, `configured` when the app points at the subdomain,
+// `needs_action` when the subdomain is active but the app is not configured yet (no env
+// convention for the frontend, or the user declined the change), `failed` for errors.
+export type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out'
+
+// The analytics outcome of the configure run: only a completed run with the variable written is
+// `configured`; a completed run the CLI could not finish, or a declined one, still needs the user.
+export function configureRunOutcome(applyOutcome: IntegrateOutcome, endpointWritten: boolean): SubdomainRunOutcome {
+  if (applyOutcome === 'failed') return 'failed'
+  if (applyOutcome === 'completed' && endpointWritten) return 'configured'
+  return 'needs_action'
+}
+
+export function recordSubdomainRun(properties: {
+  outcome: SubdomainRunOutcome
+  resumed?: boolean // unknown when the first lookup itself failed
+  dns?: 'manual' | 'domain_connect'
+  provider?: string
+}): void {
+  addRunProperties({
+    subdomain_outcome: properties.outcome,
+    ...(properties.resumed === undefined ? {} : { subdomain_resumed: properties.resumed }),
+    ...(properties.dns ? { subdomain_dns: properties.dns } : {}),
+    ...(properties.provider ? { subdomain_provider: properties.provider } : {}),
+  })
+}
+
 export async function runSubdomainStep(root: string, hostname: string, applyStep: ApplyStep): Promise<IntegrateOutcome> {
   savePendingSubdomainSetup(root, hostname)
   const service = new SubdomainsService()
-  let current = await findSubdomain(service, hostname)
-  if (!current) {
-    // The agent creates it. Whatever its run reported, the API decides whether it exists now.
-    const outcome = await applyStep(root, hostname, 'create')
-    if (outcome === 'failed') return outcome
-    current = await findSubdomain(service, hostname)
-    if (!current) {
-      log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
-      markFailure('subdomain_not_created')
-      process.exitCode = 1
-      return 'failed'
-    }
+  let current: Subdomain | undefined
+  // Picked up from an earlier run, as opposed to created in this one; unknown until the lookup.
+  let resumed: boolean | undefined
+  let dns: 'manual' | 'domain_connect' | undefined
+  const end = (outcome: IntegrateOutcome, ended: SubdomainRunOutcome): IntegrateOutcome => {
+    recordSubdomainRun({ outcome: ended, resumed, dns })
+    return outcome
   }
+  try {
+    current = await findSubdomain(service, hostname)
+    resumed = Boolean(current)
 
-  let explained = false
-  while (true) {
-    if (current.status === 'active') {
-      const outcome = await applyStep(root, hostname, 'configure')
-      if (outcome === 'completed') finishSubdomainSetup(root, hostname)
-      return outcome
-    }
-    if (current.status === 'failed' || current.status === 'timed_out') {
-      clearPendingSubdomainSetup(root)
-      return reportTerminalStatus(hostname, current.status)
-    }
-    if (isCi()) {
-      const pending = pendingDnsRecords(current)
-      if (pending.length) reportPending(hostname, pending)
-      else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
-      log.info(resumeHint(hostname))
-      return 'waiting'
+    if (!current) {
+      // The agent creates it. Whatever its run reported, the API decides whether it exists now.
+      const outcome = await applyStep(root, hostname, 'create')
+      if (outcome === 'failed') return end(outcome, 'failed')
+      current = await findSubdomain(service, hostname)
+      if (!current) {
+        log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
+        markFailure('subdomain_not_created')
+        process.exitCode = 1
+        return end('failed', 'failed')
+      }
     }
 
-    // The user adds the records at their provider, then asks for a check; the check itself waits
-    // for propagation with a live line. Nothing happens until they ask.
-    if (!explained) {
-      log.line()
-      log.info('Add the records at your DNS provider, then check. Propagation usually takes a few minutes.')
-      explained = true
-    }
-    let choice: 'check' | 'show' | 'later'
-    do {
-      log.line()
-      choice = await select({
-        message: `${hostname} is waiting for its DNS records. What's next?`,
-        choices: [
-          { name: 'Check the DNS records now', value: 'check' },
-          { name: 'Show the DNS records again', value: 'show' },
-          { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
-        ],
-      })
-      if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
-    } while (choice === 'show')
-    if (choice === 'later') return 'waiting'
+    let explained = false
+    while (true) {
+      if (current.status === 'active') {
+        const outcome = await applyStep(root, hostname, 'configure')
+        const endpointWritten = outcome === 'completed' ? finishSubdomainSetup(root, hostname) : false
+        return end(outcome, configureRunOutcome(outcome, endpointWritten))
+      }
+      if (current.status === 'failed' || current.status === 'timed_out') {
+        clearPendingSubdomainSetup(root)
+        return end(reportTerminalStatus(hostname, current.status), current.status)
+      }
+      if (!dns) {
+        dns = 'manual'
+        recordWizardStep('dns_manual')
+      }
+      if (isCi()) {
+        const pending = pendingDnsRecords(current)
+        if (pending.length) reportPending(hostname, pending)
+        else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
+        log.info(resumeHint(hostname))
+        return end('waiting', 'waiting')
+      }
 
-    current = await waitForDns(service, current)
-    if (current.status === 'pending') {
-      log.warn(
-        `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
-      )
+      // The user adds the records at their provider, then asks for a check; the check itself waits
+      // for propagation with a live line. Nothing happens until they ask.
+      if (!explained) {
+        log.line()
+        log.info('Add the records at your DNS provider, then check. Propagation usually takes a few minutes.')
+        explained = true
+      }
+      let choice: 'check' | 'show' | 'later'
+      do {
+        log.line()
+        choice = await select({
+          message: `${hostname} is waiting for its DNS records. What's next?`,
+          choices: [
+            { name: 'Check the DNS records now', value: 'check' },
+            { name: 'Show the DNS records again', value: 'show' },
+            { name: `Finish later (resume: fingerprint integrate --subdomain ${hostname})`, value: 'later' },
+          ],
+        })
+        if (choice === 'show') reportPending(hostname, dnsRecords(current), { heading: `DNS records for ${hostname}:` })
+      } while (choice === 'show')
+      if (choice === 'later') {
+        recordWizardStep('finish_later')
+        return end('waiting', 'waiting')
+      }
+
+      recordWizardStep('dns_check')
+      current = await waitForDns(service, current)
+      if (current.status === 'pending') {
+        log.warn(
+          `${hostname} is not active after ${Math.round(dnsWaitMs() / 60_000)} minutes. Check that the records match exactly and, on Cloudflare, that they are DNS only (proxying off).`
+        )
+      }
     }
+  } catch (error) {
+    // An API or agent error ends the step too; the run's failure reason is recorded by the caller.
+    recordSubdomainRun({ outcome: 'failed', resumed, dns })
+    throw error
   }
 }
 
@@ -144,7 +197,8 @@ function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | unde
 // the other keys, and the project stops being "unfinished". The agent has already pointed the app
 // at the variable. When there is nothing the CLI can write to (no frontend, or no env convention)
 // the user is told the one manual step; resuming could not do more, so the reference goes too.
-function finishSubdomainSetup(root: string, hostname: string): void {
+// Returns whether the endpoint variable ended up in the env file.
+function finishSubdomainSetup(root: string, hostname: string): boolean {
   const result = provisionActiveSubdomainEndpoint(root, hostname)
   if (result.outcome === 'configured') {
     if (result.updated) log.success(`Wrote ${result.envVar} → ${result.envFile}`)
@@ -155,6 +209,7 @@ function finishSubdomainSetup(root: string, hostname: string): void {
     log.warn(`No env convention for ${result.framework ?? 'this frontend'} — set endpoints to https://${hostname} in the provider options manually.`)
   }
   clearPendingSubdomainSetup(root)
+  return result.outcome === 'configured'
 }
 
 async function findSubdomain(service: SubdomainsService, hostname: string): Promise<Subdomain | undefined> {

@@ -57,12 +57,16 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 async function reportRun(status: 'ok' | 'error'): Promise<void> {
   const failure = status === 'error' ? (runFailure() ?? { code: 'unknown' }) : undefined
 
-  await track('cli_command_run', {
-    command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
-    status,
-    ...(failure ? { error_code: failure.code } : {}),
-    ...(failure?.message ? { error_message: failure.message } : {}),
-  })
+  await track(
+    'cli_command_run',
+    {
+      command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
+      status,
+      ...(failure ? { error_code: failure.code } : {}),
+      ...(failure?.message ? { error_message: failure.message } : {}),
+    },
+    { final: true }
+  )
 }
 
 program

@@ -15,6 +15,7 @@ import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
 import { markFailure } from '../analytics/failure.js'
+import { recordWizardStep } from '../analytics/track.js'
 import { normalizeHostname } from '../api/subdomains.js'
 import { clearPendingSubdomainSetup, pendingSubdomainSetup } from './subdomain-setups.js'
 import {
@@ -119,14 +120,20 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep)
   if (opts.subdomain) {
     // Direct entry: start or resume the custom subdomain step for this hostname, nothing else.
+    recordWizardStep('subdomain')
     outcome = await provisionThen(root, () => subdomainStep(normalizeHostname(opts.subdomain!)))
     done.add('proxy')
   } else if (unfinished && !opts.yes && !autoYes() && (await askResumeSubdomain(unfinished.hostname))) {
+    recordWizardStep('resume')
     outcome = await provisionThen(root, () => subdomainStep(unfinished.hostname))
     done.add('proxy')
   } else {
     // Declining the resume is a decision: stop offering it.
-    if (unfinished && !opts.yes && !autoYes()) clearPendingSubdomainSetup(root)
+    if (unfinished && !opts.yes && !autoYes()) {
+      clearPendingSubdomainSetup(root)
+      recordWizardStep('resume_declined')
+    }
+    recordWizardStep('install')
     outcome = await provisionAndApply(root, opts)
     // The agent may have created a subdomain while auditing; stay on that step instead of exiting.
     const started = outcome === 'waiting' && !autoYes() ? pendingSubdomainSetup(root) : undefined
@@ -143,6 +150,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     const analysis = analyzeRepo(root)
     if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
     const next = await askNextStep(done)
+    recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
     // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
     if (next !== 'more') done.add(next)
