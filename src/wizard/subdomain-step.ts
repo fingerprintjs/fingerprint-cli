@@ -36,8 +36,18 @@ export async function askResumeSubdomain(hostname: string): Promise<boolean> {
 }
 
 // Where the subdomain step ended in this run, for the run's analytics event. One value per run:
-// `waiting` when the user has to come back, `configured` when the app points at the subdomain.
-export type SubdomainRunOutcome = 'waiting' | 'configured' | 'failed' | 'timed_out'
+// `waiting` when the user has to come back, `configured` when the app points at the subdomain,
+// `needs_action` when the subdomain is active but the app is not configured yet (no env
+// convention for the frontend, or the user declined the change), `failed` for errors.
+export type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out'
+
+// The analytics outcome of the configure run: only a completed run with the variable written is
+// `configured`; a completed run the CLI could not finish, or a declined one, still needs the user.
+export function configureRunOutcome(applyOutcome: IntegrateOutcome, endpointWritten: boolean): SubdomainRunOutcome {
+  if (applyOutcome === 'failed') return 'failed'
+  if (applyOutcome === 'completed' && endpointWritten) return 'configured'
+  return 'needs_action'
+}
 
 export function recordSubdomainRun(properties: {
   outcome: SubdomainRunOutcome
@@ -64,6 +74,15 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     recordSubdomainRun({ outcome: ended, resumed, dns })
     return outcome
   }
+  try {
+    return await runSubdomainStepInner()
+  } catch (error) {
+    // An API or agent error ends the step too; the run's failure reason is recorded by the caller.
+    recordSubdomainRun({ outcome: 'failed', resumed, dns })
+    throw error
+  }
+
+  async function runSubdomainStepInner(): Promise<IntegrateOutcome> {
 
   if (!current) {
     // The agent creates it. Whatever its run reported, the API decides whether it exists now.
@@ -82,8 +101,8 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
   while (true) {
     if (current.status === 'active') {
       const outcome = await applyStep(root, hostname, 'configure')
-      if (outcome === 'completed') finishSubdomainSetup(root, hostname)
-      return end(outcome, outcome === 'completed' ? 'configured' : 'failed')
+      const endpointWritten = outcome === 'completed' ? finishSubdomainSetup(root, hostname) : false
+      return end(outcome, configureRunOutcome(outcome, endpointWritten))
     }
     if (current.status === 'failed' || current.status === 'timed_out') {
       clearPendingSubdomainSetup(root)
@@ -134,6 +153,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       )
     }
   }
+  }
 }
 
 // What the agent's subdomain work means for the run it just did. Returns the outcome that ends
@@ -182,7 +202,8 @@ function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | unde
 // the other keys, and the project stops being "unfinished". The agent has already pointed the app
 // at the variable. When there is nothing the CLI can write to (no frontend, or no env convention)
 // the user is told the one manual step; resuming could not do more, so the reference goes too.
-function finishSubdomainSetup(root: string, hostname: string): void {
+// Returns whether the endpoint variable ended up in the env file.
+function finishSubdomainSetup(root: string, hostname: string): boolean {
   const result = provisionActiveSubdomainEndpoint(root, hostname)
   if (result.outcome === 'configured') {
     if (result.updated) log.success(`Wrote ${result.envVar} → ${result.envFile}`)
@@ -193,6 +214,7 @@ function finishSubdomainSetup(root: string, hostname: string): void {
     log.warn(`No env convention for ${result.framework ?? 'this frontend'} — set endpoints to https://${hostname} in the provider options manually.`)
   }
   clearPendingSubdomainSetup(root)
+  return result.outcome === 'configured'
 }
 
 async function findSubdomain(service: SubdomainsService, hostname: string): Promise<Subdomain | undefined> {

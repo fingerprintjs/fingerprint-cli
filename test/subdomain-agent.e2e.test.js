@@ -388,6 +388,38 @@ test('the agent has no shell and no subagent, so .env cannot leak around the rea
   assert.equal(readFileSync(target, 'utf8'), '// integration\n')
 })
 
+test('an API error while checking DNS is still reported as a failed subdomain run', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('pending')
+  api.failVerify(503)
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: '\n' }, // check now
+    ],
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  assert.deepEqual(pick(api.lastRun(), 'status', 'subdomain_outcome', 'subdomain_resumed', 'wizard_steps'), {
+    status: 'error',
+    subdomain_outcome: 'failed',
+    subdomain_resumed: true,
+    wizard_steps: 'install,subdomain,dns_manual,dns_check',
+  })
+})
+
 test('the agent cannot create a subdomain outside the subdomain step; the audit run finishes normally', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
@@ -478,6 +510,7 @@ function startSubdomainApi() {
   let verifyCalls = 0
   const runEvents = []
   let createFailure
+  let verifyFailure
   let activateOnVerify = false
   const server = createServer((req, res) => {
     let body = ''
@@ -499,6 +532,7 @@ function startSubdomainApi() {
       if (route === `GET /subdomains/${ID}`) return json(200, { data: detail(status) })
       if (route === `POST /subdomains/${ID}/verify`) {
         verifyCalls += 1
+        if (verifyFailure) return json(verifyFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
         const response = detail(status)
         if (activateOnVerify) status = 'active' // the refreshed GET after verify sees it
         return json(200, { data: response })
@@ -526,6 +560,9 @@ function startSubdomainApi() {
         lastRun: () => runEvents[runEvents.length - 1],
         failCreate(code, error) {
           createFailure = { code, error }
+        },
+        failVerify(code) {
+          verifyFailure = code
         },
         activateAfterVerify() {
           activateOnVerify = true

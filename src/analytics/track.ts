@@ -25,8 +25,15 @@ export function addRunProperties(properties: Record<string, unknown>): void {
 // The choices the user made in the wizard this run, in order, as one comma-separated property
 // (`wizard_steps`): which step they picked, whether they resumed, how they handled DNS. Read
 // together with `integrate_status` it says where a run went, without an event per click.
+// Repeats collapse (checking DNS five times is one `dns_check`), and the list stops growing before
+// the Management API's 256-character limit; a longer value would get the whole event rejected.
+const WIZARD_STEPS_MAX = 256
+
 export function recordWizardStep(step: string): void {
-  const steps = typeof runProperties.wizard_steps === 'string' ? `${runProperties.wizard_steps},${step}` : step
+  const current = typeof runProperties.wizard_steps === 'string' ? runProperties.wizard_steps : ''
+  if (current.split(',').at(-1) === step) return
+  const steps = current ? `${current},${step}` : step
+  if (steps.length > WIZARD_STEPS_MAX) return
   runProperties = { ...runProperties, wizard_steps: steps }
 }
 
