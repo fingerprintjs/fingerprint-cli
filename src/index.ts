@@ -49,10 +49,7 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
   // Before the action runs, so it lands whether or not the run ever reaches an account, and whether
   // or not it finishes. `cli_command_run` only reports runs that settle, which misses the person who
   // reads the prompt and closes the terminal.
-  // Not awaited: the command should not wait on telemetry to start. The request completes while the
-  // action runs; the first thing every action awaits (a prompt, an API call, `cli_integrate_started`)
-  // gives it the event loop, and `cli_command_run` is awaited at the end regardless.
-  void track('cli_run_started', { command: invokedCommand ?? 'default' })
+  await track('cli_run_started', { command: invokedCommand ?? 'default' })
 })
 
 // After the run settles, so `login` has written credentials by the time we look for a workspace. A
@@ -60,12 +57,16 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 async function reportRun(status: 'ok' | 'error'): Promise<void> {
   const failure = status === 'error' ? (runFailure() ?? { code: 'unknown' }) : undefined
 
-  await track('cli_command_run', {
-    command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
-    status,
-    ...(failure ? { error_code: failure.code } : {}),
-    ...(failure?.message ? { error_message: failure.message } : {}),
-  })
+  await track(
+    'cli_command_run',
+    {
+      command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
+      status,
+      ...(failure ? { error_code: failure.code } : {}),
+      ...(failure?.message ? { error_message: failure.message } : {}),
+    },
+    { final: true }
+  )
 }
 
 program
