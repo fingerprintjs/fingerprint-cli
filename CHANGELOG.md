@@ -1,5 +1,12 @@
 # fingerprint
 
+## 0.2.1
+
+### Patch Changes
+
+- Analytics requests get more time: 2 seconds for the events sent while a command runs and 5 seconds for `cli_command_run`, up from 1 second for all of them. The endpoint regularly took longer than a second from a cold process, so a good share of `cli_command_run` events were being dropped silently. ([58136db](https://github.com/fingerprintjs/fingerprint-cli/commit/58136db162899e04b6ab66874d15e1050e1b6b1f))
+- `cli_command_run` now describes the wizard run: `wizard_steps` lists the choices in order, and when the run touched a custom subdomain it also carries `subdomain_outcome`, `subdomain_resumed` and `subdomain_dns`. `integrate_status` can be `waiting` for a run that ends with DNS records still pending. The Management API has to accept the new values before the CLI sends them. ([bff98ff](https://github.com/fingerprintjs/fingerprint-cli/commit/bff98ffe34fe5acc4b9b8b2d354cfad589b27106))
+
 ## 0.2.0
 
 ### Minor Changes
