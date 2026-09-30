@@ -41,6 +41,7 @@ test('--help runs and lists commands', () => {
   assert.equal(res.status, 0)
   assert.match(res.stdout, /Usage: fingerprint/)
   assert.match(res.stdout, /integrate/)
+  assert.match(res.stdout, /subdomains/)
 })
 
 test('--version prints the package version', () => {

@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import { login, signup, startAuth, logout, whoami } from './commands/auth.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
+import { registerSubdomainsCommands } from './commands/subdomains.js'
 import { getAuthState } from './auth/tokenStore.js'
 import { hasUsableSession } from './auth/refresh.js'
 import { setCiContext, isCi } from './utils/ci.js'
@@ -11,6 +12,8 @@ import { setInteractive } from './utils/interactive.js'
 import { color } from './utils/color.js'
 import { printFiglet } from './utils/figlet.js'
 import { track } from './analytics/track.js'
+import { markFailure, runFailure } from './analytics/failure.js'
+import { CodedError } from './errors.js'
 import { VERSION } from './version.js'
 
 const program = new Command()
@@ -18,7 +21,7 @@ program.name('fingerprint').description('Fingerprint CLI dashboard companion').v
 
 // Global flags shared by every command, used for headless/CI runs.
 program
-  .option('--ci', 'non-interactive: never prompt; auto-confirm and fail fast on missing input')
+  .option('--ci', 'never prompt; auto-confirm non-destructive actions and fail fast on missing input')
   .option('-y, --yes', 'skip confirmation prompts')
   .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
   .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
@@ -33,8 +36,6 @@ program.hook('preAction', () => {
   setInteractive(Boolean(opts.interactive) && !ci)
 })
 
-// An unrecognized command resolves through the default action, so it reaches the hook looking
-// like a bare `fingerprint`.
 let ranUnknownCommand = false
 
 // Recorded here and reported once the run settles. postAction would be tidier but is skipped when
@@ -42,7 +43,9 @@ let ranUnknownCommand = false
 // in real use that `login` and `default` were going missing entirely.
 let invokedCommand: string | undefined
 program.hook('preAction', async (_thisCommand, actionCommand) => {
-  invokedCommand = actionCommand === program ? undefined : actionCommand.name()
+  invokedCommand = actionCommand === program ? undefined : commandPath(actionCommand)
+  ranUnknownCommand = actionCommand === program && Boolean(actionCommand.args[0])
+  if (ranUnknownCommand) return
   // Before the action runs, so it lands whether or not the run ever reaches an account, and whether
   // or not it finishes. `cli_command_run` only reports runs that settle, which misses the person who
   // reads the prompt and closes the terminal.
@@ -52,9 +55,13 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 // After the run settles, so `login` has written credentials by the time we look for a workspace. A
 // run that never got them reports through the unauthenticated route instead of going unrecorded.
 async function reportRun(status: 'ok' | 'error'): Promise<void> {
+  const failure = status === 'error' ? (runFailure() ?? { code: 'unknown' }) : undefined
+
   await track('cli_command_run', {
     command: invokedCommand ?? (ranUnknownCommand ? 'unknown' : 'default'),
     status,
+    ...(failure ? { error_code: failure.code } : {}),
+    ...(failure?.message ? { error_message: failure.message } : {}),
   })
 }
 
@@ -80,14 +87,17 @@ program
   .description('Analyze the current repo and apply the Fingerprint integration')
   .option('--path <dir>', 'repo to analyze (default: current directory)')
   .option('--analyze', 'only analyze; do not apply the integration')
+  .option('--subdomain <fqdn>', 'go straight to the custom subdomain step for this hostname (start or resume it)')
   .option('--yes', 'skip the confirmation prompt')
   .option('--verbose', "show the agent's individual steps (file reads, edits, tool calls)")
   .option('--interactive', 'ask before each file edit and package install (default: apply automatically)')
   .action((opts) => {
     if (opts.verbose) setVerbose(true)
     if (opts.interactive && !isCi()) setInteractive(true)
-    return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes })
+    return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes, subdomain: opts.subdomain })
   })
+
+registerSubdomainsCommands(program)
 
 // Default command: `fingerprint` with no subcommand. Route by where the user is so the whole
 // onboarding is one command (login → integrate, resuming from any point). Signup + workspace/region
@@ -98,8 +108,6 @@ async function defaultCommand(unknownCommand?: string) {
   // positional that reaches here is an unrecognized command (typically a typo). Fail with a friendly
   // hint instead of commander's bare "too many arguments".
   if (unknownCommand) {
-    // Reporting a typo as `default` would read as launcher usage, which is the opposite of what it is.
-    ranUnknownCommand = true
     reportUnknownCommand(unknownCommand)
     return
   }
@@ -132,6 +140,7 @@ async function defaultCommand(unknownCommand?: string) {
     ['fingerprint', 'this guided setup, start to finish'],
     ['fingerprint integrate', 'add Fingerprint to the repo in this directory'],
     ['fingerprint keys', 'print a public or secret API key'],
+    ['fingerprint subdomains', 'manage custom subdomains for this workspace'],
     ['fingerprint whoami', 'show the signed-in workspace'],
     ['fingerprint --help', 'every command and flag'],
   ]
@@ -155,6 +164,14 @@ async function defaultCommand(unknownCommand?: string) {
   await integrateCommand({ chained: true })
 }
 
+function commandPath(command: Command): string {
+  const names: string[] = []
+  for (let current: Command | null = command; current && current !== program; current = current.parent) {
+    names.unshift(current.name())
+  }
+  return names.join('-')
+}
+
 // A variadic optional positional lets the bare `fingerprint` run onboarding while still catching an
 // unknown command (even a multi-word one) instead of erroring with "too many arguments".
 program
@@ -166,9 +183,11 @@ program
 function reportUnknownCommand(name: string): void {
   const known = program.commands.flatMap((c) => [c.name(), ...c.aliases()])
   const suggestion = closestCommand(name, known)
-  console.error(`Unknown command "${name}".`)
+  const message = `Unknown command "${name}".`
+  console.error(message)
   if (suggestion) console.error(`Did you mean "${suggestion}"?`)
   console.error('\nRun `fingerprint --help` to see the available commands.')
+  markFailure('unknown_command', message)
   process.exitCode = 1
 }
 
@@ -204,5 +223,6 @@ program
   .catch(async (err) => {
     console.error(err.message)
     process.exitCode = 1
+    markFailure(err instanceof CodedError ? err.code : 'unknown', err)
     await reportRun('error')
   })

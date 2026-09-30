@@ -1,10 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VERSION } from '../dist/version.js'
+import { resolveConfig } from '../dist/config/config.js'
 
 import {
   makeHome,
@@ -98,6 +99,19 @@ test('an invoked integrate is reported as invoked, not chained', async () => {
   await api.close()
 })
 
+test('a nested command reports its full command path', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['subdomains', 'list', '--json'], { home })
+  assert.equal(res.status, 1)
+  assert.deepEqual(commands(api), ['subdomains-list'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
+
+  await api.close()
+})
+
 test('an integrate that applies nothing reports why', async () => {
   const api = await startManagementApi()
   const home = makeHome()
@@ -177,14 +191,40 @@ test('logout reports with the credential it just dropped', async () => {
   await api.close()
 })
 
-test('a mistyped command is not reported as a bare run', async () => {
+test('a mistyped command reports only how it ended', async () => {
   const api = await startManagementApi()
   const home = makeHome()
   seedAuth(home, api.url)
 
   const res = await runCli(['integrat'], { home })
   assert.equal(res.status, 1, res.stdout)
+  assert.match(res.stderr, /Did you mean "integrate"\?/)
+  assert.deepEqual(names(api), ['cli_command_run'])
   assert.deepEqual(commands(api), ['unknown'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
+
+  await api.close()
+})
+
+test('a mistyped command reports only how it ended when signed out too', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['integrat'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1, res.stdout)
+  assert.deepEqual(names(api), ['cli_command_run'])
+  assert.deepEqual(commands(api), ['unknown'])
+  assert.equal(first(api, 'cli_command_run').body.properties.status, 'error')
+
+  await api.close()
+})
+
+test('an empty command argument still counts as a bare run', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['', '--ci'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1, res.stdout)
+  assert.deepEqual(names(api), ['cli_run_started', 'cli_command_run'])
+  assert.deepEqual(commands(api), ['default'])
 
   await api.close()
 })
@@ -220,6 +260,86 @@ test('a command that fails still reports, with status error', async () => {
   srv.close()
 })
 
+function makeFailingGit() {
+  const dir = mkdtempSync(join(tmpdir(), 'fp-bin-'))
+  const file = join(dir, 'git')
+  writeFileSync(file, '#!/bin/sh\necho "fatal: destination path \'$6\' already exists and is not an empty directory." >&2\nexit 128\n')
+  chmodSync(file, 0o755)
+  return dir
+}
+
+const errorProps = (api) => {
+  const run = first(api, 'cli_command_run')
+  return run ? run.body.properties : undefined
+}
+
+test('an integrate that gives up for want of a session reports why, not just error', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['integrate'], {
+    home: makeHome(),
+    cwd: makeRepo(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
+  })
+  assert.equal(res.status, 1)
+
+  assert.match(errorProps(api).status, /error/)
+  assert.equal(errorProps(api).error_code, 'session_unavailable')
+
+  await api.close()
+})
+
+test('a skills clone that cannot reach the network is reported as its own failure', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['integrate', '--yes'], {
+    home,
+    cwd: makeRepo(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+  })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).error_code, 'skills_fetch_failed')
+
+  await api.close()
+})
+
+test('the reported message says what actually failed', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  await runCli(['integrate', '--yes'], {
+    home,
+    cwd: makeRepo(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+  })
+
+  assert.match(errorProps(api).error_message, /Could not fetch skills/)
+  const message = errorProps(api).error_message
+  assert.match(message, /fatal: destination path '~\/\.config\/fingerprint\/skills' already exists/)
+  assert.ok(!message.includes(home))
+
+  await api.close()
+})
+
+test('a mistyped command reports a code and what was typed', async () => {
+  const api = await startManagementApi()
+  const home = makeHome()
+  seedAuth(home, api.url)
+
+  const res = await runCli(['intergrate'], { home })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).status, 'error')
+  assert.equal(errorProps(api).error_code, 'unknown_command')
+  assert.equal(errorProps(api).error_message, 'Unknown command "intergrate".')
+
+  await api.close()
+})
+
 test('an unauthenticated run reports through the anonymous route, with no key attached', async () => {
   const api = await startManagementApi()
 
@@ -250,4 +370,11 @@ test('an unauthenticated run withholds the events that need a workspace', async 
   assert.ok(!names(api).includes('cli_integrate_started'))
 
   await api.close()
+})
+
+// `npm test` runs in the test environment, so a spawn helper that forgets an override can't leak.
+test('the suite resolves no real service', () => {
+  const { managementApiUrl, gatewayUrl } = resolveConfig()
+  assert.match(managementApiUrl, /127\.0\.0\.1/)
+  assert.match(gatewayUrl, /127\.0\.0\.1/)
 })

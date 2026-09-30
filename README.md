@@ -20,8 +20,6 @@ That's the whole thing. It works out where you are and takes you to the next ste
   and get a workspace in the same flow. Then it integrates Fingerprint into the current repo.
 - **Already signed in?** It goes straight to integrating the current repo.
 
-You do not need an Anthropic API key — the CLI routes its model calls through Fingerprint.
-
 ## What it does
 
 1. **Signs you in** through your browser, and stores a workspace-scoped key locally.
@@ -33,8 +31,7 @@ You do not need an Anthropic API key — the CLI routes its model calls through 
    visitor in the browser first; then, where you have a backend, verify the event against the
    Fingerprint API; then the custom subdomain, and so on — and tells you how to verify it. Test
    it, then pick the next step from the menu; if you choose server-side verification and your
-   backend lives in another repo, it asks where. It works with the app you have rather than
-   inventing a backend or a form.
+   backend lives in another repo, it asks where.
 
 Nothing is applied without your confirmation, and every change lands in your working tree for you to
 review and commit.
@@ -58,9 +55,21 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 | `fingerprint` | The guided setup, start to finish: sign in, then integrate |
 | `fingerprint integrate` | Add Fingerprint to the repo in the current directory |
 | `fingerprint keys [public\|secret]` | Print an API key for your workspace (prompts if omitted) |
+| `fingerprint subdomains` | List custom subdomains and show the available commands |
+| `fingerprint subdomains create <hostname>` | Register a custom subdomain and print its DNS records |
+| `fingerprint subdomains list` | List custom subdomains and their status |
+| `fingerprint subdomains get <id-or-hostname>` | Show a custom subdomain and its DNS records |
+| `fingerprint subdomains verify <id-or-hostname>` | Run an on-demand DNS check and show the fresh status |
+| `fingerprint subdomains delete <id-or-hostname>` | Delete a custom subdomain and revoke its certificate |
 | `fingerprint login` / `signup` | Sign in or create an account through the browser |
 | `fingerprint whoami` | Show the signed-in workspace |
 | `fingerprint logout` | Delete the local credential |
+
+After creating a subdomain, add the returned DNS records at your DNS provider, then run
+`fingerprint subdomains verify metrics.example.com`. Use your subdomain's hostname or its
+`certv2_...` ID with `get`, `verify`, and `delete`. Hostnames are resolved within the signed-in workspace.
+If all DNS records are validated but setup is still pending, use `fingerprint subdomains get metrics.example.com`
+later to check for activation. Only configure your integration to use the subdomain once it is `active`.
 
 ### Options
 
@@ -68,6 +77,7 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 
 - `--path <dir>` — the repo to work on (default: the current directory)
 - `--analyze` — report the detected stack and stop, without changing anything
+- `--subdomain <fqdn>` — go straight to the custom subdomain step for that hostname, to start it or pick it up where it stopped
 
 And these work everywhere:
 
@@ -75,6 +85,9 @@ And these work everywhere:
 - `--interactive` — ask before every individual file edit and package install
 - `--verbose` — show each step in detail: file reads, edits, and tool calls
 - `--ci` — non-interactive: never prompt, and fail fast if something is missing
+
+The create, list, get, verify, and delete operations support `--json`.
+Deleting requires confirmation; pass `--yes` explicitly in non-interactive runs.
 
 ## Signing in
 
@@ -112,17 +125,22 @@ excluded from everything the integration step reads.
 
 ## Troubleshooting
 
-A detailed run log is written to your system temp directory as `fingerprint-wizard.log` — never
-inside your project. If an integration fails or does something unexpected, that log has the full
-sequence of steps and is the best thing to attach to a bug report.
+A detailed run log is written to `fingerprint-wizard.log` in your system temp directory — never
+inside your project:
+
+- macOS: `$TMPDIR/fingerprint-wizard.log` (run `echo $TMPDIR` to see the folder)
+- Linux: `/tmp/fingerprint-wizard.log`
+- Windows: `%TEMP%\fingerprint-wizard.log`
+
+If an integration fails or does something unexpected, that log has the full sequence of steps and is
+the best thing to attach to a bug report.
 
 Run with `--verbose` to see the same detail live in your terminal.
 
 ## Telemetry
 
-After you sign in, the CLI reports which commands you run and which frameworks were detected, so we
-know which integrations to improve. It does not collect your code, file contents, file paths, or API
-keys. Nothing is reported before you sign in.
+The CLI reports which commands you run and which frameworks were detected, so we know which
+integrations to improve. It does not collect your code, file contents, file paths, or API keys.
 
 ## Support
 

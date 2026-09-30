@@ -12,6 +12,7 @@ import { log } from './log.js'
 interface EnvConvention {
   file: string
   publicVar?: string
+  endpointVar?: string
   secretVar?: string
   clientRegionVar?: string
   serverRegionVar?: string
@@ -36,6 +37,7 @@ function conventionForFramework(framework?: string): EnvConvention {
       return {
         file: '.env.local',
         publicVar: 'NEXT_PUBLIC_FINGERPRINT_PUBLIC_API_KEY',
+        endpointVar: 'NEXT_PUBLIC_FINGERPRINT_ENDPOINTS',
         clientRegionVar: 'NEXT_PUBLIC_FINGERPRINT_REGION',
         secretVar: 'FINGERPRINT_SECRET_API_KEY',
         serverRegionVar: 'FINGERPRINT_REGION',
@@ -44,6 +46,7 @@ function conventionForFramework(framework?: string): EnvConvention {
       return {
         file: '.env',
         publicVar: 'NUXT_PUBLIC_FINGERPRINT_PUBLIC_API_KEY',
+        endpointVar: 'NUXT_PUBLIC_FINGERPRINT_ENDPOINTS',
         clientRegionVar: 'NUXT_PUBLIC_FINGERPRINT_REGION',
         secretVar: 'FINGERPRINT_SECRET_API_KEY',
         serverRegionVar: 'FINGERPRINT_REGION',
@@ -61,7 +64,12 @@ function conventionForFramework(framework?: string): EnvConvention {
     case 'alpine':
     case 'htmx':
     case 'jquery':
-      return { file: '.env', publicVar: 'VITE_FINGERPRINT_PUBLIC_API_KEY', clientRegionVar: 'VITE_FINGERPRINT_REGION' }
+      return {
+        file: '.env',
+        publicVar: 'VITE_FINGERPRINT_PUBLIC_API_KEY',
+        endpointVar: 'VITE_FINGERPRINT_ENDPOINTS',
+        clientRegionVar: 'VITE_FINGERPRINT_REGION',
+      }
     // Static site, no build step: nothing reads a .env, so there is no var to write — the key and
     // region are inlined in the code instead (see `inlinesPublicKey`).
     case 'html':
@@ -173,6 +181,43 @@ export interface ProvisionResult {
   // from (see `inlinesPublicKey`). Public by design — they ship in the page source either way.
   // Never the secret key, which stays out of the agent's reach entirely.
   inline?: { publicKey?: string; region: string }
+}
+
+export type EndpointProvisionResult =
+  | { outcome: 'no_frontend' }
+  | { outcome: 'unsupported'; framework?: string }
+  | {
+      outcome: 'configured'
+      endpoint: string
+      envFile: string
+      envVar: string
+      updated: boolean
+    }
+
+// Store an active custom subdomain using the selected frontend's existing env convention. The
+// caller is responsible for checking the subdomain status before invoking this helper.
+export function provisionActiveSubdomainEndpoint(root: string, hostname: string): EndpointProvisionResult {
+  const analysis = analyzeRepo(root)
+  const frontend = analysis.frontend
+  if (!frontend) return { outcome: 'no_frontend' }
+
+  const endpoint = `https://${hostname}`
+
+  const convention = conventionFor(frontend)
+  if (!convention.endpointVar) return { outcome: 'unsupported', framework: frontend.framework }
+
+  const file = join(frontend.dir, convention.file)
+  const updated = readEnvVar(file, convention.endpointVar) !== endpoint
+  if (updated) writeEnvFile(file, { [convention.endpointVar]: endpoint })
+  ensureGitignored(root, [file])
+
+  return {
+    outcome: 'configured',
+    endpoint,
+    envFile: relative(root, file).split(sep).join('/'),
+    envVar: convention.endpointVar,
+    updated,
+  }
 }
 
 // Provision real workspace keys into the right per-app .env files, host-side (never via the
