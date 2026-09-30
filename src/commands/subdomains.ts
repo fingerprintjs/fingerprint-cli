@@ -132,13 +132,21 @@ async function connectSubdomain(target: string, options: ConnectOptions): Promis
     try {
       const link = await service.domainConnect(id, loopback.port).catch((error) => {
         // 409 here means "not while pending" or "no Domain Connect for this provider", not a duplicate.
-        if (error instanceof ManagementApiError && error.status === 409) throw new SubdomainError('unsupported', error.message)
+        if (error instanceof ManagementApiError && error.status === 409) {
+          throw new SubdomainError('unsupported', error.message, { status: error.status, code: error.code })
+        }
         throw error
       })
       if (options.json) return printJson({ data: link })
 
       const provider = link.dns_provider ?? 'your DNS provider'
       for (const line of await openDomainConnectLink(link.domain_connect_url, provider, options.open !== false)) console.log(line)
+      // In CI nobody opens the link on this machine, so the provider's redirect can never reach this
+      // loopback. Hand over the link and stop, instead of waiting out the timeout.
+      if (isCi()) {
+        console.log(`\nOnce ${provider} has added the records, check them with: fingerprint subdomains verify ${target}`)
+        return
+      }
       loopback.startTimeout(DOMAIN_CONNECT_TIMEOUT_MS)
 
       const result = await loopback.callback

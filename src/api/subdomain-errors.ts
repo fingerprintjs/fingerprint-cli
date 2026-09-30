@@ -28,7 +28,9 @@ export interface SerializedSubdomainError {
 export class SubdomainError extends Error {
   constructor(
     public readonly kind: SubdomainErrorKind,
-    message: string
+    message: string,
+    // When the error reclassifies an API response, keep its status and code for `--json` readers.
+    public readonly details: Pick<SerializedSubdomainError, 'status' | 'code'> = {}
   ) {
     super(message)
     this.name = 'SubdomainError'
@@ -40,7 +42,7 @@ export const UNAVAILABLE_MESSAGE =
   'Check availability with Fingerprint support before retrying.'
 
 export function serializeSubdomainError(error: unknown): SerializedSubdomainError {
-  if (error instanceof SubdomainError) return { kind: error.kind, message: error.message }
+  if (error instanceof SubdomainError) return { kind: error.kind, message: error.message, ...error.details }
   if (error instanceof NotAuthenticatedError) return { kind: 'not_authenticated', message: error.message }
   if (!(error instanceof ManagementApiError)) {
     return { kind: 'api_error', message: error instanceof Error ? error.message : String(error) }

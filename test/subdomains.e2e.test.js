@@ -682,7 +682,21 @@ test('connect explains when Domain Connect is not available instead of calling i
   assert.deepEqual(JSON.parse(json.stdout).error, {
     kind: 'unsupported',
     message: 'Domain Connect is not available for this subdomain',
+    status: 409,
+    code: 'general.conflict',
   })
+})
+
+test('connect in CI prints the link and stops: the redirect cannot reach this machine', async (t) => {
+  const api = await domainConnectApi({ redirect: false })
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'connect', ID], { env: { CI: 'true' } })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Open this link to add the records at Cloudflare:\n {2}https:\/\/dc\.example\.test\/apply\?port=\d+/)
+  assert.match(result.stdout, new RegExp(`fingerprint subdomains verify ${ID}`))
+  assert.equal(api.requests.some((r) => r.path.endsWith('/verify')), false)
 })
 
 test('connect --json prints the link and exits without waiting for the redirect', async (t) => {
