@@ -3,7 +3,8 @@ import { ManagementClient } from '../api/management.js'
 import { getAuthState, type AuthState } from '../auth/tokenStore.js'
 import { debugLog } from '../utils/log-file.js'
 
-const TIMEOUT_MS = 1000
+// The analytics endpoint takes 0.5-1.2s from a cold process, TLS handshake included.
+const TIMEOUT_MS = 5000
 
 // Mirrors the Management API's own allow-list for the keyless route.
 const ANONYMOUS_EVENTS = new Set(['cli_run_started', 'cli_command_run', 'cli_auth_intent_selected'])
