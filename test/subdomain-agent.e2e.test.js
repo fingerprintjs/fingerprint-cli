@@ -420,6 +420,29 @@ test('an API error while checking DNS is still reported as a failed subdomain ru
   })
 })
 
+test('a failing lookup before anything else is a failed subdomain run, with no resumed flag', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.failList(503)
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(() => ({ text: 'unused' }))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  const run = api.lastRun()
+  assert.equal(run.status, 'error')
+  assert.equal(run.subdomain_outcome, 'failed')
+  assert.equal('subdomain_resumed' in run, false)
+})
+
 test('the agent cannot create a subdomain outside the subdomain step; the audit run finishes normally', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
@@ -511,6 +534,7 @@ function startSubdomainApi() {
   const runEvents = []
   let createFailure
   let verifyFailure
+  let listFailure
   let activateOnVerify = false
   const server = createServer((req, res) => {
     let body = ''
@@ -522,6 +546,7 @@ function startSubdomainApi() {
         res.end(JSON.stringify(value))
       }
       if (route === 'GET /api-keys') return json(200, { data: [{ id: 'pub', type: 'public', status: 'enabled', token: 'pub_123' }] })
+      if (route === 'GET /subdomains' && listFailure) return json(listFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
       if (route === 'GET /subdomains') return json(200, { data: created ? [summary(status)] : [], metadata: { pagination: { next_cursor: null } } })
       if (route === 'POST /subdomains') {
         createCalls += 1
@@ -563,6 +588,9 @@ function startSubdomainApi() {
         },
         failVerify(code) {
           verifyFailure = code
+        },
+        failList(code) {
+          listFailure = code
         },
         activateAfterVerify() {
           activateOnVerify = true

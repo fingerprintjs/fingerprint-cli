@@ -51,13 +51,13 @@ export function configureRunOutcome(applyOutcome: IntegrateOutcome, endpointWrit
 
 export function recordSubdomainRun(properties: {
   outcome: SubdomainRunOutcome
-  resumed: boolean
+  resumed?: boolean // unknown when the first lookup itself failed
   dns?: 'manual' | 'domain_connect'
   provider?: string
 }): void {
   addRunProperties({
     subdomain_outcome: properties.outcome,
-    subdomain_resumed: properties.resumed,
+    ...(properties.resumed === undefined ? {} : { subdomain_resumed: properties.resumed }),
     ...(properties.dns ? { subdomain_dns: properties.dns } : {}),
     ...(properties.provider ? { subdomain_provider: properties.provider } : {}),
   })
@@ -66,9 +66,9 @@ export function recordSubdomainRun(properties: {
 export async function runSubdomainStep(root: string, hostname: string, applyStep: ApplyStep): Promise<IntegrateOutcome> {
   savePendingSubdomainSetup(root, hostname)
   const service = new SubdomainsService()
-  let current = await findSubdomain(service, hostname)
-  // Picked up from an earlier run, as opposed to created in this one.
-  const resumed = Boolean(current)
+  let current: Subdomain | undefined
+  // Picked up from an earlier run, as opposed to created in this one; unknown until the lookup.
+  let resumed: boolean | undefined
   let dns: 'manual' | 'domain_connect' | undefined
   const end = (outcome: IntegrateOutcome, ended: SubdomainRunOutcome): IntegrateOutcome => {
     recordSubdomainRun({ outcome: ended, resumed, dns })
@@ -83,6 +83,8 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
   }
 
   async function runSubdomainStepInner(): Promise<IntegrateOutcome> {
+  current = await findSubdomain(service, hostname)
+  resumed = Boolean(current)
 
   if (!current) {
     // The agent creates it. Whatever its run reported, the API decides whether it exists now.
