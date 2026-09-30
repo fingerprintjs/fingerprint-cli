@@ -77,12 +77,12 @@ test('handlers call the service and return only public fields', async () => {
 })
 
 test('lastSeen follows the latest subdomain the agent read or changed', async () => {
-  const server = createSubdomainsMcpServer(makeService().service)
+  const server = createSubdomainsMcpServer(makeService().service, 'metrics.example.com')
   const tools = toolsByName(server)
 
   assert.equal(server.lastSeen(), undefined)
   await tools.list_subdomains.handler({}, {})
-  assert.equal(server.lastSeen(), undefined, 'listing is an audit read, not a selection')
+  assert.equal(server.lastSeen()?.recordsKnown, false, 'the list entry for the chosen hostname counts, without records')
 
   await tools.get_subdomain.handler({ id: item.id }, {})
   assert.deepEqual(server.lastSeen(), {
@@ -165,15 +165,19 @@ test('with a known hostname, create refuses any other hostname without calling t
   assert.deepEqual(calls, [['create', 'Metrics.Example.com.']])
 })
 
-test('without a chosen hostname, create is refused as guidance, not recorded as a failure', async () => {
+test('without a chosen hostname, create and verify are refused as guidance, not recorded as a failure', async () => {
   const { calls, service } = makeService()
   const server = createSubdomainsMcpServer(service)
   const tools = toolsByName(server)
 
-  const refused = await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {})
-  assert.equal(refused.isError, true)
-  assert.equal(refused.structuredContent.error.kind, 'confirmation_required')
-  assert.match(refused.structuredContent.error.message, /integrate --subdomain/)
+  for (const refused of [
+    await tools.create_subdomain.handler({ hostname: 'metrics.example.com' }, {}),
+    await tools.verify_subdomain.handler({ id: item.id }, {}),
+  ]) {
+    assert.equal(refused.isError, true)
+    assert.equal(refused.structuredContent.error.kind, 'confirmation_required')
+    assert.match(refused.structuredContent.error.message, /integrate --subdomain/)
+  }
   assert.deepEqual(calls, [])
   assert.equal(server.lastFailure(), undefined)
   assert.equal(server.mutated(), false)

@@ -3,7 +3,12 @@ import { ManagementClient } from '../api/management.js'
 import { getAuthState, type AuthState } from '../auth/tokenStore.js'
 import { debugLog } from '../utils/log-file.js'
 
-const TIMEOUT_MS = 1000
+// The analytics endpoint takes 0.5-1.2s from a cold process, TLS handshake included. Every event is
+// awaited, so each timeout is time the user may wait on telemetry: the events sent while a command
+// runs get a short one, and `cli_command_run`, the one carrying the run's outcome and sent last,
+// gets a longer one.
+const TIMEOUT_MS = 2000
+const FINAL_TIMEOUT_MS = 5000
 
 // Mirrors the Management API's own allow-list for the keyless route.
 const ANONYMOUS_EVENTS = new Set(['cli_run_started', 'cli_command_run', 'cli_auth_intent_selected'])
@@ -22,6 +27,21 @@ export function addRunProperties(properties: Record<string, unknown>): void {
   runProperties = { ...runProperties, ...properties }
 }
 
+// The choices the user made in the wizard this run, in order, as one comma-separated property
+// (`wizard_steps`): which step they picked, whether they resumed, how they handled DNS. Read
+// together with `integrate_status` it says where a run went, without an event per click.
+// Repeats collapse (checking DNS five times is one `dns_check`), and the list stops growing before
+// the Management API's 256-character limit; a longer value would get the whole event rejected.
+const WIZARD_STEPS_MAX = 256
+
+export function recordWizardStep(step: string): void {
+  const current = typeof runProperties.wizard_steps === 'string' ? runProperties.wizard_steps : ''
+  if (current.split(',').at(-1) === step) return
+  const steps = current ? `${current},${step}` : step
+  if (steps.length > WIZARD_STEPS_MAX) return
+  runProperties = { ...runProperties, wizard_steps: steps }
+}
+
 // Option names only, never their values.
 function cliFlags(): string {
   const names = process.argv
@@ -31,7 +51,11 @@ function cliFlags(): string {
   return [...new Set(names)].sort().join(',')
 }
 
-export async function track(event: string, properties: Record<string, unknown> = {}): Promise<void> {
+export async function track(
+  event: string,
+  properties: Record<string, unknown> = {},
+  { final = false }: { final?: boolean } = {}
+): Promise<void> {
   const auth = pinnedAuth ?? getAuthState()
   const authenticated = Boolean(auth?.managementApiKey)
 
@@ -48,7 +72,7 @@ export async function track(event: string, properties: Record<string, unknown> =
         event,
         properties: { run_id: runId, cli_flags: cliFlags(), ...runProperties, ...properties },
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(final ? FINAL_TIMEOUT_MS : TIMEOUT_MS),
     })
   } catch (err) {
     debugLog(`analytics: dropped ${event} (${err instanceof Error ? err.message : String(err)})`)
