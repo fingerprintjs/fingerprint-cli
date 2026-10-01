@@ -201,7 +201,12 @@ function providerSlug(name: string): string | undefined {
 // browser flow. Returns the provider once it redirected back, meaning the records are in and the
 // caller can wait for validation. Any other way out returns undefined and the manual path continues.
 async function offerDomainConnect(service: SubdomainsService, current: Subdomain): Promise<{ provider?: string } | undefined> {
-  const loopback = await listenForDomainConnect()
+  // No loopback listener (a sandbox with no local ports) means no shortcut, not a failed setup.
+  const loopback = await listenForDomainConnect().catch((error: unknown) => {
+    log.warn(`Domain Connect is not available right now (${error instanceof Error ? error.message : String(error)}). You can add the records yourself.`)
+    return undefined
+  })
+  if (!loopback) return undefined
   try {
     const link = await service.domainConnect(current.id, loopback.port).catch((error) => {
       if (error instanceof ManagementApiError && error.status === 409) return undefined // no Domain Connect here
