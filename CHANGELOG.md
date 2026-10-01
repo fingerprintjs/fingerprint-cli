@@ -1,5 +1,12 @@
 # fingerprint
 
+## 0.2.3
+
+### Patch Changes
+
+- Server-side verification counts as done only when the backend's code has an actual import of the server SDK. A comment that mentions the package, or a commented-out import, doesn't count. ([14015be](https://github.com/fingerprintjs/fingerprint-cli/commit/14015be7b2b68cafcfe4b0fd1d847857549b457d))
+- Inside the wizard's subdomain step, the agent's `verify_subdomain` tool now only accepts the subdomain being set up, like `create_subdomain` already did. Another subdomain's id is looked up and refused before any verification is requested. ([2b94804](https://github.com/fingerprintjs/fingerprint-cli/commit/2b9480494deb125403b88440c406fdcff7dd7898))
+
 ## 0.2.2
 
 ### Patch Changes
