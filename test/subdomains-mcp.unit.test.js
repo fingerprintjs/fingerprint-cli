@@ -165,6 +165,31 @@ test('with a known hostname, create refuses any other hostname without calling t
   assert.deepEqual(calls, [['create', 'Metrics.Example.com.']])
 })
 
+test('with a known hostname, verify refuses the id of any other subdomain without verifying it', async () => {
+  const { calls, service } = makeService({
+    async get(id) {
+      calls.push(['get', id])
+      return { ...detail('pending'), id, subdomain: id === 'sub_other' ? 'other.example.com' : 'metrics.example.com' }
+    },
+  })
+  const server = createSubdomainsMcpServer(service, 'metrics.example.com')
+  const tools = toolsByName(server)
+
+  const other = await tools.verify_subdomain.handler({ id: 'sub_other' }, {})
+  assert.equal(other.isError, true)
+  assert.equal(other.structuredContent.error.kind, 'invalid_subdomain')
+  assert.deepEqual(calls, [['get', 'sub_other']])
+  assert.equal(server.lastFailure().kind, 'invalid_subdomain')
+
+  const same = await tools.verify_subdomain.handler({ id: item.id }, {})
+  assert.equal(same.isError, undefined)
+  assert.deepEqual(calls.slice(1), [
+    ['get', item.id],
+    ['verify', item.id],
+  ])
+  assert.equal(server.lastSeen().status, 'active')
+})
+
 test('without a chosen hostname, create and verify are refused as guidance, not recorded as a failure', async () => {
   const { calls, service } = makeService()
   const server = createSubdomainsMcpServer(service)
