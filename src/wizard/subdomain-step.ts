@@ -117,18 +117,21 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
         log.info(resumeHint(hostname))
         return end('waiting', 'waiting')
       }
+      const pending = pendingDnsRecords(current)
       if (!recordsShown) {
-        reportPending(hostname, pendingDnsRecords(current))
+        if (pending.length) reportPending(hostname, pending)
+        else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
         recordsShown = true
       }
 
-      // When the DNS provider supports Domain Connect, the browser can add the records; offered once.
-      if (!offeredDomainConnect) {
+      // When the DNS provider supports Domain Connect, the browser can add the records; offered once,
+      // and only while there are records left to add.
+      if (!offeredDomainConnect && pending.length) {
         offeredDomainConnect = true
         const added = await offerDomainConnect(service, current)
         if (added) {
           dns = 'domain_connect'
-          provider = providerSlug(added.provider)
+          provider = added.provider && providerSlug(added.provider)
           current = await waitForDns(service, current)
           continue
         }
@@ -190,7 +193,7 @@ function providerSlug(name: string): string | undefined {
 // Ask the API for a Domain Connect link; when the provider has one, let the user choose the
 // browser flow. Returns the provider once it redirected back, meaning the records are in and the
 // caller can wait for validation. Any other way out returns undefined and the manual path continues.
-async function offerDomainConnect(service: SubdomainsService, current: Subdomain): Promise<{ provider: string } | undefined> {
+async function offerDomainConnect(service: SubdomainsService, current: Subdomain): Promise<{ provider?: string } | undefined> {
   const loopback = await listenForDomainConnect()
   try {
     const link = await service.domainConnect(current.id, loopback.port).catch((error) => {
@@ -204,6 +207,7 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
       return undefined
     })
     if (!link) return undefined
+    // Display label only; analytics gets the API's value, or nothing.
     const provider = link.dns_provider ?? 'your DNS provider'
 
     log.line()
@@ -225,7 +229,7 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
     spinner?.stop()
     if (result.outcome === 'done') {
       log.success(`${provider} added the records.`)
-      return { provider }
+      return { provider: link.dns_provider }
     }
     if (result.outcome === 'error') log.warn(`${provider} did not add the records: ${result.error}. You can add them yourself:`)
     else log.warn(`No response from ${provider} after ${DOMAIN_CONNECT_TIMEOUT_MS / 60_000} minutes. You can add the records yourself:`)
