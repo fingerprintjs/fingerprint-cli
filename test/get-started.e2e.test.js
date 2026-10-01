@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startManagementApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, runCli } from './helpers/harness.js'
@@ -121,7 +121,15 @@ test('choosing server-side verification in a frontend-only repo asks where the b
 // The CLI installs the backend skill's packages after step 1, so @fingerprint/node-sdk lands in the
 // backend's package.json before any server code exists. That dependency must not count as step 2
 // being done, or the menu silently drops server-side verification.
-test('a backend that only has the server SDK installed is still offered server-side verification', async () => {
+// Mentions that look like code aren't imports either.
+for (const [file, source] of [
+  ['index.js', '// TODO: npm install @fingerprint/node-sdk\n'],
+  ['index.js', "// import { Client } from '@fingerprint/node-sdk'\n"],
+  ['index.js', "/*\nconst sdk = require('@fingerprint/node-sdk')\n*/\n"],
+  ['index.js', "myrequire('@fingerprint/node-sdk')\n"],
+  ['main.py', '"""\nfrom fingerprint_server_sdk import Client\n"""\n'],
+  ['main.py', '# import fingerprint_server_sdk\n'],
+]) test(`a backend with only ${JSON.stringify(source.trim())} is still offered server-side verification`, async () => {
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
@@ -130,8 +138,7 @@ test('a backend that only has the server SDK installed is still offered server-s
     join(repo, 'api', 'package.json'),
     JSON.stringify({ name: 'api', dependencies: { express: '^4', '@fingerprint/node-sdk': '^1' } })
   )
-  // A mention in a comment isn't a call either.
-  writeFileSync(join(repo, 'api', 'index.js'), '// TODO: npm install @fingerprint/node-sdk\n')
+  writeFileSync(join(repo, 'api', file), source)
   const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
 
   const res = await runCli(['integrate'], {
@@ -161,6 +168,8 @@ test('a python backend that imports the server SDK is not offered server-side ve
   const skillsDir = makeSkillsDir()
   writeFileSync(join(repo, 'api', 'requirements.txt'), 'flask==3.0.0\n')
   writeFileSync(join(repo, 'api', 'main.py'), 'from fingerprint_server_sdk import Client\n')
+  // Sorts before main.py: one unreadable file must not hide the import next to it.
+  symlinkSync(join(repo, 'missing.py'), join(repo, 'api', 'broken.py'))
   rmSync(join(repo, 'api', 'package.json'))
   const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
 
