@@ -133,7 +133,14 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
           dns = 'domain_connect'
           provider = added.provider && providerSlug(added.provider)
           current = await waitForDns(service, current)
-          continue
+          if (current.status !== 'pending') continue
+          // The provider added the records, so there is nothing for the manual menu to ask for.
+          // Validation is just taking longer than the wait; the saved setup resumes it next run.
+          log.info(
+            `${added.provider ?? 'Your DNS provider'} added the records, but ${hostname} is not active yet. Propagation and certificate issuance can take a few more minutes.`
+          )
+          log.info(resumeHint(hostname))
+          return end('waiting', 'waiting')
         }
       }
       if (!dns) {

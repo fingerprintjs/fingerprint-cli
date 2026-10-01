@@ -206,6 +206,42 @@ test('when the DNS provider supports Domain Connect, the browser adds the record
   })
 })
 
+test('when the provider added the records but validation outlasts the wait, the run ends waiting without the manual menu', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.enableDomainConnect() // stays pending: no activateAfterVerify
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0', FINGERPRINT_NO_BROWSER: '1' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: /Cloudflare can add the DNS records for you/, send: '\n' },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Cloudflare added the records, but metrics\.example\.com is not active yet/)
+  assert.match(result.stdout, /fingerprint integrate --subdomain metrics\.example\.com/)
+  assert.doesNotMatch(result.stdout, DNS_MENU)
+  assert.doesNotMatch(result.stdout, /Add the records at your DNS provider/)
+  assert.deepEqual(pick(api.lastRun(), 'integrate_status', 'subdomain_outcome', 'subdomain_dns', 'subdomain_provider', 'wizard_steps'), {
+    integrate_status: 'waiting',
+    subdomain_outcome: 'waiting',
+    subdomain_dns: 'domain_connect',
+    subdomain_provider: 'cloudflare',
+    wizard_steps: 'install,subdomain,dns_domain_connect',
+  })
+})
+
 test('a Domain Connect outage falls back to the manual records instead of failing the step', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
