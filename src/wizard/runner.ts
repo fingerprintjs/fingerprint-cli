@@ -1,10 +1,10 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, backendLabel, DetectedApp, RepoAnalysis } from './detect.js'
-import { conventionFor, ProvisionResult, provisionForRepo } from './provision.js'
+import { analyzeRepo, backendLabel, DetectedApp, IGNORE_DIRS, RepoAnalysis } from './detect.js'
+import { conventionFor, InlineValues, inlineValuesFor, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
@@ -105,9 +105,6 @@ function permissionOptions(extraReadonly: string[] = []) {
 // `waiting` is a custom subdomain that is not active yet: nothing is broken, but the step is not done.
 export type IntegrateOutcome = 'completed' | 'skipped' | 'waiting' | 'failed'
 
-// Key + region for an app that has no env file to read them from (see provision.ts).
-type InlineValues = NonNullable<ProvisionResult['inline']>
-
 // Top-level integration flow for a single command invocation: provision env keys, apply one Get
 // Started step for `root`, then keep going one step at a time for as long as the user says so.
 // Shared by `integrate` and the onboarding chain. Runs in whatever repo it's pointed at; it never
@@ -144,7 +141,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
 
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
-    if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
+    if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
     const next = await askNextStep(done)
     if (next === 'stop') break
     // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
@@ -212,30 +209,33 @@ async function askBackendPath(): Promise<string | undefined> {
   return path ? resolve(path) : undefined
 }
 
-// Step 2 is already in place when the backend depends on the Fingerprint server SDK.
-function hasServerSdk(app: DetectedApp): boolean {
-  try {
-    if (app.language === 'python') {
-      return ['requirements.txt', 'pyproject.toml'].some(
-        (f) => existsSync(join(app.dir, f)) && readFileSync(join(app.dir, f), 'utf8').includes('fingerprint-server-sdk')
-      )
-    }
-    const pkg = JSON.parse(readFileSync(join(app.dir, 'package.json'), 'utf8'))
-    return Boolean(pkg.dependencies?.['@fingerprint/node-sdk'])
-  } catch {
-    return false
-  }
+// Step 2 is in place once the backend's code imports the server SDK. The dependency alone isn't
+// enough: step 1 installs every skill's packages, into the same manifest when one app has both halves.
+function usesServerSdk(app: DetectedApp): boolean {
+  const sdk = app.language === 'python' ? 'fingerprint_server_sdk' : '@fingerprint/node-sdk'
+  return sourceFiles(app.dir).some((file) => readFileSync(file, 'utf8').includes(sdk))
+}
+
+const SOURCE_FILE = /\.(py|[cm]?[jt]sx?)$/
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (IGNORE_DIRS.has(entry.name) || entry.name.startsWith('.')) return []
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) return sourceFiles(path)
+    return SOURCE_FILE.test(entry.name) ? [path] : []
+  })
 }
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
 async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<IntegrateOutcome> {
   log.step('Set up environment variables')
-  const { needsDotenv, inline } = await provisionForRepo(root)
+  const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
     log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
   }
-  return applyIntegration(root, { ...opts, inline })
+  return applyIntegration(root, opts)
 }
 
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
@@ -243,7 +243,7 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
 async function applyIntegration(
   root: string,
-  opts: { yes?: boolean; step?: string; inline?: InlineValues; subdomain?: string; purpose?: SubdomainStepPurpose } = {}
+  opts: { yes?: boolean; step?: string; subdomain?: string; purpose?: SubdomainStepPurpose } = {}
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
@@ -280,6 +280,15 @@ async function applyIntegration(
     return runAgentFromDocs(analysis)
   }
 
+  // Read per run, so every step's prompt gets them. A placeholder key would ship a broken page.
+  const inline = await inlineValuesFor(analysis.frontend)
+  if (inline && !inline.publicKey) {
+    log.error('This workspace has no enabled public API key to write into the page. Create one in the dashboard, then rerun.')
+    markFailure('no_public_key')
+    process.exitCode = 1
+    return 'failed'
+  }
+
   const proceed =
     opts.yes ||
     autoYes() ||
@@ -291,7 +300,7 @@ async function applyIntegration(
   if (opts.subdomain && opts.purpose === 'configure') log.step(`Updating your app to use ${opts.subdomain}`)
   else if (opts.subdomain) log.step(`Setting up ${opts.subdomain}`)
   else log.step('Apply integration')
-  return runAgent(analysis, opts.step, opts.subdomain, opts.inline)
+  return runAgent(analysis, opts.step, opts.subdomain, inline)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -473,9 +482,10 @@ function buildGetStartedPrompt(
     // the page.
     ...(inline
       ? [
-          'This app has no build step and no env vars. Write these values directly into the code',
-          `(both are public and ship in the page source): public API key ${inline.publicKey ?? '<unavailable>'},`,
+          'The frontend has no build step and no env vars. Write these values directly into its code',
+          `(both are public and ship in the page source): public API key ${inline.publicKey},`,
           `region '${inline.region}'.`,
+          ...(analysis.backend ? ["The backend's .env is already provisioned: the secret key is in FINGERPRINT_SECRET_API_KEY."] : []),
         ]
       : [
           'The .env files are already provisioned: the public key is in',

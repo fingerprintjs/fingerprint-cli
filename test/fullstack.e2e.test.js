@@ -109,3 +109,35 @@ test('a Next.js app is its own backend, so the server step never asks where the 
   assert.match(res.stdout, /Skills\s+fingerprint-nextjs$/m)
   assert.doesNotMatch(res.stdout, /Path to your backend repo/)
 })
+
+// Step 1 installs every skill's packages into the one manifest, so the server SDK being listed
+// there says nothing about step 2 — only code that imports it does.
+for (const [shape, serverCode, offered] of [
+  ['listed but unused', undefined, true],
+  ['imported by the server', "import { FingerprintServerApiClient } from '@fingerprint/node-sdk'\n", false],
+]) {
+  test(`server-side verification with the node SDK ${shape} is ${offered ? 'still offered' : 'done'}`, async () => {
+    const home = makeHome()
+    seedAuth(home, api.url)
+    const repo = singleManifestRepo({ react: '^18', express: '^4', '@fingerprint/node-sdk': '^7' })
+    if (serverCode) writeFileSync(join(repo, 'server.js'), serverCode)
+    const skillsDir = makeSkillsDir()
+    const gw = await startGateway(join(repo, 'fingerprint.js'), '// integration\n')
+
+    const res = await runCli(['integrate'], {
+      home,
+      cwd: repo,
+      env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+      respond: [
+        { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+        // Down to "Stop here": past [server, proxy] or past [proxy].
+        { when: /What's next\?/, send: `${DOWN.repeat(offered ? 2 : 1)}\n` },
+      ],
+    })
+    await gw.close()
+
+    assert.equal(res.status, 0, res.stderr)
+    const menu = res.stdout.slice(res.stdout.indexOf("What's next?"))
+    assert.equal(/Set up server-side verification/.test(menu), offered, menu)
+  })
+}

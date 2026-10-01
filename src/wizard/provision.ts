@@ -177,10 +177,19 @@ function ensureGitignored(root: string, files: string[]): { added: string[]; ext
 // backends that must load .env at runtime.
 export interface ProvisionResult {
   needsDotenv: DetectedApp[]
-  // Values the integration must write into the code because the app has no env file to read them
-  // from (see `inlinesPublicKey`). Public by design — they ship in the page source either way.
-  // Never the secret key, which stays out of the agent's reach entirely.
-  inline?: { publicKey?: string; region: string }
+}
+
+// Values the integration must write into the code because the frontend has no env file to read
+// them from (see `inlinesPublicKey`). Public by design — they ship in the page source either way.
+// Never the secret key, which stays out of the agent's reach entirely.
+export interface InlineValues {
+  publicKey?: string
+  region: string
+}
+
+export async function inlineValuesFor(frontend?: DetectedApp): Promise<InlineValues | undefined> {
+  if (!frontend || !inlinesPublicKey(frontend)) return undefined
+  return { publicKey: await fetchPublicKey(new ManagementClient()), region: requireAuth().region }
 }
 
 export type EndpointProvisionResult =
@@ -238,7 +247,7 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   const region = auth.region
   log.info(`Workspace region: ${region}`)
 
-  const publicKey = publicApps.length || inlineApps.length ? await fetchPublicKey(client) : undefined
+  const publicKey = publicApps.length ? await fetchPublicKey(client) : undefined
   if (publicKey) log.info('Using existing Public API key.')
 
   let secretKey: string | undefined
@@ -286,5 +295,5 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
     log.info(`No build step in ${inlineApps.map((a) => a.rel).join(', ')} — the public key goes in the code, not a .env file.`)
   }
 
-  return { needsDotenv, inline: inlineApps.length ? { publicKey, region } : undefined }
+  return { needsDotenv }
 }

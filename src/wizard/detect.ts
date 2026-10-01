@@ -40,6 +40,7 @@ const FRONTEND_FRAMEWORKS: Record<string, string> = {
   'react-native': 'react-native',
   react: 'react', // keep last: many meta-frameworks also depend on react
 }
+const BUNDLED_FRAMEWORKS = new Set(Object.values(FRONTEND_FRAMEWORKS))
 
 // Browser libraries with no Fingerprint SDK of their own — they all integrate the JS Agent
 // directly. Checked only after FRONTEND_FRAMEWORKS: an app may use jQuery alongside React, and the
@@ -67,7 +68,7 @@ const BACKEND_FRAMEWORKS: Record<string, string> = {
   '@hapi/hapi': 'hapi',
 }
 
-const IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.nuxt', 'coverage', 'venv', '.venv'])
+export const IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.nuxt', 'coverage', 'venv', '.venv'])
 
 function detectPackageManager(dir: string): DetectedApp['packageManager'] {
   if (existsSync(join(dir, 'pnpm-lock.yaml'))) return 'pnpm'
@@ -149,9 +150,11 @@ function classifyStaticApp(dir: string, rel: string): DetectedApp | undefined {
 // A Node package whose `public/index.html` is plain HTML it serves (`express.static`,
 // `@fastify/static`) rather than a bundler template: reported as a static site of its own at
 // public/, so the page gets the inlined key and CDN agent while the server keeps its own skill and
-// .env. A framework or HTML-entry match means public/ belongs to a bundled app, so it's left alone.
+// .env. A framework or HTML-entry match means public/ belongs to a bundled app, so it's left alone;
+// a no-bundler library next to the server (jquery, htmx, alpine) is what the served page loads.
 function servedStaticApp(app: DetectedApp): DetectedApp | undefined {
-  if (app.role === 'frontend' || app.role === 'fullstack') return undefined
+  if (app.role === 'frontend') return undefined
+  if (app.role === 'fullstack' && (BUNDLED_FRAMEWORKS.has(app.framework!) || hasHtmlEntry(app.dir))) return undefined
   const dir = join(app.dir, 'public')
   return classifyStaticApp(dir, app.rel === '.' ? 'public' : join(app.rel, 'public'))
 }
@@ -170,7 +173,11 @@ function findApps(root: string): DetectedApp[] {
         const app = classifyNodeApp(dir, rel)
         apps.push(app)
         const served = servedStaticApp(app)
-        if (served) apps.push(served)
+        if (served) {
+          // The page is the frontend now; what's left of the package is its server.
+          if (app.role === 'fullstack') Object.assign(app, { role: 'backend', framework: app.backendFramework })
+          apps.push(served)
+        }
         found = true
       } catch {
         /* unreadable/invalid package.json — skip */

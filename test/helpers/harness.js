@@ -10,7 +10,7 @@ export const CLI = fileURLToPath(new URL('../../dist/index.js', import.meta.url)
 // A fake PUBLIC Management API: just the endpoints the post-login flow hits (list/create API keys),
 // returning the `{ data }` envelope the ManagementClient expects. Lets the e2e drive real CLI
 // commands over real HTTP with no network. The CLI authenticates with its Management API key.
-export function startManagementApi() {
+export function startManagementApi({ publicKeys = [{ id: 'key_pub', type: 'public', status: 'enabled', token: 'pub_123' }] } = {}) {
   const analyticsEvents = []
   const server = createServer((req, res) => {
     let body = ''
@@ -23,7 +23,7 @@ export function startManagementApi() {
       }
       const route = `${req.method} ${path}`
       // GET /api-keys?type=public&... → the workspace's public (browser) key.
-      if (route === 'GET /api-keys') return ok([{ id: 'key_pub', type: 'public', status: 'enabled', token: 'pub_123' }])
+      if (route === 'GET /api-keys') return ok(publicKeys)
       // POST /api-keys → mint a secret key (value only returned here).
       if (route === 'POST /api-keys') return ok({ id: 'key_sec', type: 'secret', status: 'enabled', token: 'sec_456' })
       // POST /analytics/events → the relay that forwards to Amplitude server-side.
@@ -247,10 +247,10 @@ export function makeStaticRepo() {
 
 // A Node server that serves plain HTML from public/ (the fp-*-starter shape): no bundler, so the
 // page is a static site even though the package has a manifest.
-export function makeServedStaticRepo() {
+export function makeServedStaticRepo(dependencies = { fastify: '^5', '@fastify/static': '^8' }) {
   const root = mkdtempSync(join(tmpdir(), 'fp-served-'))
   mkdirSync(join(root, 'public'))
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', dependencies: { fastify: '^5', '@fastify/static': '^8' } }))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', dependencies }))
   writeFileSync(join(root, 'public', 'index.html'), '<!doctype html>\n<html><body><script type="module" src="/index.js"></script></body></html>\n')
   return root
 }
