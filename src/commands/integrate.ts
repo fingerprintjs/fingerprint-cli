@@ -1,13 +1,14 @@
 import { resolve } from 'node:path'
-import { analyzeRepo, printAnalysis } from '../wizard/detect.js'
+import { analyzeRepo, backendLabel, printAnalysis } from '../wizard/detect.js'
 import { getFreshAccessToken, withoutLoginHint } from '../auth/refresh.js'
 import { integrateProject } from '../wizard/runner.js'
 import { log, printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
 import { addRunProperties, track } from '../analytics/track.js'
+import { markFailure } from '../analytics/failure.js'
 
 export async function integrateCommand(
-  opts: { path?: string; analyze?: boolean; yes?: boolean; skipHeading?: boolean; chained?: boolean } = {}
+  opts: { path?: string; analyze?: boolean; yes?: boolean; subdomain?: string; skipHeading?: boolean; chained?: boolean } = {}
 ) {
   const root = resolve(opts.path ?? process.cwd())
 
@@ -29,7 +30,7 @@ export async function integrateCommand(
   const stack = {
     chained: Boolean(opts.chained),
     frontend: analysis.frontend?.framework ?? '',
-    backend: analysis.backend?.framework ?? '',
+    backend: analysis.backend ? backendLabel(analysis.backend) : '',
     skills: analysis.skills.join(','),
     monorepo: analysis.monorepo,
     app_count: analysis.apps.length,
@@ -69,7 +70,7 @@ export async function integrateCommand(
 
   // Provision keys + apply the integration for this repo, then offer the missing half of the
   // stack (if any) and point at the skills plugin for the rest of Get Started.
-  const outcome = await integrateProject(root, { yes: opts.yes })
+  const outcome = await integrateProject(root, { yes: opts.yes, subdomain: opts.subdomain })
   // Rides cli_command_run (new event names need a Management API allowlist entry; properties
   // don't) — the completion pair to cli_integrate_started.
   addRunProperties({ integrate_status: outcome })
@@ -88,6 +89,7 @@ async function settleSession(): Promise<boolean> {
     // Report the specific reason — missing session, expired session, or an unreachable login service,
     // which is a network problem no amount of logging in will fix.
     const message = err instanceof Error ? err.message : String(err)
+    markFailure('session_unavailable', err)
     printFailure({
       title: 'Can’t start the integration',
       reason: `${withoutLoginHint(message)}\nApplying provisions API keys for your workspace, so it needs a live session.`,

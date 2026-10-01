@@ -10,7 +10,7 @@ export const CLI = fileURLToPath(new URL('../../dist/index.js', import.meta.url)
 // A fake PUBLIC Management API: just the endpoints the post-login flow hits (list/create API keys),
 // returning the `{ data }` envelope the ManagementClient expects. Lets the e2e drive real CLI
 // commands over real HTTP with no network. The CLI authenticates with its Management API key.
-export function startManagementApi() {
+export function startManagementApi({ publicKeys = [{ id: 'key_pub', type: 'public', status: 'enabled', token: 'pub_123' }] } = {}) {
   const analyticsEvents = []
   const server = createServer((req, res) => {
     let body = ''
@@ -23,7 +23,7 @@ export function startManagementApi() {
       }
       const route = `${req.method} ${path}`
       // GET /api-keys?type=public&... → the workspace's public (browser) key.
-      if (route === 'GET /api-keys') return ok([{ id: 'key_pub', type: 'public', status: 'enabled', token: 'pub_123' }])
+      if (route === 'GET /api-keys') return ok(publicKeys)
       // POST /api-keys → mint a secret key (value only returned here).
       if (route === 'POST /api-keys') return ok({ id: 'key_sec', type: 'secret', status: 'enabled', token: 'sec_456' })
       // POST /analytics/events → the relay that forwards to Amplitude server-side.
@@ -195,16 +195,19 @@ export function startGateway(writeTarget, writeContent) {
   })
 }
 
-// A local skills checkout (pointed at via FINGERPRINT_SKILLS_DIR) with the skills the React+Express
-// flow resolves to: the two framework skills plus the get-started orchestrator that drives them.
+// A local skills checkout (pointed at via FINGERPRINT_SKILLS_DIR) with the skills the fixture
+// stacks resolve to: the framework skills, the no-framework JS Agent skill, and the get-started
+// orchestrator that drives them.
 // `packages` (keyed by skill id) defaults empty so the post-agent installer is a no-op;
 // install-failure tests pass real names and a fake package manager on PATH.
 export function makeSkillsDir(packages = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fp-skills-'))
   const skills = [
     ['fingerprint-react', 'frontend'],
+    ['fingerprint-javascript', 'frontend'],
     ['fingerprint-node', 'backend'],
     ['fingerprint-python', 'backend'],
+    ['fingerprint-nextjs', 'fullstack'],
     ['fingerprint-get-started', 'orchestrator'],
   ]
   for (const [id, role] of skills) {
@@ -223,6 +226,33 @@ export function makeRepo() {
   mkdirSync(join(root, 'api'))
   writeFileSync(join(root, 'web', 'package.json'), JSON.stringify({ name: 'web', scripts: { dev: 'vite' }, dependencies: { react: '^18' } }))
   writeFileSync(join(root, 'api', 'package.json'), JSON.stringify({ name: 'api', dependencies: { express: '^4' } }))
+  return root
+}
+
+// A bundled browser app with no framework dependency: the index.html entry is what marks it as a
+// frontend rather than a Node package.
+export function makeVanillaRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'fp-vanilla-'))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'site', devDependencies: { vite: '^5' } }))
+  writeFileSync(join(root, 'index.html'), '<!doctype html>\n<html><body><script type="module" src="/main.js"></script></body></html>\n')
+  writeFileSync(join(root, 'main.js'), 'console.log("hi")\n')
+  return root
+}
+
+// A static site: an index.html and nothing else — no manifest, no build step, no env file.
+export function makeStaticRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'fp-static-'))
+  writeFileSync(join(root, 'index.html'), '<!doctype html>\n<html><body><script type="module"></script></body></html>\n')
+  return root
+}
+
+// A Node server that serves plain HTML from public/ (the fp-*-starter shape): no bundler, so the
+// page is a static site even though the package has a manifest.
+export function makeServedStaticRepo(dependencies = { fastify: '^5', '@fastify/static': '^8' }) {
+  const root = mkdtempSync(join(tmpdir(), 'fp-served-'))
+  mkdirSync(join(root, 'public'))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', dependencies }))
+  writeFileSync(join(root, 'public', 'index.html'), '<!doctype html>\n<html><body><script type="module" src="/index.js"></script></body></html>\n')
   return root
 }
 

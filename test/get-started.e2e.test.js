@@ -130,6 +130,8 @@ test('a backend that only has the server SDK installed is still offered server-s
     join(repo, 'api', 'package.json'),
     JSON.stringify({ name: 'api', dependencies: { express: '^4', '@fingerprint/node-sdk': '^1' } })
   )
+  // A mention in a comment isn't a call either.
+  writeFileSync(join(repo, 'api', 'index.js'), '// TODO: npm install @fingerprint/node-sdk\n')
   const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
 
   const res = await runCli(['integrate'], {

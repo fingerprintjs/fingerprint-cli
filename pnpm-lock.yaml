@@ -20,6 +20,9 @@ importers:
       open:
         specifier: ^10.2.0
         version: 10.2.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@changesets/cli':
         specifier: ^2.31.0

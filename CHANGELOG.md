@@ -1,5 +1,35 @@
 # fingerprint
 
+## 0.2.1
+
+### Patch Changes
+
+- Analytics requests get more time: 2 seconds for the events sent while a command runs and 5 seconds for `cli_command_run`, up from 1 second for all of them. The endpoint regularly took longer than a second from a cold process, so a good share of `cli_command_run` events were being dropped silently. ([58136db](https://github.com/fingerprintjs/fingerprint-cli/commit/58136db162899e04b6ab66874d15e1050e1b6b1f))
+- `cli_command_run` now describes the wizard run: `wizard_steps` lists the choices in order, and when the run touched a custom subdomain it also carries `subdomain_outcome`, `subdomain_resumed` and `subdomain_dns`. `integrate_status` can be `waiting` for a run that ends with DNS records still pending. The Management API has to accept the new values before the CLI sends them. ([bff98ff](https://github.com/fingerprintjs/fingerprint-cli/commit/bff98ffe34fe5acc4b9b8b2d354cfad589b27106))
+
+## 0.2.0
+
+### Minor Changes
+
+- The integration wizard can now set up a custom subdomain: the agent lists, creates and verifies it through Fingerprint tools, and a pending subdomain leaves the step waiting instead of done. ([c70a2ed](https://github.com/fingerprintjs/fingerprint-cli/commit/c70a2ed23b19c6ff4f34db2151c2461a83205d16))
+
+### Patch Changes
+
+- Add commands to create, list, inspect, verify, and delete custom subdomains through the Management API.
+  Accept hostnames as well as IDs, show DNS setup guidance, and list subdomains when no operation is given. ([1ce0f2a](https://github.com/fingerprintjs/fingerprint-cli/commit/1ce0f2ab57f1798994bbabcbac2f61ced6970621))
+
+## 0.1.2
+
+### Patch Changes
+
+- A mistyped command no longer reports a `cli_run_started` event, which it used to file as a bare `fingerprint` run. It still reports `cli_command_run` with `command: unknown`, and a signed-in run now includes what was typed, so the error logs show which command people tried. ([912e19a](https://github.com/fingerprintjs/fingerprint-cli/commit/912e19a4ab1940f11ebaeb113da79a50fb526ffc))
+
+## 0.1.1
+
+### Patch Changes
+
+- A failed run now reports why. `cli_command_run` carries `error_code`, a short identifier for the kind of failure (skills fetch, install, agent, missing session, unknown command), plus the error message. Previously a failure reported `status: error` and nothing else. ([190ce43](https://github.com/fingerprintjs/fingerprint-cli/commit/190ce43a31daead1bacd7696402afde12673e72c))
+
 ## 0.1.0
 
 First release of the Fingerprint CLI. Run `npx fingerprint` from your project's root to add Fingerprint device intelligence to your app.
