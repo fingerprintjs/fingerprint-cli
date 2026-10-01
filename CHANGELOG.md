@@ -1,5 +1,14 @@
 # fingerprint
 
+## 0.2.2
+
+### Patch Changes
+
+- The documentation link the CLI prints points at `https://docs.fingerprint.com`. ([380fc04](https://github.com/fingerprintjs/fingerprint-cli/commit/380fc04d52d6919304899b28abdccc33d8eb4bb5))
+- `integrate` now recognizes browser code with no framework SDK and applies the `fingerprint-javascript` skill, instead of reporting that no integration is available. This covers a bundled app with no framework dependency (detected from its `index.html` entry), Solid, Lit, Alpine, htmx and jQuery, a static site with no `package.json` at all, and a Node server's plain `public/index.html` (detected as a static frontend alongside the backend, also when the server's `package.json` lists a no-bundler library such as jQuery, htmx or Alpine) — where the public key and region are handed to the integration directly on every step, since there is no env file to read them from and no manifest to install into. A static site whose workspace has no enabled public key stops before the agent runs instead of getting a placeholder written into the page.
+
+  A single `package.json` that holds both halves of the stack is now recognized as its own backend. Previously `integrate` only ever looked for a separate backend package, so a repo with react + express (or a Next.js app, which is its own server) resolved the frontend skill alone, never marked server-side verification as done, and asked for a backend repo path when the user picked that step. The server skill, the secret key and the verification step now all land in the app that's already there. Server-side verification counts as done once the backend's code imports the server SDK; the dependency alone doesn't, since the first step installs every skill's packages. ([47c05fe](https://github.com/fingerprintjs/fingerprint-cli/commit/47c05feb8fc63b1e9f9ccdbd1ddf5e48340bc0bb))
+
 ## 0.2.1
 
 ### Patch Changes
