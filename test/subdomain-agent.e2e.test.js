@@ -17,6 +17,7 @@ const CREATING = /Setting up metrics\.example\.com/
 const CONFIGURING = /Updating your app to use metrics\.example\.com/
 const LATER = `${DOWN}${DOWN}\n`
 const HOSTNAME_PROMPT = /Custom subdomain to use/
+const pick = (object, ...keys) => Object.fromEntries(keys.filter((key) => key in object).map((key) => [key, object[key]]))
 
 test('a pending subdomain leaves the step waiting with the DNS records to add', async (t) => {
   const api = await startSubdomainApi()
@@ -46,6 +47,13 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   assert.match(result.stdout, /metrics\.example\.com is waiting for these DNS records/)
   assert.match(result.stdout, /Add the records at your DNS provider, then check/)
   assert.doesNotMatch(result.stdout, /is not active after/)
+  assert.deepEqual(pick(api.lastRun(), 'integrate_status', 'subdomain_outcome', 'subdomain_resumed', 'subdomain_dns', 'wizard_steps'), {
+    integrate_status: 'waiting',
+    subdomain_outcome: 'waiting',
+    subdomain_resumed: false,
+    subdomain_dns: 'manual',
+    wizard_steps: 'install,subdomain,dns_manual,finish_later',
+  })
   assert.match(result.stdout, /CNAME {2}pending_validation\n.*Host {3}_acme-challenge\.metrics\.example\.com/)
   assert.match(result.stdout, /DNS only/)
   assert.match(result.stdout, /Finish later \(resume: fingerprint integrate --subdomain/)
@@ -152,6 +160,7 @@ test('checking DNS from the menu picks up activation and finishes the step in th
   assert.equal(api.createCalls(), 1)
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(result.stdout, CONFIGURING)
+  assert.equal(api.lastRun().wizard_steps, 'install,subdomain,dns_manual,dns_check,stop')
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
@@ -207,6 +216,11 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     ],
   })
   assert.equal(third.status, 0, third.stderr)
+  assert.deepEqual(pick(api.lastRun(), 'subdomain_outcome', 'subdomain_resumed', 'subdomain_dns', 'wizard_steps'), {
+    subdomain_outcome: 'configured',
+    subdomain_resumed: true,
+    wizard_steps: 'resume,stop',
+  })
   assert.equal(third.stdout.match(APPLYING), null, third.stdout)
   assert.match(third.stdout, CONFIGURING)
   assert.doesNotMatch(third.stdout, HOSTNAME_PROMPT)
@@ -257,6 +271,7 @@ test('declining the resume, or a timed-out subdomain, stops the offer', async (t
     ],
   })
   assert.match(declined.stdout, resumeOffer)
+  assert.equal(api.lastRun().wizard_steps, 'resume_declined,install')
   const after = await runCli(['integrate'], { home, cwd: repo, env, respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }] })
   assert.doesNotMatch(after.stdout, resumeOffer)
 
@@ -264,6 +279,7 @@ test('declining the resume, or a timed-out subdomain, stops the offer', async (t
   api.seedStatus('timed_out')
   const timedOut = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
   assert.match(timedOut.stdout, /timed out before its DNS records validated/)
+  assert.deepEqual(pick(api.lastRun(), 'subdomain_outcome', 'subdomain_resumed'), { subdomain_outcome: 'timed_out', subdomain_resumed: true })
   const afterTimeout = await runCli(['integrate'], { home, cwd: repo, env, respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }] })
   assert.doesNotMatch(afterTimeout.stdout, resumeOffer)
 })
@@ -372,6 +388,61 @@ test('the agent has no shell and no subagent, so .env cannot leak around the rea
   assert.equal(readFileSync(target, 'utf8'), '// integration\n')
 })
 
+test('an API error while checking DNS is still reported as a failed subdomain run', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('pending')
+  api.failVerify(503)
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: '\n' }, // check now
+    ],
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  assert.deepEqual(pick(api.lastRun(), 'status', 'subdomain_outcome', 'subdomain_resumed', 'wizard_steps'), {
+    status: 'error',
+    subdomain_outcome: 'failed',
+    subdomain_resumed: true,
+    wizard_steps: 'install,subdomain,dns_manual,dns_check',
+  })
+})
+
+test('a failing lookup before anything else is a failed subdomain run, with no resumed flag', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.failList(503)
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(() => ({ text: 'unused' }))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  const run = api.lastRun()
+  assert.equal(run.status, 'error')
+  assert.equal(run.subdomain_outcome, 'failed')
+  assert.equal('subdomain_resumed' in run, false)
+})
+
 test('the agent cannot create a subdomain outside the subdomain step; the audit run finishes normally', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
@@ -413,6 +484,7 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
 
   assert.equal(result.status, 1, result.stdout)
   assert.match(result.stdout + result.stderr, /Custom subdomain setup failed: Custom subdomain service is unavailable/)
+  assert.deepEqual(pick(api.lastRun(), 'status', 'subdomain_outcome', 'subdomain_resumed'), { status: 'error', subdomain_outcome: 'failed', subdomain_resumed: false })
   assert.doesNotMatch(result.stdout, FINISHED)
 })
 
@@ -459,7 +531,10 @@ function startSubdomainApi() {
   let created = false
   let createCalls = 0
   let verifyCalls = 0
+  const runEvents = []
   let createFailure
+  let verifyFailure
+  let listFailure
   let activateOnVerify = false
   const server = createServer((req, res) => {
     let body = ''
@@ -471,6 +546,7 @@ function startSubdomainApi() {
         res.end(JSON.stringify(value))
       }
       if (route === 'GET /api-keys') return json(200, { data: [{ id: 'pub', type: 'public', status: 'enabled', token: 'pub_123' }] })
+      if (route === 'GET /subdomains' && listFailure) return json(listFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
       if (route === 'GET /subdomains') return json(200, { data: created ? [summary(status)] : [], metadata: { pagination: { next_cursor: null } } })
       if (route === 'POST /subdomains') {
         createCalls += 1
@@ -481,11 +557,14 @@ function startSubdomainApi() {
       if (route === `GET /subdomains/${ID}`) return json(200, { data: detail(status) })
       if (route === `POST /subdomains/${ID}/verify`) {
         verifyCalls += 1
+        if (verifyFailure) return json(verifyFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
         const response = detail(status)
         if (activateOnVerify) status = 'active' // the refreshed GET after verify sees it
         return json(200, { data: response })
       }
       if (route.startsWith('POST /analytics/')) {
+        const event = JSON.parse(body)
+        if (event.event === 'cli_command_run') runEvents.push(event.properties)
         res.writeHead(202)
         return res.end()
       }
@@ -502,8 +581,16 @@ function startSubdomainApi() {
         },
         createCalls: () => createCalls,
         verifyCalls: () => verifyCalls,
+        // The subdomain properties of the last cli_command_run seen.
+        lastRun: () => runEvents[runEvents.length - 1],
         failCreate(code, error) {
           createFailure = { code, error }
+        },
+        failVerify(code) {
+          verifyFailure = code
+        },
+        failList(code) {
+          listFailure = code
         },
         activateAfterVerify() {
           activateOnVerify = true
