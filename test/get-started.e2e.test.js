@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startManagementApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, runCli } from './helpers/harness.js'
@@ -170,6 +170,8 @@ test('a python backend that imports the server SDK is not offered server-side ve
   writeFileSync(join(repo, 'api', 'main.py'), 'from fingerprint_server_sdk import Client\n')
   // Sorts before main.py: one unreadable file must not hide the import next to it.
   symlinkSync(join(repo, 'missing.py'), join(repo, 'api', 'broken.py'))
+  // Same for a folder it can't list.
+  mkdirSync(join(repo, 'api', 'locked'), { mode: 0o000 })
   rmSync(join(repo, 'api', 'package.json'))
   const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
 

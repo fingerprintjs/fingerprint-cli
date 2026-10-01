@@ -226,14 +226,10 @@ const JS_COMMENT = /\/\*[\s\S]*?\*\/|\/\/.*$/gm
 const PY_COMMENT = /"""[\s\S]*?"""|'''[\s\S]*?'''|#.*$/gm
 
 function usesServerSdk(app: DetectedApp): boolean {
-  try {
-    return sourceFiles(app.dir).some(importsServerSdk)
-  } catch {
-    return false
-  }
+  return sourceFiles(app.dir).some(importsServerSdk)
 }
 
-// One unreadable file (a dangling symlink) is a miss, not a reason to skip the rest.
+// One unreadable file or folder (a dangling symlink, no permission) is a miss, not a reason to skip the rest.
 function importsServerSdk(file: string): boolean {
   try {
     const code = readFileSync(file, 'utf8').replace(file.endsWith('.py') ? PY_COMMENT : JS_COMMENT, '')
@@ -246,7 +242,13 @@ function importsServerSdk(file: string): boolean {
 const SOURCE_FILE = /\.(py|[cm]?[jt]sx?)$/
 
 function sourceFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries.flatMap((entry) => {
     if (IGNORE_DIRS.has(entry.name) || entry.name.startsWith('.')) return []
     const path = join(dir, entry.name)
     if (entry.isDirectory()) return sourceFiles(path)
