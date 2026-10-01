@@ -20,7 +20,18 @@ interface EnvConvention {
 }
 
 export function conventionFor(app: DetectedApp): EnvConvention {
-  switch (app.framework) {
+  const conv = conventionForFramework(app.framework)
+  // One manifest with both halves (react + express, vanilla + express) resolves to the frontend's
+  // convention, which carries no secret var — leaving the backend half with no key to verify with.
+  // The fullstack frameworks (next/nuxt) declare both already and fall through untouched.
+  if (app.role === 'fullstack' && !conv.secretVar) {
+    return { ...conv, secretVar: 'FINGERPRINT_SECRET_API_KEY', serverRegionVar: 'FINGERPRINT_REGION', needsDotenv: true }
+  }
+  return conv
+}
+
+function conventionForFramework(framework?: string): EnvConvention {
+  switch (framework) {
     // Fullstack single-repo frameworks: both keys + both region vars in one auto-loaded file.
     case 'next':
       return {
@@ -45,12 +56,24 @@ export function conventionFor(app: DetectedApp): EnvConvention {
     case 'vue':
     case 'svelte':
     case 'astro':
+    // No framework SDK, but still a bundled app — same Vite assumption as above. This is the
+    // convention `fingerprint-javascript`'s snippets read.
+    case 'vanilla':
+    case 'solid':
+    case 'lit':
+    case 'alpine':
+    case 'htmx':
+    case 'jquery':
       return {
         file: '.env',
         publicVar: 'VITE_FINGERPRINT_PUBLIC_API_KEY',
         endpointVar: 'VITE_FINGERPRINT_ENDPOINTS',
         clientRegionVar: 'VITE_FINGERPRINT_REGION',
       }
+    // Static site, no build step: nothing reads a .env, so there is no var to write — the key and
+    // region are inlined in the code instead (see `inlinesPublicKey`).
+    case 'html':
+      return { file: '.env' }
     // Node backends — need dotenv to read a .env file.
     case 'express':
     case 'fastify':
@@ -65,6 +88,15 @@ export function conventionFor(app: DetectedApp): EnvConvention {
     default:
       return { file: '.env' }
   }
+}
+
+// An app with no env-var mechanism at all: a static site loads the agent from the CDN, where the
+// public key is part of the import URL and the region is a `start()` argument. Both values ship in
+// the page source no matter what, so the integration has to receive them literally.
+// Deliberately narrow to the static case: a framework app with no `publicVar` yet (remix,
+// react-native) has a build step and its own env convention, so it isn't handed a literal key.
+export function inlinesPublicKey(app: DetectedApp): boolean {
+  return app.framework === 'html'
 }
 
 function relevantApps(a: RepoAnalysis): DetectedApp[] {
@@ -147,6 +179,19 @@ export interface ProvisionResult {
   needsDotenv: DetectedApp[]
 }
 
+// Values the integration must write into the code because the frontend has no env file to read
+// them from (see `inlinesPublicKey`). Public by design — they ship in the page source either way.
+// Never the secret key, which stays out of the agent's reach entirely.
+export interface InlineValues {
+  publicKey?: string
+  region: string
+}
+
+export async function inlineValuesFor(frontend?: DetectedApp): Promise<InlineValues | undefined> {
+  if (!frontend || !inlinesPublicKey(frontend)) return undefined
+  return { publicKey: await fetchPublicKey(new ManagementClient()), region: requireAuth().region }
+}
+
 export type EndpointProvisionResult =
   | { outcome: 'no_frontend' }
   | { outcome: 'unsupported'; framework?: string }
@@ -194,6 +239,8 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
 
   const publicApps = apps.filter((a) => conventionFor(a).publicVar)
   const secretApps = apps.filter((a) => conventionFor(a).secretVar)
+  // Static sites need the public key too — just handed to the integration rather than written to a file.
+  const inlineApps = apps.filter(inlinesPublicKey)
 
   // The agent region must match the workspace region, or identification fails ("API key not found").
   // It's fixed at login (the Management key is workspace-scoped), so read it from the auth state.
@@ -243,6 +290,10 @@ export async function provisionForRepo(root: string): Promise<ProvisionResult> {
   const { added, external } = ensureGitignored(root, writtenFiles)
   if (added.length) log.success(`Added to .gitignore: ${added.join(', ')}`)
   for (const file of external) log.warn(`${file} is outside this repo — add it to that project's .gitignore manually.`)
+
+  if (inlineApps.length) {
+    log.info(`No build step in ${inlineApps.map((a) => a.rel).join(', ')} — the public key goes in the code, not a .env file.`)
+  }
 
   return { needsDotenv }
 }

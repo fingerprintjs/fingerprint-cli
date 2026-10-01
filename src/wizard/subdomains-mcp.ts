@@ -124,7 +124,15 @@ export function createSubdomainsMcpServer(service: Service = new SubdomainsServi
       { id },
       async ({ id }) => {
         if (!wanted) return outsideSubdomainStep()
-        return mutate('verify_subdomain', async () => observe(await service.verify(id)))
+        return mutate('verify_subdomain', async () => {
+          // Like create, verification is locked to this run's hostname: the id has to be that
+          // subdomain, so the agent cannot spend another subdomain's verify rate limit.
+          const target = await service.get(id)
+          if (normalizeHostname(target.subdomain) !== wanted) {
+            throw new SubdomainError('invalid_subdomain', `This run sets up ${wanted}; verify that subdomain or none.`)
+          }
+          return observe(await service.verify(id))
+        })
       }
     ),
   ]
