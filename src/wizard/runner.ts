@@ -1,10 +1,10 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { analyzeRepo, DetectedApp, RepoAnalysis } from './detect.js'
-import { conventionFor, provisionForRepo } from './provision.js'
+import { analyzeRepo, backendLabel, DetectedApp, IGNORE_DIRS, RepoAnalysis } from './detect.js'
+import { conventionFor, InlineValues, inlineValuesFor, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
@@ -148,7 +148,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
 
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
-    if (analysis.backend && hasServerSdk(analysis.backend)) done.add('server')
+    if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
     const next = await askNextStep(done)
     recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
@@ -217,19 +217,41 @@ async function askBackendPath(): Promise<string | undefined> {
   return path ? resolve(path) : undefined
 }
 
-// Step 2 is already in place when the backend depends on the Fingerprint server SDK.
-function hasServerSdk(app: DetectedApp): boolean {
+// Step 2 is in place once the backend's code imports the server SDK. The dependency alone isn't
+// enough: step 1 installs every skill's packages, into the same manifest when one app has both halves.
+// Import syntax only, with comments stripped first: the package name also turns up in install
+// instructions and commented-out code.
+const SERVER_SDK_IMPORT = /(?<![\w.$])(?:from|import|require)\s*\(?\s*['"]@fingerprint\/node-sdk['"]|^\s*(?:import|from)\s+fingerprint_server_sdk\b/m
+const JS_COMMENT = /\/\*[\s\S]*?\*\/|\/\/.*$/gm
+const PY_COMMENT = /"""[\s\S]*?"""|'''[\s\S]*?'''|#.*$/gm
+
+function usesServerSdk(app: DetectedApp): boolean {
   try {
-    if (app.language === 'python') {
-      return ['requirements.txt', 'pyproject.toml'].some(
-        (f) => existsSync(join(app.dir, f)) && readFileSync(join(app.dir, f), 'utf8').includes('fingerprint-server-sdk')
-      )
-    }
-    const pkg = JSON.parse(readFileSync(join(app.dir, 'package.json'), 'utf8'))
-    return Boolean(pkg.dependencies?.['@fingerprint/node-sdk'])
+    return sourceFiles(app.dir).some(importsServerSdk)
   } catch {
     return false
   }
+}
+
+// One unreadable file (a dangling symlink) is a miss, not a reason to skip the rest.
+function importsServerSdk(file: string): boolean {
+  try {
+    const code = readFileSync(file, 'utf8').replace(file.endsWith('.py') ? PY_COMMENT : JS_COMMENT, '')
+    return SERVER_SDK_IMPORT.test(code)
+  } catch {
+    return false
+  }
+}
+
+const SOURCE_FILE = /\.(py|[cm]?[jt]sx?)$/
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (IGNORE_DIRS.has(entry.name) || entry.name.startsWith('.')) return []
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) return sourceFiles(path)
+    return SOURCE_FILE.test(entry.name) ? [path] : []
+  })
 }
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
@@ -268,7 +290,9 @@ async function applyIntegration(
       log.info('No Fingerprint integration is available for this stack yet.')
       return 'skipped'
     }
-    const stack = [analysis.frontend?.framework, analysis.backend?.framework].filter(Boolean).join(' + ')
+    const stack = [analysis.frontend?.framework, analysis.backend && backendLabel(analysis.backend)]
+      .filter(Boolean)
+      .join(' + ')
     log.warn(`No curated skill for this stack (${stack}).`)
     const proceed =
       opts.yes ||
@@ -283,6 +307,15 @@ async function applyIntegration(
     return runAgentFromDocs(analysis)
   }
 
+  // Read per run, so every step's prompt gets them. A placeholder key would ship a broken page.
+  const inline = await inlineValuesFor(analysis.frontend)
+  if (inline && !inline.publicKey) {
+    log.error('This workspace has no enabled public API key to write into the page. Create one in the dashboard, then rerun.')
+    markFailure('no_public_key')
+    process.exitCode = 1
+    return 'failed'
+  }
+
   const proceed =
     opts.yes ||
     autoYes() ||
@@ -294,7 +327,7 @@ async function applyIntegration(
   if (opts.subdomain && opts.purpose === 'configure') log.step(`Updating your app to use ${opts.subdomain}`)
   else if (opts.subdomain) log.step(`Setting up ${opts.subdomain}`)
   else log.step('Apply integration')
-  return runAgent(analysis, opts.step, opts.subdomain)
+  return runAgent(analysis, opts.step, opts.subdomain, inline)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -302,7 +335,12 @@ async function applyIntegration(
 // and how to verify each live there, not in a hand-rolled prompt.
 const GET_STARTED_SKILL = 'fingerprint-get-started'
 
-export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?: string): Promise<IntegrateOutcome> {
+export async function runAgent(
+  analysis: RepoAnalysis,
+  step?: string,
+  subdomain?: string,
+  inline?: InlineValues
+): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
@@ -322,7 +360,7 @@ export async function runAgent(analysis: RepoAnalysis, step?: string, subdomain?
   const subdomains = createSubdomainsMcpServer(undefined, subdomain)
   const endpointVar = analysis.frontend ? conventionFor(analysis.frontend).endpointVar : undefined
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline),
     options: {
       model: llm.model,
       env: llm.env,
@@ -432,14 +470,32 @@ const SYSTEM_PROMPT = [
   "  integrate what's actually there and say what's missing — never scaffold one.",
 ].join('\n')
 
+// The detected stack, as one phrase. One manifest can be both halves (react + express, or a
+// framework that is its own server) — saying "frontend X and backend X at the same path" reads as
+// two apps, so name it as one and let the agent look in a single place.
+function describeStack(analysis: RepoAnalysis): string {
+  const { frontend, backend } = analysis
+  if (frontend && frontend === backend) {
+    const halves = [frontend.framework, frontend.backendFramework].filter((f, i, all) => f && all.indexOf(f) === i)
+    return `one app at ./${frontend.rel} serving both halves (${halves.join(' + ')})`
+  }
+  const fe = frontend ? `frontend (${frontend.framework}) at ./${frontend.rel}` : null
+  const be = backend ? `backend (${backendLabel(backend)}) at ./${backend.rel}` : null
+  return [fe, be].filter(Boolean).join(' and ')
+}
+
 // One checklist step per agent run: the one the user picked (`step`), or — on the first run — the
 // first the audit shows is not done (install if Fingerprint isn't in the app yet, ...). How to do
 // and verify it stays the skill's call; what comes next is the CLI's question to the user, so the
 // agent must not pre-empt it. The rest of the prompt is the facts the agent can't read for itself:
 // the CLI's stack detection, and where the provisioned keys live (it may not open .env).
-function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?: string, endpointVar?: string): string {
-  const fe = analysis.frontend ? `frontend (${analysis.frontend.framework}) at ./${analysis.frontend.rel}` : null
-  const be = analysis.backend ? `backend (${analysis.backend.framework}) at ./${analysis.backend.rel}` : null
+function buildGetStartedPrompt(
+  analysis: RepoAnalysis,
+  step?: string,
+  subdomain?: string,
+  endpointVar?: string,
+  inline?: InlineValues
+): string {
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
     step
@@ -447,9 +503,21 @@ function buildGetStartedPrompt(analysis: RepoAnalysis, step?: string, subdomain?
       : 'Run the Fingerprint Get Started flow for this repository, one step at a time: do only the first not-done checklist step this repo can do.',
     'Tell the user how to verify it, then stop. Do not announce or suggest what the next step is —',
     'the CLI asks the user about that.',
-    `Detected: ${[fe, be].filter(Boolean).join(' and ')}.`,
-    'The .env files are already provisioned: the public key is in',
-    `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+    `Detected: ${describeStack(analysis)}.`,
+    // A static site has no env file to point at, so the values go in the prompt instead — telling
+    // it to read a bundler-prefixed variable that nothing defines is what leaves `undefined` in
+    // the page.
+    ...(inline
+      ? [
+          'The frontend has no build step and no env vars. Write these values directly into its code',
+          `(both are public and ship in the page source): public API key ${inline.publicKey},`,
+          `region '${inline.region}'.`,
+          ...(analysis.backend ? ["The backend's .env is already provisioned: the secret key is in FINGERPRINT_SECRET_API_KEY."] : []),
+        ]
+      : [
+          'The .env files are already provisioned: the public key is in',
+          `${publicVar ?? 'a bundler-prefixed variable'}, the secret key in FINGERPRINT_SECRET_API_KEY.`,
+        ]),
     ...(subdomain
       ? [
           `The custom subdomain is ${subdomain}. Look it up with list_subdomains and create it only if it is not there.`,
@@ -519,7 +587,7 @@ function buildDocsTaskPrompt(analysis: RepoAnalysis): string {
     ? `frontend: ${analysis.frontend.framework} (${analysis.frontend.language}) at ./${analysis.frontend.rel}`
     : null
   const be = analysis.backend
-    ? `backend: ${analysis.backend.framework} (${analysis.backend.language}) at ./${analysis.backend.rel}`
+    ? `backend: ${backendLabel(analysis.backend)} (${analysis.backend.language}) at ./${analysis.backend.rel}`
     : null
   return [
     'Integrate Fingerprint device intelligence into this repository by researching the docs.',
@@ -640,12 +708,19 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
     skill.packages.forEach(assertAllowedPackage)
     const app = appForRole[skill.role] ?? analysis.frontend ?? analysis.backend
     if (!app) continue
+    const jsPm = !['pip', 'poetry'].includes(app.packageManager ?? '')
+    // A static site has no manifest to install into: the JS Agent skill loads the agent from the
+    // CDN there, and an npm install would create the package.json (and node_modules) the project
+    // deliberately doesn't have.
+    if (jsPm && !existsSync(join(app.dir, 'package.json'))) {
+      log.info(`No package.json in ${app.rel} — skipping install; the agent loads from the CDN instead.`)
+      continue
+    }
     const [bin, sub] = installCommand(app.packageManager)
     // The CLI owns dependency versions. For npm-family managers, pin unversioned packages to
     // @latest so the install ignores any (possibly wrong) range the agent wrote into package.json
     // and rewrites it to the real published version. pip/poetry don't use @latest syntax and
     // install latest by name anyway, so leave their packages untouched.
-    const jsPm = !['pip', 'poetry'].includes(app.packageManager ?? '')
     const pkgs = jsPm ? skill.packages.map(pinLatest) : skill.packages
     if (isInteractive()) {
       const ok = await confirm({ message: `Install ${pkgs.join(', ')} in ${app.rel}? (${bin} ${sub})`, default: true })

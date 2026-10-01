@@ -1,5 +1,28 @@
 # fingerprint
 
+## 0.2.3
+
+### Patch Changes
+
+- Server-side verification counts as done only when the backend's code has an actual import of the server SDK. A comment that mentions the package, or a commented-out import, doesn't count. ([14015be](https://github.com/fingerprintjs/fingerprint-cli/commit/14015be7b2b68cafcfe4b0fd1d847857549b457d))
+- Inside the wizard's subdomain step, the agent's `verify_subdomain` tool now only accepts the subdomain being set up, like `create_subdomain` already did. Another subdomain's id is looked up and refused before any verification is requested. ([2b94804](https://github.com/fingerprintjs/fingerprint-cli/commit/2b9480494deb125403b88440c406fdcff7dd7898))
+
+## 0.2.2
+
+### Patch Changes
+
+- The documentation link the CLI prints points at `https://docs.fingerprint.com`. ([380fc04](https://github.com/fingerprintjs/fingerprint-cli/commit/380fc04d52d6919304899b28abdccc33d8eb4bb5))
+- `integrate` now recognizes browser code with no framework SDK and applies the `fingerprint-javascript` skill, instead of reporting that no integration is available. This covers a bundled app with no framework dependency (detected from its `index.html` entry), Solid, Lit, Alpine, htmx and jQuery, a static site with no `package.json` at all, and a Node server's plain `public/index.html` (detected as a static frontend alongside the backend, also when the server's `package.json` lists a no-bundler library such as jQuery, htmx or Alpine) — where the public key and region are handed to the integration directly on every step, since there is no env file to read them from and no manifest to install into. A static site whose workspace has no enabled public key stops before the agent runs instead of getting a placeholder written into the page.
+
+  A single `package.json` that holds both halves of the stack is now recognized as its own backend. Previously `integrate` only ever looked for a separate backend package, so a repo with react + express (or a Next.js app, which is its own server) resolved the frontend skill alone, never marked server-side verification as done, and asked for a backend repo path when the user picked that step. The server skill, the secret key and the verification step now all land in the app that's already there. Server-side verification counts as done once the backend's code imports the server SDK; the dependency alone doesn't, since the first step installs every skill's packages. ([47c05fe](https://github.com/fingerprintjs/fingerprint-cli/commit/47c05feb8fc63b1e9f9ccdbd1ddf5e48340bc0bb))
+
+## 0.2.1
+
+### Patch Changes
+
+- Analytics requests get more time: 2 seconds for the events sent while a command runs and 5 seconds for `cli_command_run`, up from 1 second for all of them. The endpoint regularly took longer than a second from a cold process, so a good share of `cli_command_run` events were being dropped silently. ([58136db](https://github.com/fingerprintjs/fingerprint-cli/commit/58136db162899e04b6ab66874d15e1050e1b6b1f))
+- `cli_command_run` now describes the wizard run: `wizard_steps` lists the choices in order, and when the run touched a custom subdomain it also carries `subdomain_outcome`, `subdomain_resumed` and `subdomain_dns`. `integrate_status` can be `waiting` for a run that ends with DNS records still pending. The Management API has to accept the new values before the CLI sends them. ([bff98ff](https://github.com/fingerprintjs/fingerprint-cli/commit/bff98ffe34fe5acc4b9b8b2d354cfad589b27106))
+
 ## 0.2.0
 
 ### Minor Changes
