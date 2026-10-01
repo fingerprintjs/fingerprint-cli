@@ -219,9 +219,28 @@ async function askBackendPath(): Promise<string | undefined> {
 
 // Step 2 is in place once the backend's code imports the server SDK. The dependency alone isn't
 // enough: step 1 installs every skill's packages, into the same manifest when one app has both halves.
+// Import syntax only, with comments stripped first: the package name also turns up in install
+// instructions and commented-out code.
+const SERVER_SDK_IMPORT = /(?<![\w.$])(?:from|import|require)\s*\(?\s*['"]@fingerprint\/node-sdk['"]|^\s*(?:import|from)\s+fingerprint_server_sdk\b/m
+const JS_COMMENT = /\/\*[\s\S]*?\*\/|\/\/.*$/gm
+const PY_COMMENT = /"""[\s\S]*?"""|'''[\s\S]*?'''|#.*$/gm
+
 function usesServerSdk(app: DetectedApp): boolean {
-  const sdk = app.language === 'python' ? 'fingerprint_server_sdk' : '@fingerprint/node-sdk'
-  return sourceFiles(app.dir).some((file) => readFileSync(file, 'utf8').includes(sdk))
+  try {
+    return sourceFiles(app.dir).some(importsServerSdk)
+  } catch {
+    return false
+  }
+}
+
+// One unreadable file (a dangling symlink) is a miss, not a reason to skip the rest.
+function importsServerSdk(file: string): boolean {
+  try {
+    const code = readFileSync(file, 'utf8').replace(file.endsWith('.py') ? PY_COMMENT : JS_COMMENT, '')
+    return SERVER_SDK_IMPORT.test(code)
+  } catch {
+    return false
+  }
 }
 
 const SOURCE_FILE = /\.(py|[cm]?[jt]sx?)$/

@@ -206,6 +206,7 @@ export function makeSkillsDir(packages = {}) {
     ['fingerprint-react', 'frontend'],
     ['fingerprint-javascript', 'frontend'],
     ['fingerprint-node', 'backend'],
+    ['fingerprint-python', 'backend'],
     ['fingerprint-nextjs', 'fullstack'],
     ['fingerprint-get-started', 'orchestrator'],
   ]
