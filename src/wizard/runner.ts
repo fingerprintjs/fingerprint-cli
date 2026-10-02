@@ -257,7 +257,7 @@ function usesConfiguredEndpoint(app: DetectedApp): boolean {
   }
 }
 
-const SOURCE_FILE = /\.(py|[cm]?[jt]sx?)$/
+const SOURCE_FILE = /\.(py|[cm]?[jt]sx?|vue|svelte|astro)$/
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

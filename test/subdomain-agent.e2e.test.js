@@ -803,7 +803,8 @@ test('an endpoint in the env file that the code references counts as step 3 done
   seedAuth(home, api.url)
   const repo = makeRepo()
   writeFileSync(join(repo, 'web', '.env'), `VITE_FINGERPRINT_ENDPOINTS=https://${HOSTNAME}\n`)
-  writeFileSync(join(repo, 'web', 'main.jsx'), 'load({ endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS })\n')
+  // In a .svelte file: the frameworks whose provider lives outside .js/.ts count too.
+  writeFileSync(join(repo, 'web', 'Provider.svelte'), '<script>const endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS</script>\n')
   const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
   t.after(() => gateway.close())
 
