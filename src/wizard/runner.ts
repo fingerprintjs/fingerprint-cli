@@ -149,7 +149,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
     if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
-    if (analysis.frontend && configuredEndpoint(analysis.frontend)) done.add('proxy')
+    if (analysis.frontend && usesConfiguredEndpoint(analysis.frontend)) done.add('proxy')
     const next = await askNextStep(done)
     recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
@@ -239,6 +239,19 @@ function importsServerSdk(file: string): boolean {
   try {
     const code = readFileSync(file, 'utf8').replace(file.endsWith('.py') ? PY_COMMENT : JS_COMMENT, '')
     return SERVER_SDK_IMPORT.test(code)
+  } catch {
+    return false
+  }
+}
+
+// Step 3 is in place once the frontend's code references the endpoint variable the CLI wrote. The
+// variable alone isn't enough: the CLI writes it when the subdomain goes active, before the agent
+// has necessarily wired it into the provider options.
+function usesConfiguredEndpoint(app: DetectedApp): boolean {
+  const configured = configuredEndpoint(app)
+  if (!configured) return false
+  try {
+    return sourceFiles(app.dir).some((file) => readFileSync(file, 'utf8').includes(configured.envVar))
   } catch {
     return false
   }
