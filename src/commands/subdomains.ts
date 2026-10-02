@@ -155,7 +155,7 @@ async function connectSubdomain(target: string, options: ConnectOptions): Promis
       }
       if (result.outcome === 'error') throw new SubdomainError('api_error', `${provider} did not add the records: ${result.error}`)
 
-      console.log(`\n${provider} added the records. Checking...\n`)
+      console.log(`\n${provider} added the DNS records. Checking...\n`)
       printSubdomain(await service.verify(id))
     } finally {
       loopback.close()
