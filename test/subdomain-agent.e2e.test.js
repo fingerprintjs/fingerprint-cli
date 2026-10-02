@@ -188,7 +188,7 @@ test('when the DNS provider supports Domain Connect, the browser adds the record
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
-      { when: /Your domain is on Cloudflare, which can add these DNS records/, send: '\n' }, // let Cloudflare add them
+      { when: /Your domain uses Cloudflare\. How would you like to add the DNS records\?/, send: '\n' }, // let Cloudflare add them
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
@@ -226,7 +226,7 @@ test('when the provider added the records but validation outlasts the wait, the 
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
-      { when: /Your domain is on Cloudflare, which can add these DNS records/, send: '\n' },
+      { when: /Your domain uses Cloudflare\. How would you like to add the DNS records\?/, send: '\n' },
     ],
   })
 

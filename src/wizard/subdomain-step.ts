@@ -227,11 +227,11 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
     log.line()
     const choice = await select({
       message: link.dns_provider
-        ? `Your domain is on ${provider}, which can add these DNS records for you. How do you want to add them?`
-        : 'Your DNS provider can add these DNS records for you. How do you want to add them?',
+        ? `Your domain uses ${provider}. How would you like to add the DNS records?`
+        : 'How would you like to add the DNS records?',
       choices: [
-        { name: `Let ${provider} add them via Domain Connect (opens your browser)`, value: 'browser' },
-        { name: "Show me the records, I'll add them myself", value: 'manual' },
+        { name: `Add them automatically with ${provider} (opens browser)`, value: 'browser' },
+        { name: 'Show me the records to add manually', value: 'manual' },
       ],
     })
     if (choice === 'manual') return undefined
