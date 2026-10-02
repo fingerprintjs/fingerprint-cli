@@ -329,8 +329,6 @@ async function findSubdomain(service: SubdomainsService, hostname: string): Prom
 const dnsWaitMs = () => Number(process.env.FINGERPRINT_DNS_WAIT_MS ?? 300_000)
 const dnsPollMs = () => Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
 
-// One verify (the API allows one per minute), then read the status until it settles or the wait
-// runs out. Running out is not a failure: DNS propagation is outside anyone's control here. A live
 // Sets the expectation before the wait: it is long, and nothing is needed from the user.
 function explainWait(hostname: string): void {
   log.info(
@@ -338,6 +336,8 @@ function explainWait(hostname: string): void {
   )
 }
 
+// One verify (the API allows one per minute), then read the status until it settles or the wait
+// runs out. Running out is not a failure: DNS propagation is outside anyone's control here. A live
 // line shows what is being waited for; without a TTY, one plain line per change instead.
 async function waitForDns(service: SubdomainsService, current: Subdomain): Promise<Subdomain> {
   const spinner = process.stdout.isTTY && !isCi() ? new Spinner() : null
