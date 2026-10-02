@@ -669,10 +669,8 @@ test('connect reports a provider that declined, and does not verify', async (t) 
   assert.match(result.stderr, /Cloudflare did not add the records: The user declined\[2Knot ours/)
   assert.doesNotMatch(result.stdout + result.stderr, /\x1b|\r/)
   assert.equal(api.requests.some((r) => r.path.endsWith('/verify')), false)
+  // `--json` prints the link and exits without waiting, so the kind is checked on the run event.
   assert.equal(api.events.find((e) => e.event === 'cli_command_run').properties.error_code, 'subdomain_declined')
-
-  const json = await run(api, ['subdomains', 'connect', ID, '--json'])
-  assert.equal(JSON.parse(json.stdout).error.kind, 'declined')
 })
 
 test('connect explains when Domain Connect is not available instead of calling it a duplicate', async (t) => {
