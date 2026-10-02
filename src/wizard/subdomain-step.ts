@@ -246,9 +246,9 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
       log.success(`${provider} added the DNS records.`)
       return { provider: link.dns_provider }
     }
+    // The caller lists the records next, as for any other way into the manual path.
     if (result.outcome === 'error') log.warn(`${provider} did not add the records: ${result.error}. You can add them yourself:`)
     else log.warn(`No response from ${provider} after ${DOMAIN_CONNECT_TIMEOUT_MS / 60_000} minutes. You can add the records yourself:`)
-    reportPending(current.subdomain, dnsRecords(current), { heading: `DNS records for ${current.subdomain}:` })
     return undefined
   } finally {
     loopback.close()
