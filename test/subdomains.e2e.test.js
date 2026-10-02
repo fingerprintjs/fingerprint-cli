@@ -628,7 +628,8 @@ function domainConnectApi({ status = 'pending', redirect = 'done', link = true }
       if (!link) return { status: 409, body: { error: { code: 'general.conflict', message: 'Domain Connect is not available for this subdomain' } } }
       callbackPort = request.body.port
       if (redirect) {
-        const query = redirect === 'done' ? '' : '?error=access_denied&error_description=The%20user%20declined'
+        // The description carries an escape sequence: it must not reach the terminal.
+        const query = redirect === 'done' ? '' : '?error=access_denied&error_description=The%20user%20declined%1B%5B2K%0Dnot%20ours'
         setTimeout(() => fetch(`http://127.0.0.1:${callbackPort}/domain-connect/callback${query}`).catch(() => {}), 150)
       }
       return { body: { data: { domain_connect_url: `https://dc.example.test/apply?port=${callbackPort}`, dns_provider: 'Cloudflare' } } }
@@ -665,8 +666,13 @@ test('connect reports a provider that declined, and does not verify', async (t) 
   const result = await run(api, ['subdomains', 'connect', ID, '--no-open'])
 
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /Cloudflare did not add the records: The user declined/)
+  assert.match(result.stderr, /Cloudflare did not add the records: The user declined\[2Knot ours/)
+  assert.doesNotMatch(result.stdout + result.stderr, /\x1b|\r/)
   assert.equal(api.requests.some((r) => r.path.endsWith('/verify')), false)
+  assert.equal(api.events.find((e) => e.event === 'cli_command_run').properties.error_code, 'subdomain_declined')
+
+  const json = await run(api, ['subdomains', 'connect', ID, '--json'])
+  assert.equal(JSON.parse(json.stdout).error.kind, 'declined')
 })
 
 test('connect explains when Domain Connect is not available instead of calling it a duplicate', async (t) => {

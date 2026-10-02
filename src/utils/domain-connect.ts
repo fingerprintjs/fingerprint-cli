@@ -9,6 +9,12 @@ import { isCi } from './ci.js'
 export const DOMAIN_CONNECT_CALLBACK_PATH = '/domain-connect/callback'
 export const DOMAIN_CONNECT_TIMEOUT_MS = 10 * 60 * 1000
 
+// The provider's text is printed to the terminal, and the loopback takes any local caller: strip
+// control characters so an escape sequence cannot rewrite the screen, and keep it short.
+function printable(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, 200)
+}
+
 export type DomainConnectCallback = { outcome: 'done' } | { outcome: 'error'; error: string } | { outcome: 'timeout' }
 
 // The port is needed before the link can be requested, but the clock only starts once the user
@@ -39,7 +45,7 @@ export function listenForDomainConnect(): Promise<{
          <p>${error ? 'Return to your terminal for details.' : 'You can close this tab and return to your terminal.'}</p>
          </body>`
       )
-      settle(error ? { outcome: 'error', error: url.searchParams.get('error_description') ?? error } : { outcome: 'done' })
+      settle(error ? { outcome: 'error', error: printable(url.searchParams.get('error_description') ?? error) } : { outcome: 'done' })
     })
     server.once('error', reject)
     server.listen(0, '127.0.0.1', () => {

@@ -150,10 +150,12 @@ async function connectSubdomain(target: string, options: ConnectOptions): Promis
       loopback.startTimeout(DOMAIN_CONNECT_TIMEOUT_MS)
 
       const result = await loopback.callback
+      // Their own kinds: giving up at the provider is not the API failing, and the run's analytics
+      // should not count it as such.
       if (result.outcome === 'timeout') {
-        throw new SubdomainError('api_error', `No response from ${provider} after ${DOMAIN_CONNECT_TIMEOUT_MS / 60_000} minutes. Run the command again, or add the records manually: fingerprint subdomains get ${target}`)
+        throw new SubdomainError('timeout', `No response from ${provider} after ${DOMAIN_CONNECT_TIMEOUT_MS / 60_000} minutes. Run the command again, or add the records manually: fingerprint subdomains get ${target}`)
       }
-      if (result.outcome === 'error') throw new SubdomainError('api_error', `${provider} did not add the records: ${result.error}`)
+      if (result.outcome === 'error') throw new SubdomainError('declined', `${provider} did not add the records: ${result.error}`)
 
       console.log(`\n${provider} added the DNS records. Checking...\n`)
       printSubdomain(await service.verify(id))
