@@ -86,6 +86,14 @@ export function activityFor(tool: string): string | undefined {
       return 'Reading the integration guide'
     case 'Agent':
       return 'Analyzing the integration'
+    // The subdomain tools (see subdomains-mcp.ts); the step's own messages name the hostname.
+    case 'mcp__fingerprint__list_subdomains':
+    case 'mcp__fingerprint__get_subdomain':
+      return 'Checking your custom subdomains'
+    case 'mcp__fingerprint__create_subdomain':
+      return 'Creating the custom subdomain'
+    case 'mcp__fingerprint__verify_subdomain':
+      return 'Checking the DNS records'
     default:
       return undefined
   }

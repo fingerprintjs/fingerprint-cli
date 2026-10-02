@@ -205,6 +205,17 @@ export type EndpointProvisionResult =
 
 // Store an active custom subdomain using the selected frontend's existing env convention. The
 // caller is responsible for checking the subdomain status before invoking this helper.
+// The endpoint the CLI already pointed the frontend at, when its env file has one. Host-side
+// knowledge the agent cannot get itself, since .env is off limits to it.
+export function configuredEndpoint(frontend: DetectedApp): { envVar: string; envFile: string; endpoint: string } | undefined {
+  const convention = conventionFor(frontend)
+  if (!convention.endpointVar) return undefined
+  const endpoint = readEnvVar(join(frontend.dir, convention.file), convention.endpointVar)
+  if (!endpoint) return undefined
+  const envFile = frontend.rel === '.' ? convention.file : `${frontend.rel}/${convention.file}`
+  return { envVar: convention.endpointVar, envFile, endpoint }
+}
+
 export function provisionActiveSubdomainEndpoint(root: string, hostname: string): EndpointProvisionResult {
   const analysis = analyzeRepo(root)
   const frontend = analysis.frontend
