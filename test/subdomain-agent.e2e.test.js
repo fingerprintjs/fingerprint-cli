@@ -163,6 +163,7 @@ test('checking DNS from the menu picks up activation and finishes the step in th
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(result.stdout, CONFIGURING)
   assert.equal(api.lastRun().wizard_steps, 'install,subdomain,dns_manual,dns_check,stop')
+  assert.match(result.stdout, /setup continues on its own once metrics\.example\.com is active/)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
@@ -187,14 +188,15 @@ test('when the DNS provider supports Domain Connect, the browser adds the record
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
-      { when: /Cloudflare can add the DNS records for you/, send: '\n' }, // let Cloudflare add them
+      { when: /Your domain is on Cloudflare, which can add these DNS records/, send: '\n' }, // let Cloudflare add them
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /Open this link to add the records at Cloudflare:\n.*https:\/\/dc\.example\.test\/apply\?port=\d+/)
-  assert.match(result.stdout, /Cloudflare added the records\./)
+  assert.match(result.stdout, /Open this link to add the records at Cloudflare \(Domain Connect\):\n.*https:\/\/dc\.example\.test\/apply\?port=\d+/)
+  assert.match(result.stdout, /Cloudflare added the DNS records\./)
+  assert.match(result.stdout, /setup continues on its own once metrics\.example\.com is active/)
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.doesNotMatch(result.stdout, DNS_MENU)
@@ -224,12 +226,12 @@ test('when the provider added the records but validation outlasts the wait, the 
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
-      { when: /Cloudflare can add the DNS records for you/, send: '\n' },
+      { when: /Your domain is on Cloudflare, which can add these DNS records/, send: '\n' },
     ],
   })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /Cloudflare added the records, but metrics\.example\.com is not active yet/)
+  assert.match(result.stdout, /Cloudflare added the DNS records, but metrics\.example\.com is not active yet/)
   assert.match(result.stdout, /fingerprint integrate --subdomain metrics\.example\.com/)
   assert.doesNotMatch(result.stdout, DNS_MENU)
   assert.doesNotMatch(result.stdout, /Add the records at your DNS provider/)

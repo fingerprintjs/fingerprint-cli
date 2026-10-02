@@ -132,12 +132,13 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
         if (added) {
           dns = 'domain_connect'
           provider = added.provider && providerSlug(added.provider)
+          explainWait(hostname)
           current = await waitForDns(service, current)
           if (current.status !== 'pending') continue
           // The provider added the records, so there is nothing for the manual menu to ask for.
           // Validation is just taking longer than the wait; the saved setup resumes it next run.
           log.info(
-            `${added.provider ?? 'Your DNS provider'} added the records, but ${hostname} is not active yet. Propagation and certificate issuance can take a few more minutes.`
+            `${added.provider ?? 'Your DNS provider'} added the DNS records, but ${hostname} is not active yet. Propagation and certificate issuance can take a few more minutes.`
           )
           log.info(resumeHint(hostname))
           return end('waiting', 'waiting')
@@ -174,6 +175,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       }
 
       recordWizardStep('dns_check')
+      explainWait(hostname)
       current = await waitForDns(service, current)
       if (current.status === 'pending') {
         log.warn(
@@ -224,10 +226,12 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
 
     log.line()
     const choice = await select({
-      message: `${provider} can add the DNS records for you. How do you want to add them?`,
+      message: link.dns_provider
+        ? `Your domain is on ${provider}, which can add these DNS records for you. How do you want to add them?`
+        : 'Your DNS provider can add these DNS records for you. How do you want to add them?',
       choices: [
-        { name: `Open ${provider} and let it add them for me`, value: 'browser' },
-        { name: "Show me the records and I'll add them myself", value: 'manual' },
+        { name: `Let ${provider} add them via Domain Connect (opens your browser)`, value: 'browser' },
+        { name: "Show me the records, I'll add them myself", value: 'manual' },
       ],
     })
     if (choice === 'manual') return undefined
@@ -240,7 +244,7 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
     const result = await loopback.callback
     spinner?.stop()
     if (result.outcome === 'done') {
-      log.success(`${provider} added the records.`)
+      log.success(`${provider} added the DNS records.`)
       return { provider: link.dns_provider }
     }
     if (result.outcome === 'error') log.warn(`${provider} did not add the records: ${result.error}. You can add them yourself:`)
@@ -323,6 +327,13 @@ const dnsPollMs = () => Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
 
 // One verify (the API allows one per minute), then read the status until it settles or the wait
 // runs out. Running out is not a failure: DNS propagation is outside anyone's control here. A live
+// Sets the expectation before the wait: it is long, and nothing is needed from the user.
+function explainWait(hostname: string): void {
+  log.info(
+    `Waiting for the records to propagate and for the certificate to issue. This usually takes a few minutes, sometimes longer; the setup continues on its own once ${hostname} is active, so no need to watch.`
+  )
+}
+
 // line shows what is being waited for; without a TTY, one plain line per change instead.
 async function waitForDns(service: SubdomainsService, current: Subdomain): Promise<Subdomain> {
   const spinner = process.stdout.isTTY && !isCi() ? new Spinner() : null
