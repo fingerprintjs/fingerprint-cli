@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.2.4
+
+### Patch Changes
+
+- `fingerprint subdomains connect <id-or-hostname>` adds a pending subdomain's DNS records through the DNS provider (Domain Connect) and verifies when the provider redirects back. `--no-open` prints the link instead of opening the browser; `--json` prints the link and exits. ([cdcc3f2](https://github.com/fingerprintjs/fingerprint-cli/commit/cdcc3f213532397f4bde1e2cb9d5a44dc0e25fad))
+
 ## 0.2.3
 
 ### Patch Changes
