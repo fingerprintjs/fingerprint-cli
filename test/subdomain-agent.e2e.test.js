@@ -792,3 +792,32 @@ function startGateway(next) {
     })
   })
 }
+
+// The agent cannot read .env, so an endpoint the CLI already wrote has to reach it another way, or
+// the audit calls step 3 not done and asks the user to add the variable the CLI set.
+test('an endpoint already in the env file counts as step 3 done, for the agent and for the menu', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  writeFileSync(join(repo, 'web', '.env'), `VITE_FINGERPRINT_ENDPOINTS=https://${HOSTNAME}\n`)
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` }, // [server-side verification, stop] → stop
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  const sent = gateway.bodies().join('\n')
+  assert.match(sent, new RegExp(`The CLI already set VITE_FINGERPRINT_ENDPOINTS=https://${HOSTNAME.replace('.', '\\.')} in web/\\.env`))
+  assert.match(sent, /Quick start step 3 is done once the provider options reference VITE_FINGERPRINT_ENDPOINTS/)
+  assert.doesNotMatch(result.stdout, /Protect against ad blockers/)
+})
