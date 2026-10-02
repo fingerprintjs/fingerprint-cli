@@ -647,8 +647,8 @@ test('connect hands the user to the DNS provider and verifies once it redirects 
   const result = await run(api, ['subdomains', 'connect', ID], { env: { FINGERPRINT_NO_BROWSER: '1' } })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /Open this link to add the records at Cloudflare:\n {2}https:\/\/dc\.example\.test\/apply\?port=\d+/)
-  assert.match(result.stdout, /Cloudflare added the records\. Checking\.\.\./)
+  assert.match(result.stdout, /Open this link to add the records at Cloudflare \(Domain Connect\):\n {2}https:\/\/dc\.example\.test\/apply\?port=\d+/)
+  assert.match(result.stdout, /Cloudflare added the DNS records\. Checking\.\.\./)
   assert.match(result.stdout, /Status {5}active/)
   const link = api.requests.find((r) => r.path.endsWith('/domain-connect'))
   assert.equal(link.body.port, api.callbackPort())
@@ -694,7 +694,7 @@ test('connect in CI prints the link and stops: the redirect cannot reach this ma
   const result = await run(api, ['subdomains', 'connect', ID], { env: { CI: 'true' } })
 
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /Open this link to add the records at Cloudflare:\n {2}https:\/\/dc\.example\.test\/apply\?port=\d+/)
+  assert.match(result.stdout, /Open this link to add the records at Cloudflare \(Domain Connect\):\n {2}https:\/\/dc\.example\.test\/apply\?port=\d+/)
   assert.match(result.stdout, new RegExp(`fingerprint subdomains verify ${ID}`))
   assert.equal(api.requests.some((r) => r.path.endsWith('/verify')), false)
 })

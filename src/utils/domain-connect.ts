@@ -63,7 +63,7 @@ export function listenForDomainConnect(): Promise<{
 // FINGERPRINT_NO_BROWSER is set (tests, SSH sessions). Returns the lines to show the user.
 export async function openDomainConnectLink(url: string, provider: string, openBrowser: boolean): Promise<string[]> {
   const print = !openBrowser || isCi() || Boolean(process.env.FINGERPRINT_NO_BROWSER)
-  if (print) return [`Open this link to add the records at ${provider}:`, `  ${url}`, 'Authorize the change there, then come back here.']
+  if (print) return [`Open this link to add the records at ${provider} (Domain Connect):`, `  ${url}`, 'Authorize the change there, then come back here.']
   await open(url).catch(() => {})
-  return [`Opening ${provider} in your browser... If it doesn't open, visit:`, `  ${url}`, 'Authorize the change there, then come back here.']
+  return [`Opening ${provider} (Domain Connect) in your browser... If it doesn't open, visit:`, `  ${url}`, 'Authorize the change there, then come back here.']
 }
