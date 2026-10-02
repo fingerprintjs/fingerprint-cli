@@ -26,7 +26,7 @@ type ApplyStep = (root: string, hostname: string, purpose: SubdomainStepPurpose)
 // The subdomain step needs a hostname the agent must not guess, so the CLI asks before the run.
 export async function askSubdomainHostname(): Promise<string> {
   const hostname = await input({
-    message: 'Custom subdomain to use (a subdomain of the site, e.g. metrics.yourdomain.com):',
+    message: 'What subdomain would you like to use? (e.g., metrics.yourdomain.com)',
     validate: (value) => (value.trim() ? true : 'Enter a hostname.'),
   })
   return normalizeHostname(hostname)
@@ -93,7 +93,6 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
         process.exitCode = 1
         return end('failed', 'failed')
       }
-      recordsShown = true // the agent's run printed them
     }
 
     let explained = false
@@ -118,14 +117,9 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
         return end('waiting', 'waiting')
       }
       const pending = pendingDnsRecords(current)
-      if (!recordsShown) {
-        if (pending.length) reportPending(hostname, pending)
-        else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
-        recordsShown = true
-      }
-
       // When the DNS provider supports Domain Connect, the browser can add the records; offered once,
-      // and only while there are records left to add.
+      // and only while there are records left to add. Asked before the records are shown, so the
+      // manual list only appears when manual is the way.
       if (!offeredDomainConnect && pending.length) {
         offeredDomainConnect = true
         const added = await offerDomainConnect(service, current)
@@ -143,6 +137,11 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
           log.info(resumeHint(hostname))
           return end('waiting', 'waiting')
         }
+      }
+      if (!recordsShown) {
+        if (pending.length) reportPending(hostname, pending)
+        else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
+        recordsShown = true
       }
       if (!dns) {
         dns = 'manual'
@@ -266,8 +265,12 @@ export function settleAgentSubdomainWork(
 ): IntegrateOutcome | undefined {
   const seen = server.lastSeen()
   const failure = server.lastFailure()
-  if (failure || seen?.status !== 'active') options.beforeStatus()
-  const outcome = judge(seen, failure)
+  // Inside the step a pending subdomain is the CLI's to report: it offers Domain Connect first and
+  // shows the records only when they are to be added by hand, so neither the agent's recap nor the
+  // record list is printed here.
+  const quiet = options.inSubdomainStep && !failure && seen?.status === 'pending'
+  if (!quiet && (failure || seen?.status !== 'active')) options.beforeStatus()
+  const outcome = judge(seen, failure, quiet)
   if (seen?.status === 'failed' || seen?.status === 'timed_out') clearPendingSubdomainSetup(root)
   else if (outcome === 'waiting' && seen) savePendingSubdomainSetup(root, seen.hostname)
   if (outcome) return outcome
@@ -277,7 +280,7 @@ export function settleAgentSubdomainWork(
   return undefined
 }
 
-function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined): IntegrateOutcome | undefined {
+function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined, quiet = false): IntegrateOutcome | undefined {
   if (failure) {
     log.error(`Custom subdomain setup failed: ${failure.message}${isVerbose() ? ` (${failure.tool}: ${failure.kind})` : ''}`)
     markFailure(`subdomain_${failure.kind}`, failure.message)
@@ -286,6 +289,7 @@ function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | unde
   }
   if (!seen || seen.status === 'active') return undefined
   if (seen.status === 'pending') {
+    if (quiet) return 'waiting'
     if (seen.pendingRecords.length) reportPending(seen.hostname, seen.pendingRecords)
     else if (!seen.recordsKnown) log.info(`${seen.hostname} is still pending — see its DNS records with: fingerprint subdomains get ${seen.hostname}`)
     else log.info(`${seen.hostname}: DNS records are validated. Certificate issuance is still in progress.`)

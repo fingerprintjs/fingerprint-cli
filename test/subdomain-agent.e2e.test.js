@@ -16,7 +16,7 @@ const DNS_MENU = /is waiting for its DNS records\. What's next\?/
 const CREATING = /Setting up metrics\.example\.com/
 const CONFIGURING = /Updating your app to use metrics\.example\.com/
 const LATER = `${DOWN}${DOWN}\n`
-const HOSTNAME_PROMPT = /Custom subdomain to use/
+const HOSTNAME_PROMPT = /What subdomain would you like to use/
 const pick = (object, ...keys) => Object.fromEntries(keys.filter((key) => key in object).map((key) => [key, object[key]]))
 
 test('a pending subdomain leaves the step waiting with the DNS records to add', async (t) => {
@@ -81,7 +81,7 @@ test('an active subdomain is configured as the endpoint and completes the step',
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
-      { when: /Custom subdomain to use/, send: `${HOSTNAME}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       // Step done → the menu is [server-side verification, stop]; pick stop.
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
@@ -200,6 +200,7 @@ test('when the DNS provider supports Domain Connect, the browser adds the record
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.doesNotMatch(result.stdout, DNS_MENU)
+  assert.doesNotMatch(result.stdout, /is waiting for these DNS records/) // asked first; the list is for the manual path
   assert.deepEqual(pick(api.lastRun(), 'subdomain_outcome', 'subdomain_dns', 'subdomain_provider', 'wizard_steps'), {
     subdomain_outcome: 'configured',
     subdomain_dns: 'domain_connect',
