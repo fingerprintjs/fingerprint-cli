@@ -14,6 +14,8 @@ export type SubdomainErrorKind =
   | 'ambiguous'
   | 'confirmation_required'
   | 'unsupported'
+  | 'declined'
+  | 'timeout'
   | 'api_error'
 
 export interface SerializedSubdomainError {
