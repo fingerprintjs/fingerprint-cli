@@ -379,7 +379,6 @@ export async function runAgent(
   const response = query({
     prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured),
     options: {
-      model: llm.model,
       env: llm.env,
       cwd: analysis.root,
       systemPrompt: SYSTEM_PROMPT,
@@ -563,7 +562,6 @@ export async function runAgentFromDocs(analysis: RepoAnalysis): Promise<Integrat
   const response = query({
     prompt: buildDocsTaskPrompt(analysis),
     options: {
-      model: llm.model,
       env: llm.env,
       cwd: analysis.root,
       systemPrompt: DOCS_SYSTEM_PROMPT,
