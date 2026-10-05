@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, backendLabel, DetectedApp, IGNORE_DIRS, RepoAnalysis } from './detect.js'
-import { conventionFor, InlineValues, inlineValuesFor, provisionForRepo } from './provision.js'
+import { configuredEndpoint, conventionFor, InlineValues, inlineValuesFor, provisionForRepo } from './provision.js'
 import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
@@ -149,6 +149,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
     if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
+    if (analysis.frontend && usesConfiguredEndpoint(analysis.frontend)) done.add('proxy')
     const next = await askNextStep(done)
     recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
@@ -243,7 +244,20 @@ function importsServerSdk(file: string): boolean {
   }
 }
 
-const SOURCE_FILE = /\.(py|[cm]?[jt]sx?)$/
+// Step 3 is in place once the frontend's code references the endpoint variable the CLI wrote. The
+// variable alone isn't enough: the CLI writes it when the subdomain goes active, before the agent
+// has necessarily wired it into the provider options.
+function usesConfiguredEndpoint(app: DetectedApp): boolean {
+  const configured = configuredEndpoint(app)
+  if (!configured) return false
+  try {
+    return sourceFiles(app.dir).some((file) => readFileSync(file, 'utf8').includes(configured.envVar))
+  } catch {
+    return false
+  }
+}
+
+const SOURCE_FILE = /\.(py|[cm]?[jt]sx?|vue|svelte|astro)$/
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -359,8 +373,11 @@ export async function runAgent(
   // and verify without ever seeing a Management API key.
   const subdomains = createSubdomainsMcpServer(undefined, subdomain)
   const endpointVar = analysis.frontend ? conventionFor(analysis.frontend).endpointVar : undefined
+  // Outside the subdomain step, tell the agent about an endpoint the CLI already wrote: it cannot
+  // read .env, and without this it audits step 3 as not done and asks the user to add the variable.
+  const configured = analysis.frontend && !subdomain ? configuredEndpoint(analysis.frontend) : undefined
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured),
     options: {
       model: llm.model,
       env: llm.env,
@@ -494,7 +511,8 @@ function buildGetStartedPrompt(
   step?: string,
   subdomain?: string,
   endpointVar?: string,
-  inline?: InlineValues
+  inline?: InlineValues,
+  configured?: { envVar: string; envFile: string; endpoint: string }
 ): string {
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
@@ -525,6 +543,12 @@ function buildGetStartedPrompt(
           endpointVar
             ? `Once it is active, reference ${endpointVar} in the provider options; the CLI writes that variable to the env file itself, so do not edit .env or ask the user to.`
             : `Once it is active, set endpoints to https://${subdomain} directly in the provider options.`,
+        ]
+      : []),
+    ...(configured
+      ? [
+          `The CLI already set ${configured.envVar}=${configured.endpoint} in ${configured.envFile}; you cannot read .env, so take this as its value.`,
+          `Quick start step 3 is done once the provider options reference ${configured.envVar}. Do not ask the user to add the variable.`,
         ]
       : []),
   ].join('\n')

@@ -16,7 +16,7 @@ const DNS_MENU = /is waiting for its DNS records\. What's next\?/
 const CREATING = /Setting up metrics\.example\.com/
 const CONFIGURING = /Updating your app to use metrics\.example\.com/
 const LATER = `${DOWN}${DOWN}\n`
-const HOSTNAME_PROMPT = /Custom subdomain to use/
+const HOSTNAME_PROMPT = /What subdomain would you like to use/
 const pick = (object, ...keys) => Object.fromEntries(keys.filter((key) => key in object).map((key) => [key, object[key]]))
 
 test('a pending subdomain leaves the step waiting with the DNS records to add', async (t) => {
@@ -81,7 +81,7 @@ test('an active subdomain is configured as the endpoint and completes the step',
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` },
-      { when: /Custom subdomain to use/, send: `${HOSTNAME}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       // Step done → the menu is [server-side verification, stop]; pick stop.
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
@@ -126,6 +126,8 @@ test('an existing pending subdomain goes straight to the DNS menu; the records c
   assert.equal(result.status, 0, result.stderr)
   // Step 1 ran the agent; the pending subdomain did not: its state came from the API.
   assert.equal(result.stdout.match(APPLYING)?.length, 1, result.stdout)
+  // The records were shown before the first question, not only on request.
+  assert.match(result.stdout, /is waiting for these DNS records:[\s\S]*is waiting for its DNS records\. What's next\?/)
   assert.match(result.stdout, /DNS records for metrics\.example\.com/)
   assert.match(result.stdout, /A {2}pending_validation\n.*Host {3}metrics\.example\.com\n.*Value {2}192\.0\.2\.1/)
   assert.match(result.stdout, /proxied records do not validate/)
@@ -161,9 +163,119 @@ test('checking DNS from the menu picks up activation and finishes the step in th
   assert.match(result.stdout, /metrics\.example\.com is active\./)
   assert.match(result.stdout, CONFIGURING)
   assert.equal(api.lastRun().wizard_steps, 'install,subdomain,dns_manual,dns_check,stop')
+  assert.match(result.stdout, /setup continues on its own once metrics\.example\.com is active/)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
+})
+
+test('when the DNS provider supports Domain Connect, the browser adds the records and the step finishes', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.enableDomainConnect()
+  api.activateAfterVerify()
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0', FINGERPRINT_NO_BROWSER: '1' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: /Your domain uses Cloudflare\. How would you like to add the DNS records\?/, send: '\n' }, // let Cloudflare add them
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Open this link to add the records at Cloudflare \(Domain Connect\):\n.*https:\/\/dc\.example\.test\/apply\?port=\d+/)
+  assert.match(result.stdout, /Cloudflare added the DNS records\./)
+  assert.match(result.stdout, /setup continues on its own once metrics\.example\.com is active/)
+  assert.match(result.stdout, /metrics\.example\.com is active\./)
+  assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.doesNotMatch(result.stdout, DNS_MENU)
+  assert.doesNotMatch(result.stdout, /is waiting for these DNS records/) // asked first; the list is for the manual path
+  assert.deepEqual(pick(api.lastRun(), 'subdomain_outcome', 'subdomain_dns', 'subdomain_provider', 'wizard_steps'), {
+    subdomain_outcome: 'configured',
+    subdomain_dns: 'domain_connect',
+    subdomain_provider: 'cloudflare',
+    wizard_steps: 'install,subdomain,dns_domain_connect,stop',
+  })
+})
+
+test('when the provider added the records but validation outlasts the wait, the run ends waiting without the manual menu', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.enableDomainConnect() // stays pending: no activateAfterVerify
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0', FINGERPRINT_NO_BROWSER: '1' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: /Your domain uses Cloudflare\. How would you like to add the DNS records\?/, send: '\n' },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Cloudflare added the DNS records, but metrics\.example\.com is not active yet/)
+  assert.match(result.stdout, /fingerprint integrate --subdomain metrics\.example\.com/)
+  assert.doesNotMatch(result.stdout, DNS_MENU)
+  assert.doesNotMatch(result.stdout, /Add the records at your DNS provider/)
+  assert.deepEqual(pick(api.lastRun(), 'integrate_status', 'subdomain_outcome', 'subdomain_dns', 'subdomain_provider', 'wizard_steps'), {
+    integrate_status: 'waiting',
+    subdomain_outcome: 'waiting',
+    subdomain_dns: 'domain_connect',
+    subdomain_provider: 'cloudflare',
+    wizard_steps: 'install,subdomain,dns_domain_connect',
+  })
+})
+
+test('a Domain Connect outage falls back to the manual records instead of failing the step', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.failDomainConnect(503)
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: LATER },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Domain Connect is not available right now/)
+  assert.match(result.stdout, DNS_MENU)
+  assert.equal(api.createCalls(), 1)
+  assert.deepEqual(pick(api.lastRun(), 'subdomain_outcome', 'subdomain_dns', 'subdomain_provider', 'wizard_steps'), {
+    subdomain_outcome: 'waiting',
+    subdomain_dns: 'manual',
+    wizard_steps: 'install,subdomain,dns_manual,finish_later',
+  })
 })
 
 test('a later run offers to resume the unfinished subdomain without auditing or asking for the hostname', async (t) => {
@@ -536,6 +648,8 @@ function startSubdomainApi() {
   let verifyFailure
   let listFailure
   let activateOnVerify = false
+  let domainConnect = false
+  let domainConnectFailure
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
@@ -555,6 +669,13 @@ function startSubdomainApi() {
         return json(200, { data: detail(status) })
       }
       if (route === `GET /subdomains/${ID}`) return json(200, { data: detail(status) })
+      if (route === `POST /subdomains/${ID}/domain-connect`) {
+        if (domainConnectFailure) return json(domainConnectFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
+        if (!domainConnect) return json(409, { error: { code: 'general.conflict', message: 'Domain Connect is not available for this subdomain' } })
+        const port = JSON.parse(body).port
+        setTimeout(() => fetch(`http://127.0.0.1:${port}/domain-connect/callback`).catch(() => {}), 150)
+        return json(200, { data: { domain_connect_url: `https://dc.example.test/apply?port=${port}`, dns_provider: 'Cloudflare' } })
+      }
       if (route === `POST /subdomains/${ID}/verify`) {
         verifyCalls += 1
         if (verifyFailure) return json(verifyFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
@@ -594,6 +715,12 @@ function startSubdomainApi() {
         },
         activateAfterVerify() {
           activateOnVerify = true
+        },
+        enableDomainConnect() {
+          domainConnect = true
+        },
+        failDomainConnect(status) {
+          domainConnectFailure = status
         },
         close: () => new Promise((done) => server.close(done)),
       })
@@ -666,3 +793,60 @@ function startGateway(next) {
     })
   })
 }
+
+// The agent cannot read .env, so an endpoint the CLI already wrote has to reach it another way, or
+// the audit calls step 3 not done and asks the user to add the variable the CLI set.
+test('an endpoint in the env file that the code references counts as step 3 done, for the agent and for the menu', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  writeFileSync(join(repo, 'web', '.env'), `VITE_FINGERPRINT_ENDPOINTS=https://${HOSTNAME}\n`)
+  // In a .svelte file: the frameworks whose provider lives outside .js/.ts count too.
+  writeFileSync(join(repo, 'web', 'Provider.svelte'), '<script>const endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS</script>\n')
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` }, // [server-side verification, stop] → stop
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  const sent = gateway.bodies().join('\n')
+  assert.match(sent, new RegExp(`The CLI already set VITE_FINGERPRINT_ENDPOINTS=https://${HOSTNAME.replace('.', '\\.')} in web/\\.env`))
+  assert.match(sent, /Quick start step 3 is done once the provider options reference VITE_FINGERPRINT_ENDPOINTS/)
+  assert.doesNotMatch(result.stdout, /Protect against ad blockers/)
+})
+
+// The CLI writes the variable when the subdomain goes active; if the agent never wired it into the
+// provider options, the step is not done and stays on the menu.
+test('an endpoint in the env file that no code references keeps the subdomain step on the menu', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  writeFileSync(join(repo, 'web', '.env'), `VITE_FINGERPRINT_ENDPOINTS=https://${HOSTNAME}\n`)
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}${DOWN}\n` }, // [server-side verification, custom subdomain, stop] → stop
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Protect against ad blockers/)
+})

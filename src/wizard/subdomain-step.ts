@@ -1,10 +1,12 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { markFailure } from '../analytics/failure.js'
 import { addRunProperties, recordWizardStep } from '../analytics/track.js'
+import { ManagementApiError } from '../api/management.js'
 import { serializeSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
 import { isCi } from '../utils/ci.js'
 import { CLOUDFLARE_DNS_ONLY_HINT, dnsRecordLines, dnsRecords, pendingDnsRecords } from '../utils/dns-records.js'
+import { DOMAIN_CONNECT_TIMEOUT_MS, listenForDomainConnect, openDomainConnectLink } from '../utils/domain-connect.js'
 import { isVerbose } from '../utils/verbose.js'
 import { log } from './log.js'
 import { Spinner } from './spinner.js'
@@ -24,7 +26,7 @@ type ApplyStep = (root: string, hostname: string, purpose: SubdomainStepPurpose)
 // The subdomain step needs a hostname the agent must not guess, so the CLI asks before the run.
 export async function askSubdomainHostname(): Promise<string> {
   const hostname = await input({
-    message: 'Custom subdomain to use (a subdomain of the site, e.g. metrics.yourdomain.com):',
+    message: 'What subdomain would you like to use? (e.g., metrics.yourdomain.com)',
     validate: (value) => (value.trim() ? true : 'Enter a hostname.'),
   })
   return normalizeHostname(hostname)
@@ -70,13 +72,15 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
   // Picked up from an earlier run, as opposed to created in this one; unknown until the lookup.
   let resumed: boolean | undefined
   let dns: 'manual' | 'domain_connect' | undefined
+  let provider: string | undefined
   const end = (outcome: IntegrateOutcome, ended: SubdomainRunOutcome): IntegrateOutcome => {
-    recordSubdomainRun({ outcome: ended, resumed, dns })
+    recordSubdomainRun({ outcome: ended, resumed, dns, provider })
     return outcome
   }
   try {
     current = await findSubdomain(service, hostname)
     resumed = Boolean(current)
+    let recordsShown = false
 
     if (!current) {
       // The agent creates it. Whatever its run reported, the API decides whether it exists now.
@@ -92,6 +96,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     }
 
     let explained = false
+    let offeredDomainConnect = false
     while (true) {
       if (current.status === 'active') {
         const outcome = await applyStep(root, hostname, 'configure')
@@ -102,16 +107,45 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
         clearPendingSubdomainSetup(root)
         return end(reportTerminalStatus(hostname, current.status), current.status)
       }
-      if (!dns) {
-        dns = 'manual'
-        recordWizardStep('dns_manual')
-      }
       if (isCi()) {
+        dns ??= 'manual'
+        recordWizardStep('dns_manual')
         const pending = pendingDnsRecords(current)
         if (pending.length) reportPending(hostname, pending)
         else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
         log.info(resumeHint(hostname))
         return end('waiting', 'waiting')
+      }
+      const pending = pendingDnsRecords(current)
+      // When the DNS provider supports Domain Connect, the browser can add the records; offered once,
+      // and only while there are records left to add. Asked before the records are shown, so the
+      // manual list only appears when manual is the way.
+      if (!offeredDomainConnect && pending.length) {
+        offeredDomainConnect = true
+        const added = await offerDomainConnect(service, current)
+        if (added) {
+          dns = 'domain_connect'
+          provider = added.provider && providerSlug(added.provider)
+          explainWait(hostname)
+          current = await waitForDns(service, current)
+          if (current.status !== 'pending') continue
+          // The provider added the records, so there is nothing for the manual menu to ask for.
+          // Validation is just taking longer than the wait; the saved setup resumes it next run.
+          log.info(
+            `${added.provider ?? 'Your DNS provider'} added the DNS records, but ${hostname} is not active yet. Propagation and certificate issuance can take a few more minutes.`
+          )
+          log.info(resumeHint(hostname))
+          return end('waiting', 'waiting')
+        }
+      }
+      if (!recordsShown) {
+        if (pending.length) reportPending(hostname, pending)
+        else log.info(`${hostname}: DNS records are validated. Certificate issuance is still in progress.`)
+        recordsShown = true
+      }
+      if (!dns) {
+        dns = 'manual'
+        recordWizardStep('dns_manual')
       }
 
       // The user adds the records at their provider, then asks for a check; the check itself waits
@@ -140,6 +174,7 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       }
 
       recordWizardStep('dns_check')
+      explainWait(hostname)
       current = await waitForDns(service, current)
       if (current.status === 'pending') {
         log.warn(
@@ -149,8 +184,74 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     }
   } catch (error) {
     // An API or agent error ends the step too; the run's failure reason is recorded by the caller.
-    recordSubdomainRun({ outcome: 'failed', resumed, dns })
+    recordSubdomainRun({ outcome: 'failed', resumed, dns, provider })
     throw error
+  }
+}
+
+// The provider name as the Management API allows it on `subdomain_provider`: "Cloudflare" → "cloudflare".
+function providerSlug(name: string): string | undefined {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return /^[a-z]/.test(slug) ? slug : undefined
+}
+
+// Ask the API for a Domain Connect link; when the provider has one, let the user choose the
+// browser flow. Returns the provider once it redirected back, meaning the records are in and the
+// caller can wait for validation. Any other way out returns undefined and the manual path continues.
+async function offerDomainConnect(service: SubdomainsService, current: Subdomain): Promise<{ provider?: string } | undefined> {
+  // No loopback listener (a sandbox with no local ports) means no shortcut, not a failed setup.
+  const loopback = await listenForDomainConnect().catch((error: unknown) => {
+    log.warn(`Domain Connect is not available right now (${error instanceof Error ? error.message : String(error)}). You can add the records yourself.`)
+    return undefined
+  })
+  if (!loopback) return undefined
+  try {
+    const link = await service.domainConnect(current.id, loopback.port).catch((error) => {
+      if (error instanceof ManagementApiError && error.status === 409) return undefined // no Domain Connect here
+      if (error instanceof ManagementApiError && error.status === 401) {
+        markFailure('subdomain_not_authenticated', error)
+        throw error
+      }
+      // Anything else is the shortcut being unavailable, not the setup failing: the records are known.
+      log.warn(`Domain Connect is not available right now (${serializeSubdomainError(error).message}). You can add the records yourself.`)
+      return undefined
+    })
+    if (!link) return undefined
+    // Display label only; analytics gets the API's value, or nothing.
+    const provider = link.dns_provider ?? 'your DNS provider'
+
+    log.line()
+    const choice = await select({
+      message: link.dns_provider
+        ? `Your domain uses ${provider}. How would you like to add the DNS records?`
+        : 'How would you like to add the DNS records?',
+      choices: [
+        { name: `Add them automatically with ${provider} (opens browser)`, value: 'browser' },
+        { name: 'Show me the records to add manually', value: 'manual' },
+      ],
+    })
+    if (choice === 'manual') return undefined
+    recordWizardStep('dns_domain_connect')
+
+    for (const line of await openDomainConnectLink(link.domain_connect_url, provider, true)) log.info(line)
+    loopback.startTimeout(DOMAIN_CONNECT_TIMEOUT_MS)
+    const spinner = process.stdout.isTTY && !isCi() ? new Spinner() : null
+    spinner?.start(`Waiting for ${provider}`)
+    const result = await loopback.callback
+    spinner?.stop()
+    if (result.outcome === 'done') {
+      log.success(`${provider} added the DNS records.`)
+      return { provider: link.dns_provider }
+    }
+    // The caller lists the records next, as for any other way into the manual path.
+    if (result.outcome === 'error') log.warn(`${provider} did not add the records: ${result.error}. You can add them yourself:`)
+    else log.warn(`No response from ${provider} after ${DOMAIN_CONNECT_TIMEOUT_MS / 60_000} minutes. You can add the records yourself:`)
+    return undefined
+  } finally {
+    loopback.close()
   }
 }
 
@@ -164,8 +265,12 @@ export function settleAgentSubdomainWork(
 ): IntegrateOutcome | undefined {
   const seen = server.lastSeen()
   const failure = server.lastFailure()
-  if (failure || seen?.status !== 'active') options.beforeStatus()
-  const outcome = judge(seen, failure)
+  // Inside the step a pending subdomain is the CLI's to report: it offers Domain Connect first and
+  // shows the records only when they are to be added by hand, so neither the agent's recap nor the
+  // record list is printed here.
+  const quiet = options.inSubdomainStep && !failure && seen?.status === 'pending'
+  if (!quiet && (failure || seen?.status !== 'active')) options.beforeStatus()
+  const outcome = judge(seen, failure, quiet)
   if (seen?.status === 'failed' || seen?.status === 'timed_out') clearPendingSubdomainSetup(root)
   else if (outcome === 'waiting' && seen) savePendingSubdomainSetup(root, seen.hostname)
   if (outcome) return outcome
@@ -175,7 +280,7 @@ export function settleAgentSubdomainWork(
   return undefined
 }
 
-function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined): IntegrateOutcome | undefined {
+function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined, quiet = false): IntegrateOutcome | undefined {
   if (failure) {
     log.error(`Custom subdomain setup failed: ${failure.message}${isVerbose() ? ` (${failure.tool}: ${failure.kind})` : ''}`)
     markFailure(`subdomain_${failure.kind}`, failure.message)
@@ -184,6 +289,7 @@ function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | unde
   }
   if (!seen || seen.status === 'active') return undefined
   if (seen.status === 'pending') {
+    if (quiet) return 'waiting'
     if (seen.pendingRecords.length) reportPending(seen.hostname, seen.pendingRecords)
     else if (!seen.recordsKnown) log.info(`${seen.hostname} is still pending — see its DNS records with: fingerprint subdomains get ${seen.hostname}`)
     else log.info(`${seen.hostname}: DNS records are validated. Certificate issuance is still in progress.`)
@@ -222,6 +328,13 @@ async function findSubdomain(service: SubdomainsService, hostname: string): Prom
 // Overridable so tests do not wait; not documented as user options.
 const dnsWaitMs = () => Number(process.env.FINGERPRINT_DNS_WAIT_MS ?? 300_000)
 const dnsPollMs = () => Number(process.env.FINGERPRINT_DNS_POLL_MS ?? 10_000)
+
+// Sets the expectation before the wait: it is long, and nothing is needed from the user.
+function explainWait(hostname: string): void {
+  log.info(
+    `Waiting for the records to propagate and for the certificate to issue. This usually takes a few minutes, sometimes longer; the setup continues on its own once ${hostname} is active, so no need to watch.`
+  )
+}
 
 // One verify (the API allows one per minute), then read the status until it settles or the wait
 // runs out. Running out is not a failure: DNS propagation is outside anyone's control here. A live
