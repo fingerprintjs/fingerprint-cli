@@ -1,7 +1,7 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, backendLabel, DetectedApp, IGNORE_DIRS, RepoAnalysis } from './detect.js'
 import { configuredEndpoint, conventionFor, InlineValues, inlineValuesFor, provisionForRepo } from './provision.js'
@@ -247,7 +247,7 @@ function usesConfiguredEndpoint(app: DetectedApp): boolean {
 function usesEndpoint(app: DetectedApp, endpoint: string, envVar?: string): boolean {
   try {
     return sourceFiles(app.dir).some((file) => {
-      if (file.endsWith('.py') || TEST_FILE.test(file)) return false
+      if (file.endsWith('.py') || TEST_FILE.test(relative(app.dir, file))) return false
       try {
         return referencesEndpoint(readFileSync(file, 'utf8'), endpoint, envVar)
       } catch {
@@ -261,7 +261,7 @@ function usesEndpoint(app: DetectedApp, endpoint: string, envVar?: string): bool
 
 const SOURCE_FILE = /\.(py|[cm]?[jt]sx?|vue|svelte|astro|html)$/
 // Not the app: a test's provider setup says nothing about what the app ships.
-const TEST_FILE = /\.(test|spec)\.[^/\\]+$|[\\/]__(tests|mocks)__[\\/]/
+const TEST_FILE = /\.(test|spec)\.[^/\\]+$|(?:^|[\\/])(?:__tests__|__mocks__|tests?|specs?)[\\/]/
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

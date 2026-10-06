@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { makeHome, makeRepo, makeStaticRepo, makeSkillsDir, runCli, seedAuth } from './helpers/harness.js'
 
 // The custom subdomain step, driven through the real wizard flow: step 1 lands, the user picks
@@ -129,6 +129,32 @@ test('an active React app with conditional endpoints completes and clears its re
   assert.equal(result.status, 0, result.stderr)
   assert.equal(api.lastRun().subdomain_outcome, 'configured')
   assert.equal(readFileSync(target, 'utf8'), content)
+  assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /^VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com$/m)
+  assert.deepEqual(JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json'), 'utf8')), {})
+})
+
+test('application code in a repo under a tests directory completes the subdomain step', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('active')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const parent = join(makeHome(), 'tests')
+  mkdirSync(parent)
+  const repo = join(parent, 'app')
+  renameSync(makeRepo(), repo)
+  const target = join(repo, 'web', 'fingerprint.js')
+  const gateway = await startGateway(subdomainAgent(target))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home, cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(readFileSync(target, 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
+  assert.equal(api.lastRun().subdomain_outcome, 'configured')
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /^VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com$/m)
   assert.deepEqual(JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json'), 'utf8')), {})
 })
@@ -595,6 +621,11 @@ for (const [name, content, file] of [
   ['no code change', null],
   ['python comment next to the frontend', "# endpoints: 'https://metrics.example.com'\n", 'notes.py'],
   ['provider configured only in a test', "render(<FingerprintProvider endpoints={import.meta.env.VITE_FINGERPRINT_ENDPOINTS} />)\n", 'App.test.jsx'],
+  ...['test', 'tests', 'spec', 'specs', 'src/tests'].map((dir) => [
+    `provider configured only in ${dir}/`,
+    'render(<FingerprintProvider endpoints={import.meta.env.VITE_FINGERPRINT_ENDPOINTS} />)\n',
+    `${dir}/App.jsx`,
+  ]),
   ['comment only', '// endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n'],
   ['unrelated variable', 'export const unused = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n'],
   ['wrong hostname', 'export const options = { endpoints: "https://other.example.com" }\n'],
@@ -609,6 +640,7 @@ for (const [name, content, file] of [
     seedAuth(home, api.url)
     const repo = makeRepo()
     const target = join(repo, 'web', file ?? 'fingerprint.js')
+    mkdirSync(dirname(target), { recursive: true })
     const agent = subdomainAgent(target)
     const gateway = await startGateway((payload) => {
       if (content === null) return { text: 'All set.' }
@@ -624,6 +656,7 @@ for (const [name, content, file] of [
     })
 
     assert.equal(result.status, 0, result.stderr)
+    if (content !== null) assert.equal(readFileSync(target, 'utf8'), content)
     assert.match(result.stdout, /Your app is not configured to use https:\/\/metrics\.example\.com yet/)
     assert.equal(api.lastRun().integrate_status, 'waiting')
     assert.equal(api.lastRun().subdomain_outcome, 'needs_action')
