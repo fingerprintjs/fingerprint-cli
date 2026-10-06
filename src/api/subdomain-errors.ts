@@ -1,8 +1,7 @@
 import { ManagementApiError, type ApiViolation } from './management.js'
 import { NotAuthenticatedError } from '../utils/session.js'
 
-// Error classification shared by the `subdomains` commands and the wizard's subdomain tools, so
-// `--json` output and tool results carry the same `{ kind, message }`.
+// Error classification shared by the subdomain commands and the wizard.
 export type SubdomainErrorKind =
   | 'not_authenticated'
   | 'invalid_subdomain'

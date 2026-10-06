@@ -1,7 +1,7 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { query, type CanUseTool, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { analyzeRepo, backendLabel, DetectedApp, IGNORE_DIRS, RepoAnalysis } from './detect.js'
 import { configuredEndpoint, conventionFor, InlineValues, inlineValuesFor, provisionForRepo } from './provision.js'
@@ -16,16 +16,10 @@ import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
 import { markFailure } from '../analytics/failure.js'
 import { recordWizardStep } from '../analytics/track.js'
+import { referencesEndpoint } from './endpoint-config.js'
 import { normalizeHostname } from '../api/subdomains.js'
 import { clearPendingSubdomainSetup, pendingSubdomainSetup } from './subdomain-setups.js'
-import {
-  askResumeSubdomain,
-  askSubdomainHostname,
-  runSubdomainStep,
-  settleAgentSubdomainWork,
-  type SubdomainStepPurpose,
-} from './subdomain-step.js'
-import { createSubdomainsMcpServer, FINGERPRINT_MCP_SERVER_NAME, SUBDOMAIN_TOOL_NAMES } from './subdomains-mcp.js'
+import { askResumeSubdomain, askSubdomainHostname, runSubdomainStep } from './subdomain-step.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
@@ -92,8 +86,7 @@ function permissionOptions(extraReadonly: string[] = []) {
   const hooks = { PreToolUse: [denyEnvReads] }
   // `allowedTools` only decides what runs without prompting; `tools` decides what exists. Without
   // it the agent still has Bash and Agent (a subagent), and a subagent can read .env past the hook.
-  // MCP tools are registered by their server, not listed here.
-  const tools = [...readonly, ...EDIT_TOOLS].filter((name) => !name.startsWith('mcp__'))
+  const tools = [...readonly, ...EDIT_TOOLS]
   if (!isInteractive()) {
     return { permissionMode: 'acceptEdits' as const, tools, allowedTools: [...readonly, ...EDIT_TOOLS], hooks }
   }
@@ -117,7 +110,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   // is behind us it drops out of the menu.
   const done = new Set<NextStep>()
   const unfinished = opts.subdomain ? undefined : pendingSubdomainSetup(root)
-  const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep)
+  const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep, { yes: opts.yes })
   if (opts.subdomain) {
     // Direct entry: start or resume the custom subdomain step for this hostname, nothing else.
     recordWizardStep('subdomain')
@@ -135,12 +128,6 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     }
     recordWizardStep('install')
     outcome = await provisionAndApply(root, opts)
-    // The agent may have created a subdomain while auditing; stay on that step instead of exiting.
-    const started = outcome === 'waiting' && !autoYes() ? pendingSubdomainSetup(root) : undefined
-    if (started) {
-      outcome = await subdomainStep(started.hostname)
-      done.add('proxy')
-    }
   }
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
   // checklist ran dry.
@@ -169,9 +156,13 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   return outcome
 }
 
-// The agent's part of the subdomain step: create the subdomain, or point the app at it once active.
-function applySubdomainStep(root: string, hostname: string, purpose: SubdomainStepPurpose): Promise<IntegrateOutcome> {
-  return applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname, purpose })
+async function applySubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
+  const outcome = await applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname })
+  if (outcome !== 'completed') return outcome
+  const frontend = analyzeRepo(root).frontend
+  if (frontend && usesEndpoint(frontend, `https://${hostname}`, conventionFor(frontend).endpointVar)) return 'completed'
+  log.warn(`Your app is not configured to use https://${hostname} yet. Run fingerprint integrate --subdomain ${hostname} to continue.`)
+  return 'waiting'
 }
 
 async function provisionThen(root: string, next: () => Promise<IntegrateOutcome>): Promise<IntegrateOutcome> {
@@ -244,20 +235,33 @@ function importsServerSdk(file: string): boolean {
   }
 }
 
-// Step 3 is in place once the frontend's code references the endpoint variable the CLI wrote. The
-// variable alone isn't enough: the CLI writes it when the subdomain goes active, before the agent
-// has necessarily wired it into the provider options.
+// An env value alone isn't enough: the provider options must use the configured endpoint.
 function usesConfiguredEndpoint(app: DetectedApp): boolean {
   const configured = configuredEndpoint(app)
   if (!configured) return false
+  return usesEndpoint(app, configured.endpoint, configured.envVar)
+}
+
+// A frontend's endpoints option never lives in Python; the shared walker only includes .py for the
+// server SDK check, so those files are skipped here rather than parsed for a second comment grammar.
+function usesEndpoint(app: DetectedApp, endpoint: string, envVar?: string): boolean {
   try {
-    return sourceFiles(app.dir).some((file) => readFileSync(file, 'utf8').includes(configured.envVar))
+    return sourceFiles(app.dir).some((file) => {
+      if (file.endsWith('.py') || TEST_FILE.test(relative(app.dir, file))) return false
+      try {
+        return referencesEndpoint(readFileSync(file, 'utf8'), endpoint, envVar)
+      } catch {
+        return false
+      }
+    })
   } catch {
     return false
   }
 }
 
-const SOURCE_FILE = /\.(py|[cm]?[jt]sx?|vue|svelte|astro)$/
+const SOURCE_FILE = /\.(py|[cm]?[jt]sx?|vue|svelte|astro|html)$/
+// Not the app: a test's provider setup says nothing about what the app ships.
+const TEST_FILE = /\.(test|spec)\.[^/\\]+$|(?:^|[\\/])(?:__tests__|__mocks__|tests?|specs?)[\\/]/
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -284,18 +288,9 @@ async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
 async function applyIntegration(
   root: string,
-  opts: { yes?: boolean; step?: string; subdomain?: string; purpose?: SubdomainStepPurpose } = {}
+  opts: { yes?: boolean; step?: string; subdomain?: string } = {}
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
-
-  // The subdomain step points the frontend at the subdomain; without a curated frontend skill the
-  // agent has neither the tools nor the instructions, and claiming the step done would be a lie.
-  if (opts.subdomain && !analysis.hasFrontendSkill) {
-    log.error('The custom subdomain step needs a curated frontend skill, and none matches this stack.')
-    markFailure('subdomain_no_frontend_skill')
-    process.exitCode = 1
-    return 'failed'
-  }
 
   // No curated skill for this stack. If we still detected a frontend/backend, fall back to a
   // best-effort, docs-researched integration instead of giving up.
@@ -338,8 +333,7 @@ async function applyIntegration(
 
   // The subdomain step says what is happening to the subdomain; "applying" would suggest the
   // integration is being redone.
-  if (opts.subdomain && opts.purpose === 'configure') log.step(`Updating your app to use ${opts.subdomain}`)
-  else if (opts.subdomain) log.step(`Setting up ${opts.subdomain}`)
+  if (opts.subdomain) log.step(`Updating your app to use ${opts.subdomain}`)
   else log.step('Apply integration')
   return runAgent(analysis, opts.step, opts.subdomain, inline)
 }
@@ -369,9 +363,6 @@ export async function runAgent(
 
   if (!subdomain) log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
 
-  // The subdomain tools run in-process with the CLI's own session, so the agent can list, create
-  // and verify without ever seeing a Management API key.
-  const subdomains = createSubdomainsMcpServer(undefined, subdomain)
   const endpointVar = analysis.frontend ? conventionFor(analysis.frontend).endpointVar : undefined
   // Outside the subdomain step, tell the agent about an endpoint the CLI already wrote: it cannot
   // read .env, and without this it audits step 3 as not done and asks the user to add the variable.
@@ -385,9 +376,7 @@ export async function runAgent(
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
-      mcpServers: { [FINGERPRINT_MCP_SERVER_NAME]: subdomains.server },
-      // The orchestrator dispatches via the Skill tool; the subdomain tools need no prompting either.
-      ...permissionOptions(['Skill', ...SUBDOMAIN_TOOL_NAMES]),
+      ...permissionOptions(['Skill']),
     },
   })
 
@@ -396,19 +385,6 @@ export async function runAgent(
     markFailure('agent_failed')
     process.exitCode = 1
     return 'failed'
-  }
-
-  // The subdomain decides the outcome when this is the subdomain step, or when the agent created
-  // or verified one in any step. Merely reading an existing pending subdomain while auditing must
-  // not hold an unrelated step back.
-  if (step === NEXT_STEPS.proxy.step || subdomains.mutated()) {
-    const settled = settleAgentSubdomainWork(analysis.root, subdomains, {
-      inSubdomainStep: step === NEXT_STEPS.proxy.step,
-      // The agent's message first, the CLI's status last: the status comes from the API and is
-      // what the user should act on.
-      beforeStatus: () => run.text && log.info(renderMarkdown(run.text)),
-    })
-    if (settled) return settled
   }
 
   const installed = await installOrFail(analysis, metas)
@@ -421,7 +397,7 @@ export async function runAgent(
     process.exitCode = 1
     return 'failed'
   }
-  // In the subdomain step the CLI reports the result itself once it has checked the API.
+  // In the subdomain step the CLI checks the app configuration before reporting completion.
   if (step !== NEXT_STEPS.proxy.step) log.success('Agent finished applying the integration.')
   return installed
 }
@@ -475,9 +451,9 @@ const SYSTEM_PROMPT = [
   '- Make minimal, focused changes; match the existing code style.',
   '- The secret key is server-side only; never reference it in frontend code.',
   '- Do NOT read or print .env. Reference keys by env-var name only.',
-  '- For a custom subdomain, use the fingerprint tools (list_subdomains, get_subdomain,',
-  '  create_subdomain, verify_subdomain). Never ask for a Management API key. Only an active',
-  '  subdomain may be configured as the endpoint; if it is pending, report the DNS records and stop.',
+  '- The CLI owns custom subdomain creation, DNS verification and activation. Never ask for a',
+  '  Management API key or try to manage subdomains. Without an active hostname supplied by the',
+  '  CLI, leave endpoints unchanged; custom subdomains are set up in their own step from the menu.',
   '- Only edit application code. Do not run shell commands, install packages, or touch package',
   '  manifests, lockfiles or package-manager config — the CLI installs the required packages itself',
   '  after you finish. ("v4" in a skill is the Fingerprint platform, not an npm major version.)',
@@ -538,11 +514,11 @@ function buildGetStartedPrompt(
         ]),
     ...(subdomain
       ? [
-          `The custom subdomain is ${subdomain}. Look it up with list_subdomains and create it only if it is not there.`,
-          'While it is pending, do not change any code. The CLI prints the DNS records and the next step itself, so keep your report to a sentence or two.',
+          `The CLI verified that the custom subdomain ${subdomain} is active. Only update the application's integration.`,
+          'Skip the proxy skill\'s resource creation, DNS and verification steps; the CLI already completed them. Do not look up, create or verify subdomains.',
           endpointVar
-            ? `Once it is active, reference ${endpointVar} in the provider options; the CLI writes that variable to the env file itself, so do not edit .env or ask the user to.`
-            : `Once it is active, set endpoints to https://${subdomain} directly in the provider options.`,
+            ? `Reference ${endpointVar} in the endpoints provider option; the CLI writes that variable to the env file itself, so do not edit .env or ask the user to.`
+            : `Set endpoints to https://${subdomain} directly in the provider options.`,
         ]
       : []),
     ...(configured
