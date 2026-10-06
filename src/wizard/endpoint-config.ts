@@ -5,7 +5,9 @@ export function referencesEndpoint(code: string, endpoint: string, envVar?: stri
   const declarations = new Map<string, string[]>()
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === 'const' && /^[A-Za-z_$][\w$]*$/.test(tokens[i + 1] ?? '') && tokens[i + 2] === '=') {
-      declarations.set(tokens[i + 1], readValue(tokens, i + 3, true).filter((token) => token !== '\n'))
+      let start = i + 3
+      while (tokens[start] === '\n') start++
+      declarations.set(tokens[i + 1], readValue(tokens, start, true).filter((token) => token !== '\n'))
     }
   }
   const source = tokens.filter((token) => token !== '\n')
@@ -30,6 +32,7 @@ export function referencesEndpoint(code: string, endpoint: string, envVar?: stri
       }
     }
     if (value[0] === '[' && closingIndex(value, 0) === value.length - 1) {
+      // The selected subdomain must be the primary endpoint, not just a fallback.
       return matches(readValue(value.slice(1, -1), 0), seen)
     }
     if (value.length === 1) {

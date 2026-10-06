@@ -40,6 +40,23 @@ test('local const aliases and shorthand options resolve only when used as the en
   }
 })
 
+test('const alias initializers can start on the next line', () => {
+  for (const code of [
+    'const endpoint =\n  import.meta.env.VITE_FINGERPRINT_ENDPOINTS\nconst options = { endpoints: endpoint }',
+    'const endpoints =\n\n  process.env["VITE_FINGERPRINT_ENDPOINTS"]; const options = { endpoints }',
+    `const endpoint = // custom subdomain\n  '${endpoint}'; const provider = <FingerprintProvider endpoints={endpoint} />`,
+  ]) {
+    assert.equal(referencesEndpoint(code, endpoint, envVar), true, code)
+  }
+})
+
+test('the selected endpoint must be first in a failover array', () => {
+  for (const value of [`'${endpoint}'`, 'import.meta.env.VITE_FINGERPRINT_ENDPOINTS']) {
+    assert.equal(referencesEndpoint(`const options = { endpoints: [${value}, 'https://other.example.com'] }`, endpoint, envVar), true)
+    assert.equal(referencesEndpoint(`const options = { endpoints: ['https://other.example.com', ${value}] }`, endpoint, envVar), false)
+  }
+})
+
 test('JSX provider props can use the endpoint directly or through the environment', () => {
   for (const value of [
     `"${endpoint}"`,
