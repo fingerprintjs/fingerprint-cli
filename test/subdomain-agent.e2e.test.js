@@ -817,7 +817,8 @@ test('a create rejected with violations shows them, since the API message only p
   })
 
   assert.equal(result.status, 1, result.stdout)
-  assert.match(result.stdout + result.stderr, /subscription: Certificates can only be created for active, trialing and POC subscriptions/)
+  assert.match(result.stdout + result.stderr, /Custom subdomain setup failed: Certificates can only be created for active, trialing and POC subscriptions \(subscription\)/)
+  assert.doesNotMatch(result.stdout + result.stderr, /input constraint violations/)
   assert.equal(api.lastRun().error_code, 'subdomain_invalid_subdomain')
   assert.equal(gateway.bodies().length, 0)
 })

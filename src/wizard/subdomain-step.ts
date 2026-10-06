@@ -182,9 +182,8 @@ export async function runSubdomainStep(
   } catch (error) {
     recordSubdomainRun({ outcome: 'failed', resumed, dns, provider })
     const serialized = serializeSubdomainError(error)
-    // The API's 422 message points at the violations; without them the user cannot act on it.
-    const violations = (serialized.violations ?? []).map((violation) => `\n  ${violation.property}: ${violation.message}`).join('')
-    log.error(`Custom subdomain setup failed: ${serialized.message}${violations}`)
+    // A 422 comes with a generic message that points at `violations`; those are the part to show.
+    log.error(`Custom subdomain setup failed: ${describeSubdomainError(serialized)}`)
     markFailure(`subdomain_${serialized.kind}`, serialized.message)
     process.exitCode = 1
     return 'failed'
@@ -271,6 +270,11 @@ function finishSubdomainSetup(root: string, hostname: string): boolean {
   const configured = result.outcome !== 'no_frontend'
   if (configured) clearPendingSubdomainSetup(root)
   return configured
+}
+
+function describeSubdomainError(serialized: ReturnType<typeof serializeSubdomainError>): string {
+  if (!serialized.violations?.length) return serialized.message
+  return serialized.violations.map((violation) => `${violation.message} (${violation.property})`).join('; ')
 }
 
 async function findSubdomain(service: SubdomainsService, hostname: string): Promise<Subdomain | undefined> {
