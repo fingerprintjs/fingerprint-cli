@@ -591,8 +591,9 @@ test('declining the active app update preserves the resume without calling the m
   assert.equal(Object.values(pending)[0].hostname, HOSTNAME)
 })
 
-for (const [name, content] of [
+for (const [name, content, file] of [
   ['no code change', null],
+  ['python comment next to the frontend', "# endpoints: 'https://metrics.example.com'\n", 'notes.py'],
   ['comment only', '// endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n'],
   ['unrelated variable', 'export const unused = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n'],
   ['wrong hostname', 'export const options = { endpoints: "https://other.example.com" }\n'],
@@ -606,7 +607,7 @@ for (const [name, content] of [
     const home = makeHome()
     seedAuth(home, api.url)
     const repo = makeRepo()
-    const target = join(repo, 'web', 'fingerprint.js')
+    const target = join(repo, 'web', file ?? 'fingerprint.js')
     const agent = subdomainAgent(target)
     const gateway = await startGateway((payload) => {
       if (content === null) return { text: 'All set.' }

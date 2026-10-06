@@ -242,9 +242,12 @@ function usesConfiguredEndpoint(app: DetectedApp): boolean {
   return usesEndpoint(app, configured.endpoint, configured.envVar)
 }
 
+// A frontend's endpoints option never lives in Python; the shared walker only includes .py for the
+// server SDK check, so those files are skipped here rather than parsed for a second comment grammar.
 function usesEndpoint(app: DetectedApp, endpoint: string, envVar?: string): boolean {
   try {
     return sourceFiles(app.dir).some((file) => {
+      if (file.endsWith('.py')) return false
       try {
         return referencesEndpoint(readFileSync(file, 'utf8'), endpoint, envVar)
       } catch {
