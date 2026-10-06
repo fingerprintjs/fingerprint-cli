@@ -35,6 +35,8 @@ test('local const aliases and shorthand options resolve only when used as the en
     'const endpoint = process.env["VITE_FINGERPRINT_ENDPOINTS"]; const options = { endpoints: [endpoint] }',
     'const endpoint = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\nconst endpoints = endpoint ? [endpoint] : undefined\nconst options = { endpoints }',
     'const endpoint = import.meta.env.VITE_FINGERPRINT_ENDPOINTS; const provider = <FingerprintProvider endpoints={endpoint} />',
+    'const endpoints: string[] = [import.meta.env.VITE_FINGERPRINT_ENDPOINTS]\nconst options = { endpoints }',
+    'const endpoint: string | undefined = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\nconst options = { endpoints: endpoint ? [endpoint] : undefined }',
   ]) {
     assert.equal(referencesEndpoint(code, endpoint, envVar), true, code)
   }

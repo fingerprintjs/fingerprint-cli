@@ -594,6 +594,7 @@ test('declining the active app update preserves the resume without calling the m
 for (const [name, content, file] of [
   ['no code change', null],
   ['python comment next to the frontend', "# endpoints: 'https://metrics.example.com'\n", 'notes.py'],
+  ['provider configured only in a test', "render(<FingerprintProvider endpoints={import.meta.env.VITE_FINGERPRINT_ENDPOINTS} />)\n", 'App.test.jsx'],
   ['comment only', '// endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n'],
   ['unrelated variable', 'export const unused = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n'],
   ['wrong hostname', 'export const options = { endpoints: "https://other.example.com" }\n'],

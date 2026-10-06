@@ -4,8 +4,12 @@ export function referencesEndpoint(code: string, endpoint: string, envVar?: stri
     .filter((token) => !token.startsWith('//') && !token.startsWith('/*') && !token.startsWith('<!--'))
   const declarations = new Map<string, string[]>()
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] === 'const' && /^[A-Za-z_$][\w$]*$/.test(tokens[i + 1] ?? '') && tokens[i + 2] === '=') {
-      let start = i + 3
+    if (tokens[i] !== 'const' || !/^[A-Za-z_$][\w$]*$/.test(tokens[i + 1] ?? '')) continue
+    // `const x = ...` or, in TypeScript, `const x: SomeType = ...`.
+    let assign = i + 2
+    if (tokens[assign] === ':') assign = topLevelIndex(tokens, '=', assign + 1)
+    if (tokens[assign] === '=') {
+      let start = assign + 1
       while (tokens[start] === '\n') start++
       declarations.set(tokens[i + 1], readValue(tokens, start, true).filter((token) => token !== '\n'))
     }

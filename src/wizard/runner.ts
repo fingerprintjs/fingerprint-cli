@@ -247,7 +247,7 @@ function usesConfiguredEndpoint(app: DetectedApp): boolean {
 function usesEndpoint(app: DetectedApp, endpoint: string, envVar?: string): boolean {
   try {
     return sourceFiles(app.dir).some((file) => {
-      if (file.endsWith('.py')) return false
+      if (file.endsWith('.py') || TEST_FILE.test(file)) return false
       try {
         return referencesEndpoint(readFileSync(file, 'utf8'), endpoint, envVar)
       } catch {
@@ -260,6 +260,8 @@ function usesEndpoint(app: DetectedApp, endpoint: string, envVar?: string): bool
 }
 
 const SOURCE_FILE = /\.(py|[cm]?[jt]sx?|vue|svelte|astro|html)$/
+// Not the app: a test's provider setup says nothing about what the app ships.
+const TEST_FILE = /\.(test|spec)\.[^/]+$|\/__(tests|mocks)__\//
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
