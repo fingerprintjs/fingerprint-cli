@@ -182,7 +182,9 @@ export async function runSubdomainStep(
   } catch (error) {
     recordSubdomainRun({ outcome: 'failed', resumed, dns, provider })
     const serialized = serializeSubdomainError(error)
-    log.error(`Custom subdomain setup failed: ${serialized.message}`)
+    // The API's 422 message points at the violations; without them the user cannot act on it.
+    const violations = (serialized.violations ?? []).map((violation) => `\n  ${violation.property}: ${violation.message}`).join('')
+    log.error(`Custom subdomain setup failed: ${serialized.message}${violations}`)
     markFailure(`subdomain_${serialized.kind}`, serialized.message)
     process.exitCode = 1
     return 'failed'

@@ -800,6 +800,28 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
   assert.equal(gateway.bodies().length, 0)
 })
 
+test('a create rejected with violations shows them, since the API message only points at them', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.failCreate(422, 'validation.failed')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(() => ({ text: 'Must not run.' }))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stdout + result.stderr, /subscription: Certificates can only be created for active, trialing and POC subscriptions/)
+  assert.equal(api.lastRun().error_code, 'subdomain_invalid_subdomain')
+  assert.equal(gateway.bodies().length, 0)
+})
+
 // The scripted agent only writes application code. Resource operations are real host-side calls.
 function subdomainAgent(target) {
   return (payload) => {
@@ -843,7 +865,18 @@ function startSubdomainApi() {
       if (route === 'GET /subdomains') return json(200, { data: created ? [summary(status)] : [], metadata: { pagination: { next_cursor: null } } })
       if (route === 'POST /subdomains') {
         createCalls += 1
-        if (createFailure) return json(createFailure.code, { error: { code: createFailure.error, message: 'Service unavailable' } })
+        if (createFailure) {
+          if (createFailure.code === 422) {
+            return json(422, {
+              error: {
+                code: 'validation.failed',
+                message: 'Could not process the request due to input constraint violations. Please see "violations" field for the details.',
+                violations: [{ property: 'subscription', message: 'Certificates can only be created for active, trialing and POC subscriptions' }],
+              },
+            })
+          }
+          return json(createFailure.code, { error: { code: createFailure.error, message: 'Service unavailable' } })
+        }
         created = true
         return json(200, { data: detail(status) })
       }
