@@ -1,4 +1,7 @@
 // Recognize endpoint values in provider options, rather than comments or unused variable mentions.
+// A token scan rather than a parser: it has to read .vue, .svelte, .astro and .html alongside JS and
+// TS without adding a runtime dependency, and the question is narrow (is the subdomain, or the env
+// variable holding it, what `endpoints` is given), so the few value shapes agents write are enough.
 export function referencesEndpoint(code: string, endpoint: string, envVar?: string): boolean {
   const tokens = (code.match(/<!--[\s\S]*?-->|\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\?\?|\|\||&&|[\w$]+|\n|[^\s]/g) ?? [])
     .filter((token) => !token.startsWith('//') && !token.startsWith('/*') && !token.startsWith('<!--'))

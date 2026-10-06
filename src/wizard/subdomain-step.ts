@@ -2,7 +2,7 @@ import { confirm, input, select } from '@inquirer/prompts'
 import { markFailure } from '../analytics/failure.js'
 import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 import { ManagementApiError } from '../api/management.js'
-import { serializeSubdomainError } from '../api/subdomain-errors.js'
+import { serializeSubdomainError, type SerializedSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
 import { autoYes, isCi } from '../utils/ci.js'
 import { CLOUDFLARE_DNS_ONLY_HINT, dnsRecordLines, dnsRecords, pendingDnsRecords } from '../utils/dns-records.js'
@@ -33,7 +33,7 @@ export async function askResumeSubdomain(hostname: string): Promise<boolean> {
 // Where the subdomain step ended in this run, for the run's analytics event. One value per run:
 // `waiting` when the user has to come back, `configured` when the app points at the subdomain,
 // `needs_action` when the subdomain is active but the app is not configured yet, `failed` for errors.
-export type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out'
+type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out'
 
 export function configureRunOutcome(applyOutcome: IntegrateOutcome, appConfigured: boolean): SubdomainRunOutcome {
   if (applyOutcome === 'failed') return 'failed'
@@ -41,7 +41,7 @@ export function configureRunOutcome(applyOutcome: IntegrateOutcome, appConfigure
   return 'needs_action'
 }
 
-export function recordSubdomainRun(properties: {
+function recordSubdomainRun(properties: {
   outcome: SubdomainRunOutcome
   resumed?: boolean // unknown when the first lookup itself failed
   dns?: 'manual' | 'domain_connect'
@@ -272,7 +272,7 @@ function finishSubdomainSetup(root: string, hostname: string): boolean {
   return configured
 }
 
-function describeSubdomainError(serialized: ReturnType<typeof serializeSubdomainError>): string {
+function describeSubdomainError(serialized: SerializedSubdomainError): string {
   if (!serialized.violations?.length) return serialized.message
   return serialized.violations.map((violation) => `${violation.message} (${violation.property})`).join('; ')
 }
