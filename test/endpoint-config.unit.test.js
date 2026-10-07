@@ -57,6 +57,8 @@ test('local const aliases and shorthand options resolve only when used as the en
     'const endpoint = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\nconst endpoints = endpoint ? [endpoint] : undefined\nconst options = { endpoints }',
     'const endpoint = import.meta.env.VITE_FINGERPRINT_ENDPOINTS; const provider = <FingerprintProvider endpoints={endpoint} />',
     'const endpoints: string[] = [import.meta.env.VITE_FINGERPRINT_ENDPOINTS]\nconst options = { endpoints }',
+    'const endpoints = ready\n  ? [import.meta.env.VITE_FINGERPRINT_ENDPOINTS]\n  : undefined\nconst options = { endpoints }',
+    'const endpoints =\n  import.meta.env.VITE_FINGERPRINT_ENDPOINTS ?? undefined\nconst options = { endpoints }',
     'const endpoint: string | undefined = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\nconst options = { endpoints: endpoint ? [endpoint] : undefined }',
   ]) {
     assert.equal(referencesEndpoint(code, endpoint, envVar), true, code)
@@ -109,6 +111,8 @@ test('comments, instructions, unused variables and another hostname do not confi
     'const options = { endpoints: undefined, unused: import.meta.env.VITE_FINGERPRINT_ENDPOINTS }',
     '<FingerprintProvider endpoints={undefined} unused={import.meta.env.VITE_FINGERPRINT_ENDPOINTS} />',
     'const endpoints = "https://other.example.com"; const options = { endpoints }',
+    'const endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n  ? ["https://other.example.com"]\n  : undefined\nconst options = { endpoints }',
+    'const endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\nconst other = ["https://other.example.com"]\nconst options = { endpoints: other }',
     'const endpoints = other; const other = endpoints; const options = { endpoints }',
     'let endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS; const options = { endpoints }',
     'const instructions = "const endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS"; const options = { endpoints }',

@@ -28,8 +28,10 @@ export function referencesEndpoint(code: string, endpoint: string, envVar?: stri
 
     const question = topLevelIndex(value, '?')
     if (question >= 0) {
+      // The branch taken when the variable is set is what the app runs with; the condition and the
+      // fallback branch are not the configuration.
       const colon = topLevelIndex(value, ':', question + 1)
-      return colon >= 0 && matches(value.slice(0, question), seen) && matches(value.slice(question + 1, colon), seen)
+      return colon >= 0 && matches(value.slice(question + 1, colon), seen)
     }
     for (const operator of ['??', '||', '&&']) {
       const index = topLevelIndex(value, operator)
@@ -69,12 +71,21 @@ export function referencesEndpoint(code: string, endpoint: string, envVar?: stri
   return false
 }
 
+// Tokens that continue an expression when they open the next line, as in a Prettier-formatted
+// ternary or chain; any other token after a line break ends a `const` initializer without `;`.
+const CONTINUES_LINE = ['?', ':', '??', '||', '&&', '.', '+', 'as']
+
 function readValue(source: string[], start: number, stopAtNewline = false): string[] {
   let depth = 0
   let end = start
   for (; end < source.length; end++) {
     const token = source[end]
-    if (depth === 0 && ([',', ';', '}', ']', ')', '>'].includes(token) || (stopAtNewline && token === '\n'))) break
+    if (depth === 0 && [',', ';', '}', ']', ')', '>'].includes(token)) break
+    if (depth === 0 && stopAtNewline && token === '\n') {
+      let next = end + 1
+      while (source[next] === '\n') next++
+      if (!CONTINUES_LINE.includes(source[next] ?? '')) break
+    }
     if (['{', '[', '('].includes(token)) depth++
     if (['}', ']', ')'].includes(token)) depth--
   }
