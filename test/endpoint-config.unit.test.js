@@ -23,6 +23,27 @@ test('endpoint options can use the selected hostname or its environment variable
   }
 })
 
+test('the Vue plugin setup from the skill, with endpoints added, is configured', () => {
+  // The documented @fingerprint/vue install: app.use(FingerprintPlugin, options). No provider component.
+  const code = [
+    "import { createApp } from 'vue'",
+    "import { FingerprintPlugin } from '@fingerprint/vue'",
+    "import App from './App.vue'",
+    '',
+    'const app = createApp(App)',
+    '',
+    'app.use(FingerprintPlugin, {',
+    '  apiKey: import.meta.env.VITE_FINGERPRINT_PUBLIC_API_KEY,',
+    '  region: import.meta.env.VITE_FINGERPRINT_REGION,',
+    '  endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS,',
+    '})',
+    '',
+    "app.mount('#app')",
+  ].join('\n')
+  assert.equal(referencesEndpoint(code, endpoint, envVar), true)
+  assert.equal(referencesEndpoint(code.replace('  endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS,\n', ''), endpoint, envVar), false)
+})
+
 test('a React provider with an optional endpoint array is configured', () => {
   const code = readFileSync(new URL('./fixtures/subdomain-provider.tsx', import.meta.url), 'utf8')
   assert.equal(referencesEndpoint(code, endpoint, envVar), true)
