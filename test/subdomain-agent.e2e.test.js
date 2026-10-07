@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeHome, makeRepo, makeSkillsDir, runCli, seedAuth } from './helpers/harness.js'
+import { makeHome, makeRepo, makeStaticRepo, makeSkillsDir, runCli, seedAuth } from './helpers/harness.js'
 
 // The custom subdomain step, driven through the real wizard flow: step 1 lands, the user picks
-// the subdomain step and types the hostname, and the agent works through the in-process tools.
+// the subdomain step and types the hostname. The CLI owns setup; the agent only updates the app.
 const HOSTNAME = 'metrics.example.com'
 const ID = 'certv2_123'
 const DOWN = '\x1b[B'
@@ -15,6 +15,7 @@ const FINISHED = /Agent finished applying the integration/g
 const DNS_MENU = /is waiting for its DNS records\. What's next\?/
 const CREATING = /Setting up metrics\.example\.com/
 const CONFIGURING = /Updating your app to use metrics\.example\.com/
+const CONFIRM_CONFIGURE = /Update your app to use metrics\.example\.com\?/
 const LATER = `${DOWN}${DOWN}\n`
 const HOSTNAME_PROMPT = /What subdomain would you like to use/
 const pick = (object, ...keys) => Object.fromEntries(keys.filter((key) => key in object).map((key) => [key, object[key]]))
@@ -59,7 +60,8 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
   assert.match(result.stdout, /Finish later \(resume: fingerprint integrate --subdomain/)
   assert.equal(api.createCalls(), 1)
   const sent = gateway.bodies().join('\n')
-  assert.match(sent, new RegExp(`The custom subdomain is ${HOSTNAME.replace('.', '\\.')}`))
+  assert.doesNotMatch(sent, /The CLI verified that the custom subdomain/)
+  assert.doesNotMatch(sent, /"name":"mcp__fingerprint__/)
   assert.doesNotMatch(sent, /must_not_reach_the_model/)
   assert.equal(existsSync(join(repo, 'web', 'fingerprint.js')), true)
 })
@@ -83,6 +85,7 @@ test('an active subdomain is configured as the endpoint and completes the step',
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       // Step done → the menu is [server-side verification, stop]; pick stop.
+      { when: CONFIRM_CONFIGURE, send: 'y\n' },
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
@@ -91,13 +94,14 @@ test('an active subdomain is configured as the endpoint and completes the step',
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout) // step 1 only; the CLI closes the subdomain step
   assert.doesNotMatch(result.stdout, /waiting for these DNS records/)
   assert.equal(api.createCalls(), 0)
-  // The agent could still edit code after using the tools, and pointed the app at the subdomain.
+  // Only the active resource reaches the agent, which points the app at the subdomain.
   assert.match(readFileSync(join(repo, 'web', 'fingerprint.js'), 'utf8'), /endpoints: import\.meta\.env\.VITE_FINGERPRINT_ENDPOINTS/)
   // The CLI wrote the endpoint variable itself and told the agent which one to reference.
   assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /^VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com$/m)
   assert.match(result.stdout, /Wrote VITE_FINGERPRINT_ENDPOINTS → web\/\.env/)
   assert.doesNotMatch(result.stdout, /pub_123/)
-  assert.match(gateway.bodies().join('\n'), /reference VITE_FINGERPRINT_ENDPOINTS in the provider options/)
+  assert.match(gateway.bodies().join('\n'), /Reference VITE_FINGERPRINT_ENDPOINTS in the endpoints provider option/)
+  assert.doesNotMatch(gateway.bodies().join('\n'), /"name":"mcp__fingerprint__/)
 })
 
 test('an existing pending subdomain goes straight to the DNS menu; the records can be shown again', async (t) => {
@@ -154,6 +158,7 @@ test('checking DNS from the menu picks up activation and finishes the step in th
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: '\n' }, // check now
+      { when: CONFIRM_CONFIGURE, send: 'y\n' },
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
@@ -189,6 +194,7 @@ test('when the DNS provider supports Domain Connect, the browser adds the record
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: /Your domain uses Cloudflare\. How would you like to add the DNS records\?/, send: '\n' }, // let Cloudflare add them
+      { when: CONFIRM_CONFIGURE, send: 'y\n' },
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
@@ -278,6 +284,34 @@ test('a Domain Connect outage falls back to the manual records instead of failin
   })
 })
 
+test('cancelling Domain Connect falls back to manual DNS without calling the agent', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.enableDomainConnect('access_denied')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(() => ({ text: 'Must not run.' }))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate', '--subdomain', HOSTNAME], {
+    home, cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_NO_BROWSER: '1' },
+    respond: [
+      { when: /Your domain uses Cloudflare\. How would you like to add the DNS records\?/, send: '\n' },
+      { when: DNS_MENU, send: LATER },
+    ],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Cloudflare did not add the records: access_denied/)
+  assert.match(result.stdout, /is waiting for these DNS records/)
+  assert.equal(api.verifyCalls(), 0)
+  assert.equal(gateway.bodies().length, 0)
+  assert.equal(api.lastRun().subdomain_dns, 'manual')
+  assert.equal(api.lastRun().subdomain_outcome, 'waiting')
+})
+
 test('a later run offers to resume the unfinished subdomain without auditing or asking for the hostname', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
@@ -324,6 +358,7 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     env,
     respond: [
       { when: /Resume the custom subdomain setup for metrics\.example\.com\?/, send: 'y\n' },
+      { when: CONFIRM_CONFIGURE, send: 'y\n' },
       { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
     ],
   })
@@ -444,13 +479,13 @@ test('--subdomain on a stack without a curated skill fails instead of pretending
   assert.equal(api.createCalls(), 0)
 })
 
-test('an agent run that never creates the subdomain is a failure, not a finished step', async (t) => {
+test('creating a pending subdomain in CI makes no model calls and leaves endpoints unchanged', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
-  const gateway = await startGateway(() => ({ text: 'All set.' })) // no tool calls at all
+  const gateway = await startGateway(() => ({ text: 'Must not run.' }))
   t.after(() => gateway.close())
 
   const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
@@ -459,8 +494,11 @@ test('an agent run that never creates the subdomain is a failure, not a finished
     env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
   })
 
-  assert.equal(result.status, 1, result.stdout)
-  assert.match(result.stdout + result.stderr, /metrics\.example\.com was not created/)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(api.createCalls(), 1)
+  assert.equal(gateway.bodies().length, 0)
+  assert.match(result.stdout, /is waiting for these DNS records/)
+  assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
   assert.doesNotMatch(result.stdout, FINISHED)
 })
 
@@ -498,6 +536,95 @@ test('the agent has no shell and no subagent, so .env cannot leak around the rea
   assert.match(sent, /"name":"Agent"[\s\S]*"is_error":true/)
   assert.match(sent, /Reading \.env is not allowed/)
   assert.equal(readFileSync(target, 'utf8'), '// integration\n')
+})
+
+test('declining the active app update preserves the resume without calling the model', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('active')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(() => ({ text: 'Must not run.' }))
+  t.after(() => gateway.close())
+  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url }
+
+  const result = await runCli(['integrate', '--subdomain', HOSTNAME], {
+    home, cwd: repo, env,
+    respond: [{ when: CONFIRM_CONFIGURE, send: 'n\n' }],
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(gateway.bodies().length, 0)
+  assert.equal(api.lastRun().subdomain_outcome, 'needs_action')
+  assert.doesNotMatch(readFileSync(join(repo, 'web', '.env'), 'utf8'), /FINGERPRINT_ENDPOINTS/)
+  const pending = JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json'), 'utf8'))
+  assert.equal(Object.values(pending)[0].hostname, HOSTNAME)
+})
+
+test('a declined app update resumes configuration without recreating the active subdomain', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('active')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+  const env = { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url }
+
+  const first = await runCli(['integrate', '--subdomain', HOSTNAME], {
+    home, cwd: repo, env,
+    respond: [{ when: CONFIRM_CONFIGURE, send: 'n\n' }],
+  })
+  assert.equal(first.status, 0, first.stderr)
+  assert.equal(api.lastRun().subdomain_outcome, 'needs_action')
+  assert.equal(gateway.bodies().length, 0)
+  const second = await runCli(['integrate'], {
+    home, cwd: repo, env,
+    respond: [
+      { when: /Resume the custom subdomain setup/, send: 'y\n' },
+      { when: CONFIRM_CONFIGURE, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+    ],
+  })
+
+  assert.equal(second.status, 0, second.stderr)
+  assert.doesNotMatch(second.stdout, HOSTNAME_PROMPT)
+  assert.equal(api.createCalls(), 0)
+  assert.equal(api.lastRun().subdomain_outcome, 'configured')
+  assert.match(readFileSync(join(repo, 'web', '.env'), 'utf8'), /VITE_FINGERPRINT_ENDPOINTS=https:\/\/metrics\.example\.com/)
+  assert.deepEqual(JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json'), 'utf8')), {})
+})
+
+test('a static site update keeps manual endpoint guidance without creating an env file', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('active')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeStaticRepo()
+  const agent = subdomainAgent(join(repo, 'index.html'))
+  const gateway = await startGateway((payload) => {
+    const action = agent(payload)
+    if (action.tool === 'Write') {
+      action.input.content = `<script type="module">import('https://${HOSTNAME}/web/v4/pub_123').then(Fingerprint => Fingerprint.start({ endpoints: 'https://${HOSTNAME}' }))</script>\n`
+    }
+    return action
+  })
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home, cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(api.lastRun().subdomain_outcome, 'needs_action')
+  assert.equal(existsSync(join(repo, '.env')), false)
+  assert.match(result.stdout, /No env convention.*set endpoints to https:\/\/metrics\.example\.com/)
+  assert.match(readFileSync(join(repo, 'index.html'), 'utf8'), /endpoints: 'https:\/\/metrics\.example\.com'/)
+  assert.deepEqual(JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json'), 'utf8')), {})
 })
 
 test('an API error while checking DNS is still reported as a failed subdomain run', async (t) => {
@@ -555,13 +682,13 @@ test('a failing lookup before anything else is a failed subdomain run, with no r
   assert.equal('subdomain_resumed' in run, false)
 })
 
-test('the agent cannot create a subdomain outside the subdomain step; the audit run finishes normally', async (t) => {
+test('an ordinary audit has no subdomain tools or selected hostname and makes no resource changes', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
-  const gateway = await startGateway(createsDuringAuditAgent(join(repo, 'web', 'fingerprint.js')))
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
   t.after(() => gateway.close())
 
   const result = await runCli(['--ci', 'integrate', '--yes'], {
@@ -575,7 +702,9 @@ test('the agent cannot create a subdomain outside the subdomain step; the audit 
   assert.equal(api.verifyCalls(), 0)
   assert.doesNotMatch(result.stdout, /waiting for these DNS records/)
   assert.match(result.stdout, FINISHED)
-  assert.match(gateway.bodies().join('\n'), /set up in their own step/)
+  const sent = gateway.bodies().join('\n')
+  assert.doesNotMatch(sent, /"name":"mcp__fingerprint__/)
+  assert.doesNotMatch(sent, /metrics\.example\.com/)
 })
 
 test('a failed create ends the run as failed instead of finished', async (t) => {
@@ -585,7 +714,7 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
-  const gateway = await startGateway(createsDuringAuditAgent(join(repo, 'web', 'fingerprint.js'), { verify: false }))
+  const gateway = await startGateway(() => ({ text: 'Must not run.' }))
   t.after(() => gateway.close())
 
   const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
@@ -598,43 +727,45 @@ test('a failed create ends the run as failed instead of finished', async (t) => 
   assert.match(result.stdout + result.stderr, /Custom subdomain setup failed: Custom subdomain service is unavailable/)
   assert.deepEqual(pick(api.lastRun(), 'status', 'subdomain_outcome', 'subdomain_resumed'), { status: 'error', subdomain_outcome: 'failed', subdomain_resumed: false })
   assert.doesNotMatch(result.stdout, FINISHED)
+  assert.equal(gateway.bodies().length, 0)
 })
 
-// The scripted agent: step 1 writes the integration file; the subdomain step lists, then creates
-// the hostname or reads the existing one, and reports.
+test('a create rejected with violations shows them, since the API message only points at them', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.failCreate(422, 'validation.failed')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(() => ({ text: 'Must not run.' }))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stdout + result.stderr, /Custom subdomain setup failed: Certificates can only be created for active, trialing and POC subscriptions \(subscription\)/)
+  assert.doesNotMatch(result.stdout + result.stderr, /input constraint violations/)
+  assert.equal(api.lastRun().error_code, 'subdomain_invalid_subdomain')
+  assert.equal(gateway.bodies().length, 0)
+})
+
+// The scripted agent only writes application code. Resource operations are real host-side calls.
 function subdomainAgent(target) {
   return (payload) => {
     const messages = JSON.stringify(payload.messages ?? [])
     const has = (tool) => messages.includes(`"name":"${tool}"`)
-    if (!messages.includes('Quick start step 3')) {
+    if (!messages.includes('The CLI verified that the custom subdomain')) {
       return has('Write') ? { text: 'Step 1 is done.' } : { tool: 'Write', input: { file_path: target, content: '// integration\n' } }
     }
-    if (!has('mcp__fingerprint__list_subdomains')) return { tool: 'mcp__fingerprint__list_subdomains', input: {} }
-    const listed = /"subdomains":\[\{[^\]]*"status":\\"(\w+)/.exec(messages) ? true : messages.includes(`\\"id\\":\\"${ID}\\"`)
-    if (listed) {
-      if (!has('mcp__fingerprint__get_subdomain')) return { tool: 'mcp__fingerprint__get_subdomain', input: { id: ID } }
-      if (messages.includes('\\"status\\":\\"active\\"') && !has('Write')) {
-        // The SDK requires a Read before overwriting an existing file.
-        if (!has('Read')) return { tool: 'Read', input: { file_path: target } }
-        return { tool: 'Write', input: { file_path: target, content: '// integration\nexport const options = { endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS }\n' } }
-      }
-      return { text: `${HOSTNAME} is already set up.` }
+    if (!has('Write')) {
+      if (!has('Read')) return { tool: 'Read', input: { file_path: target } }
+      return { tool: 'Write', input: { file_path: target, content: '// integration\nexport const options = { endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS }\n' } }
     }
-    if (!has('mcp__fingerprint__create_subdomain')) return { tool: 'mcp__fingerprint__create_subdomain', input: { hostname: HOSTNAME } }
-    return { text: `${HOSTNAME} was created. Add the DNS records and run this step again.` }
-  }
-}
-
-// An agent that creates the subdomain during the first, audit-driven step instead of waiting for
-// the user to pick that step.
-function createsDuringAuditAgent(target, { verify = true } = {}) {
-  return (payload) => {
-    const messages = JSON.stringify(payload.messages ?? [])
-    const has = (tool) => messages.includes(`"name":"${tool}"`)
-    if (!has('mcp__fingerprint__create_subdomain')) return { tool: 'mcp__fingerprint__create_subdomain', input: { hostname: HOSTNAME } }
-    if (verify && !has('mcp__fingerprint__verify_subdomain')) return { tool: 'mcp__fingerprint__verify_subdomain', input: { id: ID } }
-    if (!has('Write')) return { tool: 'Write', input: { file_path: target, content: '// integration\n' } }
-    return { text: 'Done.' }
+    return { text: `${HOSTNAME} is configured.` }
   }
 }
 
@@ -649,6 +780,7 @@ function startSubdomainApi() {
   let listFailure
   let activateOnVerify = false
   let domainConnect = false
+  let domainConnectError
   let domainConnectFailure
   const server = createServer((req, res) => {
     let body = ''
@@ -664,7 +796,18 @@ function startSubdomainApi() {
       if (route === 'GET /subdomains') return json(200, { data: created ? [summary(status)] : [], metadata: { pagination: { next_cursor: null } } })
       if (route === 'POST /subdomains') {
         createCalls += 1
-        if (createFailure) return json(createFailure.code, { error: { code: createFailure.error, message: 'Service unavailable' } })
+        if (createFailure) {
+          if (createFailure.code === 422) {
+            return json(422, {
+              error: {
+                code: 'validation.failed',
+                message: 'Could not process the request due to input constraint violations. Please see "violations" field for the details.',
+                violations: [{ property: 'subscription', message: 'Certificates can only be created for active, trialing and POC subscriptions' }],
+              },
+            })
+          }
+          return json(createFailure.code, { error: { code: createFailure.error, message: 'Service unavailable' } })
+        }
         created = true
         return json(200, { data: detail(status) })
       }
@@ -673,7 +816,8 @@ function startSubdomainApi() {
         if (domainConnectFailure) return json(domainConnectFailure, { error: { code: 'general.unavailable', message: 'Service unavailable' } })
         if (!domainConnect) return json(409, { error: { code: 'general.conflict', message: 'Domain Connect is not available for this subdomain' } })
         const port = JSON.parse(body).port
-        setTimeout(() => fetch(`http://127.0.0.1:${port}/domain-connect/callback`).catch(() => {}), 150)
+        const query = domainConnectError ? `?error=${domainConnectError}` : ''
+        setTimeout(() => fetch(`http://127.0.0.1:${port}/domain-connect/callback${query}`).catch(() => {}), 150)
         return json(200, { data: { domain_connect_url: `https://dc.example.test/apply?port=${port}`, dns_provider: 'Cloudflare' } })
       }
       if (route === `POST /subdomains/${ID}/verify`) {
@@ -716,8 +860,9 @@ function startSubdomainApi() {
         activateAfterVerify() {
           activateOnVerify = true
         },
-        enableDomainConnect() {
+        enableDomainConnect(error) {
           domainConnect = true
+          domainConnectError = error
         },
         failDomainConnect(status) {
           domainConnectFailure = status
@@ -804,7 +949,7 @@ test('an endpoint in the env file that the code references counts as step 3 done
   const repo = makeRepo()
   writeFileSync(join(repo, 'web', '.env'), `VITE_FINGERPRINT_ENDPOINTS=https://${HOSTNAME}\n`)
   // In a .svelte file: the frameworks whose provider lives outside .js/.ts count too.
-  writeFileSync(join(repo, 'web', 'Provider.svelte'), '<script>const endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS</script>\n')
+  writeFileSync(join(repo, 'web', 'Provider.svelte'), '<script>const options = { endpoints: import.meta.env.VITE_FINGERPRINT_ENDPOINTS }</script>\n')
   const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
   t.after(() => gateway.close())
 
