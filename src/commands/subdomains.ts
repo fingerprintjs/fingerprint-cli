@@ -296,14 +296,14 @@ function formatError(error: unknown): string {
   if (!(error instanceof ManagementApiError)) return error instanceof Error ? error.message : String(error)
   if (error.status === 503) return UNAVAILABLE_MESSAGE
 
-  const violations = formatViolations(error.violations)
   const retry = error.retryAfter ? ` Retry after ${error.retryAfter}.` : ''
-  return `${apiErrorMessage(error)}${violations}${retry}`
+  // A 422 comes with a generic message that points at `violations`; those are the part to show.
+  if (error.violations?.length) return `${formatViolations(error.violations)}${retry}`
+  return `${apiErrorMessage(error)}${retry}`
 }
 
-function formatViolations(violations?: ApiViolation[]): string {
-  if (!violations?.length) return ''
-  return `\n${violations.map((violation) => `${violation.property}: ${violation.message}`).join('\n')}`
+function formatViolations(violations: ApiViolation[]): string {
+  return violations.map((violation) => `${violation.message} (${violation.property})`).join('\n')
 }
 
 function printJson(value: unknown): void {

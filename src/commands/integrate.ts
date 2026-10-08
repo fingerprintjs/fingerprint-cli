@@ -6,6 +6,8 @@ import { log, printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
 import { addRunProperties, track } from '../analytics/track.js'
 import { markFailure } from '../analytics/failure.js'
+import { pendingSubdomainSetup } from '../wizard/subdomain-setups.js'
+import { autoYes } from '../utils/ci.js'
 
 export async function integrateCommand(
   opts: { path?: string; analyze?: boolean; yes?: boolean; subdomain?: string; skipHeading?: boolean; chained?: boolean } = {}
@@ -13,9 +15,9 @@ export async function integrateCommand(
   const root = resolve(opts.path ?? process.cwd())
 
   const analysis = analyzeRepo(root)
-  // Apply when curated skills match, or — as a fallback — whenever we detected a frontend/backend
-  // stack at all (the docs-based integration handles stacks without a skill).
-  const willApply = Boolean(analysis.skills.length || analysis.frontend || analysis.backend) && !opts.analyze
+  // Subdomain setup can run without an app; configuring its endpoint needs a frontend.
+  const canResume = !opts.yes && !autoYes() && Boolean(pendingSubdomainSetup(root))
+  const willApply = Boolean(opts.subdomain || canResume || analysis.skills.length || analysis.frontend || analysis.backend) && !opts.analyze
 
   // Applying provisions real workspace keys and edits files, so it needs an authenticated user (the
   // workspace is fixed at login). Gate before the phase badge and any other output: a dead session

@@ -26,7 +26,7 @@ export interface RepoAnalysis {
   frontend?: DetectedApp
   backend?: DetectedApp
   skills: string[] // resolved curated skill ids to apply ([] = none, use the docs fallback)
-  hasFrontendSkill: boolean // a curated skill covers the frontend (needed for the custom subdomain step)
+  hasFrontendSkill: boolean // a curated skill covers the frontend (needed to configure the app's subdomain endpoint)
 }
 
 const FRONTEND_FRAMEWORKS: Record<string, string> = {
@@ -352,4 +352,3 @@ export function printAnalysis(a: RepoAnalysis): void {
     log.info(color.dim('No curated skill for this stack — a docs-based integration can be attempted.'))
   }
 }
-

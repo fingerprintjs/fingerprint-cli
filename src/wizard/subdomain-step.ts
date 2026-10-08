@@ -2,34 +2,35 @@ import { confirm, input, select } from '@inquirer/prompts'
 import { markFailure } from '../analytics/failure.js'
 import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 import { ManagementApiError } from '../api/management.js'
-import { serializeSubdomainError } from '../api/subdomain-errors.js'
+import { serializeSubdomainError, type SerializedSubdomainError } from '../api/subdomain-errors.js'
 import { normalizeHostname, SubdomainsService, type DnsRecord, type Subdomain, type SubdomainStatus } from '../api/subdomains.js'
-import { isCi } from '../utils/ci.js'
+import { autoYes, isCi } from '../utils/ci.js'
 import { CLOUDFLARE_DNS_ONLY_HINT, dnsRecordLines, dnsRecords, pendingDnsRecords } from '../utils/dns-records.js'
 import { DOMAIN_CONNECT_TIMEOUT_MS, listenForDomainConnect, openDomainConnectLink } from '../utils/domain-connect.js'
-import { isVerbose } from '../utils/verbose.js'
+import { analyzeRepo } from './detect.js'
 import { log } from './log.js'
 import { Spinner } from './spinner.js'
 import { provisionActiveSubdomainEndpoint } from './provision.js'
 import { clearPendingSubdomainSetup, savePendingSubdomainSetup } from './subdomain-setups.js'
-import type { createSubdomainsMcpServer, SeenSubdomain, SubdomainFailure } from './subdomains-mcp.js'
 import type { IntegrateOutcome } from './runner.js'
 
-// The custom subdomain step, host-side. The CLI owns the hostname, the DNS wait, the resume and
-// the finish; the agent runs only to create the subdomain (following the skill) and, once it is
-// active, to point the app at it. Between those, checking DNS is an API call, not a model call.
-
-// What the agent is asked to do in its run: create the subdomain, or point the app at it.
-export type SubdomainStepPurpose = 'create' | 'configure'
-type ApplyStep = (root: string, hostname: string, purpose: SubdomainStepPurpose) => Promise<IntegrateOutcome>
+type ApplyStep = (root: string, hostname: string) => Promise<IntegrateOutcome>
 
 // The subdomain step needs a hostname the agent must not guess, so the CLI asks before the run.
 export async function askSubdomainHostname(): Promise<string> {
   const hostname = await input({
     message: 'What subdomain would you like to use? (e.g., metrics.yourdomain.com)',
-    validate: (value) => (value.trim() ? true : 'Enter a hostname.'),
+    validate: (value) => (isHostname(value) ? true : 'Enter a hostname like metrics.yourdomain.com.'),
   })
   return normalizeHostname(hostname)
+}
+
+// Shape only, so a typo is asked again instead of ending the run on the API's 422. Whether the
+// hostname is acceptable (apex, reserved names, limits) stays the API's call.
+const HOSTNAME_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+const HOSTNAME = new RegExp(`^${HOSTNAME_LABEL}(?:\\.${HOSTNAME_LABEL})+$`, 'i')
+export function isHostname(value: string): boolean {
+  return HOSTNAME.test(normalizeHostname(value))
 }
 
 export async function askResumeSubdomain(hostname: string): Promise<boolean> {
@@ -41,7 +42,7 @@ export async function askResumeSubdomain(hostname: string): Promise<boolean> {
 // `waiting` when the user has to come back, `configured` when the app points at the subdomain,
 // `needs_action` when the subdomain is active but the app is not configured yet (no env
 // convention for the frontend, or the user declined the change), `failed` for errors.
-export type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out'
+type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out'
 
 // The analytics outcome of the configure run: only a completed run with the variable written is
 // `configured`; a completed run the CLI could not finish, or a declined one, still needs the user.
@@ -51,7 +52,7 @@ export function configureRunOutcome(applyOutcome: IntegrateOutcome, endpointWrit
   return 'needs_action'
 }
 
-export function recordSubdomainRun(properties: {
+function recordSubdomainRun(properties: {
   outcome: SubdomainRunOutcome
   resumed?: boolean // unknown when the first lookup itself failed
   dns?: 'manual' | 'domain_connect'
@@ -65,7 +66,12 @@ export function recordSubdomainRun(properties: {
   })
 }
 
-export async function runSubdomainStep(root: string, hostname: string, applyStep: ApplyStep): Promise<IntegrateOutcome> {
+export async function runSubdomainStep(
+  root: string,
+  hostname: string,
+  applyStep: ApplyStep,
+  options: { yes?: boolean } = {}
+): Promise<IntegrateOutcome> {
   savePendingSubdomainSetup(root, hostname)
   const service = new SubdomainsService()
   let current: Subdomain | undefined
@@ -83,23 +89,27 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
     let recordsShown = false
 
     if (!current) {
-      // The agent creates it. Whatever its run reported, the API decides whether it exists now.
-      const outcome = await applyStep(root, hostname, 'create')
-      if (outcome === 'failed') return end(outcome, 'failed')
-      current = await findSubdomain(service, hostname)
-      if (!current) {
-        log.error(`${hostname} was not created. Run the step again, or create it with: fingerprint subdomains create ${hostname}`)
-        markFailure('subdomain_not_created')
-        process.exitCode = 1
-        return end('failed', 'failed')
-      }
+      log.step(`Setting up ${hostname}`)
+      current = await service.create(hostname)
     }
 
     let explained = false
     let offeredDomainConnect = false
     while (true) {
       if (current.status === 'active') {
-        const outcome = await applyStep(root, hostname, 'configure')
+        if (!analyzeRepo(root).hasFrontendSkill) {
+          log.success(`${hostname} is active.`)
+          log.info(
+            `No supported frontend detected here. Run fingerprint integrate --subdomain ${hostname} from your frontend directory, or set endpoints to https://${hostname} in your app manually.`
+          )
+          clearPendingSubdomainSetup(root)
+          return end('completed', 'needs_action')
+        }
+        if (!options.yes && !autoYes() && !(await confirm({ message: `Update your app to use ${hostname}?`, default: true }))) {
+          log.info(resumeHint(hostname))
+          return end('skipped', 'needs_action')
+        }
+        const outcome = await applyStep(root, hostname)
         const endpointWritten = outcome === 'completed' ? finishSubdomainSetup(root, hostname) : false
         return end(outcome, configureRunOutcome(outcome, endpointWritten))
       }
@@ -183,9 +193,13 @@ export async function runSubdomainStep(root: string, hostname: string, applyStep
       }
     }
   } catch (error) {
-    // An API or agent error ends the step too; the run's failure reason is recorded by the caller.
     recordSubdomainRun({ outcome: 'failed', resumed, dns, provider })
-    throw error
+    const serialized = serializeSubdomainError(error)
+    // A 422 comes with a generic message that points at `violations`; those are the part to show.
+    log.error(`Custom subdomain setup failed: ${describeSubdomainError(serialized)}`)
+    markFailure(`subdomain_${serialized.kind}`, serialized.message)
+    process.exitCode = 1
+    return 'failed'
   }
 }
 
@@ -255,55 +269,7 @@ async function offerDomainConnect(service: SubdomainsService, current: Subdomain
   }
 }
 
-// What the agent's subdomain work means for the run it just did. Returns the outcome that ends
-// the step, or undefined when the normal completion path applies (active, or nothing touched,
-// e.g. the user chose a proxy integration instead).
-export function settleAgentSubdomainWork(
-  root: string,
-  server: ReturnType<typeof createSubdomainsMcpServer>,
-  options: { inSubdomainStep: boolean; beforeStatus: () => void }
-): IntegrateOutcome | undefined {
-  const seen = server.lastSeen()
-  const failure = server.lastFailure()
-  // Inside the step a pending subdomain is the CLI's to report: it offers Domain Connect first and
-  // shows the records only when they are to be added by hand, so neither the agent's recap nor the
-  // record list is printed here.
-  const quiet = options.inSubdomainStep && !failure && seen?.status === 'pending'
-  if (!quiet && (failure || seen?.status !== 'active')) options.beforeStatus()
-  const outcome = judge(seen, failure, quiet)
-  if (seen?.status === 'failed' || seen?.status === 'timed_out') clearPendingSubdomainSetup(root)
-  else if (outcome === 'waiting' && seen) savePendingSubdomainSetup(root, seen.hostname)
-  if (outcome) return outcome
-  // Active outside the subdomain step (the agent verified it while doing something else). Inside
-  // the step, runSubdomainStep finishes once the agent's run completes.
-  if (seen?.status === 'active' && !options.inSubdomainStep) finishSubdomainSetup(root, seen.hostname)
-  return undefined
-}
-
-function judge(seen: SeenSubdomain | undefined, failure: SubdomainFailure | undefined, quiet = false): IntegrateOutcome | undefined {
-  if (failure) {
-    log.error(`Custom subdomain setup failed: ${failure.message}${isVerbose() ? ` (${failure.tool}: ${failure.kind})` : ''}`)
-    markFailure(`subdomain_${failure.kind}`, failure.message)
-    process.exitCode = 1
-    return 'failed'
-  }
-  if (!seen || seen.status === 'active') return undefined
-  if (seen.status === 'pending') {
-    if (quiet) return 'waiting'
-    if (seen.pendingRecords.length) reportPending(seen.hostname, seen.pendingRecords)
-    else if (!seen.recordsKnown) log.info(`${seen.hostname} is still pending — see its DNS records with: fingerprint subdomains get ${seen.hostname}`)
-    else log.info(`${seen.hostname}: DNS records are validated. Certificate issuance is still in progress.`)
-    if (isCi()) log.info(resumeHint(seen.hostname))
-    return 'waiting'
-  }
-  return reportTerminalStatus(seen.hostname, seen.status)
-}
-
-// The one place a subdomain setup is completed: the endpoint variable is written, host-side, like
-// the other keys, and the project stops being "unfinished". The agent has already pointed the app
-// at the variable. When there is nothing the CLI can write to (no frontend, or no env convention)
-// the user is told the one manual step; resuming could not do more, so the reference goes too.
-// Returns whether the endpoint variable ended up in the env file.
+// Provision the endpoint after the agent completes. Without an env convention, show manual guidance.
 function finishSubdomainSetup(root: string, hostname: string): boolean {
   const result = provisionActiveSubdomainEndpoint(root, hostname)
   if (result.outcome === 'configured') {
@@ -316,6 +282,11 @@ function finishSubdomainSetup(root: string, hostname: string): boolean {
   }
   clearPendingSubdomainSetup(root)
   return result.outcome === 'configured'
+}
+
+function describeSubdomainError(serialized: SerializedSubdomainError): string {
+  if (!serialized.violations?.length) return serialized.message
+  return serialized.violations.map((violation) => `${violation.message} (${violation.property})`).join('; ')
 }
 
 async function findSubdomain(service: SubdomainsService, hostname: string): Promise<Subdomain | undefined> {

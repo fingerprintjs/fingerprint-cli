@@ -46,6 +46,30 @@ htmx, jQuery, or a static HTML page)
 For any other stack, the CLI falls back to an integration that researches the Fingerprint docs before
 editing your files. If it can't find an app it recognizes, it tells you rather than guessing.
 
+## Custom subdomains
+
+From `npx fingerprint integrate`, choose **Protect against ad blockers with a custom subdomain**.
+Use an unused subdomain of a domain you own, such as `metrics.example.com`, and make sure you have
+access to its DNS provider. Creating and verifying the subdomain does not require a frontend or a skill.
+
+The CLI creates the subdomain and offers Domain Connect when available: authorize the DNS changes
+in your browser, then return to the terminal. Otherwise, add the displayed records at your DNS
+provider and choose **Check the DNS records now**. On Cloudflare, use **DNS only** (proxying off).
+
+The CLI checks for activation for up to five minutes, showing DNS and certificate progress.
+`pending` means setup is still in progress, not that it failed. Once the subdomain is `active`, the
+CLI asks whether to update your app if a supported frontend is detected. Only then does the agent
+edit the integration to use the subdomain; the CLI writes the endpoint environment variable where
+the framework has a convention.
+Otherwise, the CLI leaves your files unchanged and explains how to configure the app separately.
+
+You can finish later. Running `npx fingerprint integrate` again in the same project and workspace
+offers to resume the unfinished setup. To start or resume that step directly:
+
+```bash
+npx fingerprint integrate --subdomain metrics.example.com
+```
+
 ## Commands
 
 You rarely need these directly — `npx fingerprint` routes to the right one — but they're available:
@@ -66,9 +90,10 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 | `fingerprint whoami` | Show the signed-in workspace |
 | `fingerprint logout` | Delete the local credential |
 
-After creating a subdomain, add the returned DNS records at your DNS provider, then run
+The standalone `subdomains` commands do not need an application repository and do not update your
+application code. After creating a subdomain, add the returned DNS records at your DNS provider, then run
 `fingerprint subdomains verify metrics.example.com`. Use your subdomain's hostname or its
-`certv2_...` ID with `get`, `verify`, and `delete`. Hostnames are resolved within the signed-in workspace.
+`certv2_...` ID with `get`, `verify`, `connect`, and `delete`. Hostnames are resolved within the signed-in workspace.
 If all DNS records are validated but setup is still pending, use `fingerprint subdomains get metrics.example.com`
 later to check for activation. Only configure your integration to use the subdomain once it is `active`.
 
@@ -87,7 +112,9 @@ And these work everywhere:
 - `--verbose` — show each step in detail: file reads, edits, and tool calls
 - `--ci` — non-interactive: never prompt, and fail fast if something is missing
 
-The create, list, get, verify, and delete operations support `--json`.
+The create, list, get, verify, connect, and delete operations support `--json`.
+For `connect`, it prints the Domain Connect link and exits without waiting for the provider callback
+or checking activation; run `verify` afterwards.
 Deleting requires confirmation; pass `--yes` explicitly in non-interactive runs.
 
 ## Signing in
