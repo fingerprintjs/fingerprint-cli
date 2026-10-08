@@ -24,7 +24,7 @@ test('only missing packages are installed, preserving declared dependency versio
   assert.deepEqual(missingPackages(app, ['@fingerprint/react', '@fingerprint/agent']), ['@fingerprint/agent'])
 })
 
-for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
   test(`recognizes installed packages in ${field}`, (t) => {
     const app = fixture(t, { [field]: { '@fingerprint/react': '^3' } })
     installed(app.dir, '@fingerprint/react')

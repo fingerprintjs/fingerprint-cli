@@ -7,7 +7,7 @@ import { packageName } from './skills.js'
 export function missingPackages(app: DetectedApp, packages: string[]): string[] {
   const manifest = join(app.dir, 'package.json')
   const pkg = JSON.parse(readFileSync(manifest, 'utf8'))
-  const dependencies = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies }
+  const dependencies = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies }
   const require = createRequire(manifest)
   return packages.filter((spec) => {
     const name = packageName(spec)
