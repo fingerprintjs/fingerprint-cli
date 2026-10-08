@@ -145,7 +145,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     // Server-side verification is the one step that may live in another repo.
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
-      if (backend) outcome = await provisionAndApply(backend, { ...opts, step: NEXT_STEPS.server.step })
+      if (backend) outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step })
       continue
     }
     outcome =
