@@ -50,7 +50,7 @@ editing your files. If it can't find an app it recognizes, it tells you rather t
 
 From `npx fingerprint integrate`, choose **Protect against ad blockers with a custom subdomain**.
 Use an unused subdomain of a domain you own, such as `metrics.example.com`, and make sure you have
-access to its DNS provider. The guided step currently requires a supported frontend in the repo.
+access to its DNS provider. Creating and verifying the subdomain does not require a frontend or a skill.
 
 The CLI creates the subdomain and offers Domain Connect when available: authorize the DNS changes
 in your browser, then return to the terminal. Otherwise, add the displayed records at your DNS
@@ -58,8 +58,10 @@ provider and choose **Check the DNS records now**. On Cloudflare, use **DNS only
 
 The CLI checks for activation for up to five minutes, showing DNS and certificate progress.
 `pending` means setup is still in progress, not that it failed. Once the subdomain is `active`, the
-CLI asks whether to update your app. Only then does the agent edit the integration to use the
-subdomain; the CLI writes the endpoint environment variable where the framework has a convention.
+CLI asks whether to update your app if a supported frontend is detected. Only then does the agent
+edit the integration to use the subdomain; the CLI writes the endpoint environment variable where
+the framework has a convention.
+Otherwise, the CLI leaves your files unchanged and explains how to configure the app separately.
 
 You can finish later. Running `npx fingerprint integrate` again in the same project and workspace
 offers to resume the unfinished setup. To start or resume that step directly:

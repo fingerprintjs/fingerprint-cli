@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { makeHome, makeRepo, makeStaticRepo, makeSkillsDir, runCli, seedAuth } from './helpers/harness.js'
 
@@ -457,7 +457,7 @@ test('--subdomain goes straight to the step, in CI too', async (t) => {
   assert.doesNotMatch(active.stdout, FINISHED)
 })
 
-test('--subdomain on a stack without a curated skill fails instead of pretending', async (t) => {
+test('--subdomain on a stack without a curated skill creates the resource without editing the app', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())
   const home = makeHome()
@@ -468,15 +468,111 @@ test('--subdomain on a stack without a curated skill fails instead of pretending
   const gateway = await startGateway(() => ({ text: 'Nothing to do.' }))
   t.after(() => gateway.close())
 
-  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
-    home,
-    cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url, FINGERPRINT_DNS_WAIT_MS: '0' },
-  })
+  const env = { FINGERPRINT_SKILLS_DIR: join(repo, 'no-skills'), FINGERPRINT_GATEWAY_URL: gateway.url }
+  const before = readdirSync(repo, { recursive: true })
+  const pending = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
+  assert.equal(pending.status, 0, pending.stdout + pending.stderr)
+  assert.equal(api.createCalls(), 1)
+  assert.equal(api.lastRun().subdomain_outcome, 'waiting')
 
-  assert.equal(result.status, 1, result.stdout)
-  assert.match(result.stdout + result.stderr, /needs a curated frontend skill/)
+  api.seedStatus('active')
+  const active = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
+  assert.equal(active.status, 0, active.stdout + active.stderr)
+  assert.match(active.stdout, /No supported frontend detected here/)
+  assert.equal(api.lastRun().subdomain_outcome, 'needs_action')
+  assert.equal(gateway.bodies().length, 0)
+  assert.deepEqual(readdirSync(repo, { recursive: true }), before)
+})
+
+for (const kind of ['empty directory', 'backend-only repo']) {
+  test(`subdomain setup in ${kind} can create, resume and verify without an agent`, async (t) => {
+    const api = await startSubdomainApi()
+    t.after(() => api.close())
+    api.activateAfterVerify()
+    const home = makeHome()
+    seedAuth(home, api.url)
+    const repo = makeHome()
+    if (kind === 'backend-only repo') {
+      writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'api', dependencies: { express: '^5' } }))
+    }
+    const before = readdirSync(repo, { recursive: true })
+    const gateway = await startGateway(() => ({ text: 'Must not run.' }))
+    t.after(() => gateway.close())
+    const env = { FINGERPRINT_SKILLS_DIR: join(repo, 'no-skills'), FINGERPRINT_GATEWAY_URL: gateway.url }
+
+    const first = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo, env })
+    assert.equal(first.status, 0, first.stdout + first.stderr)
+    assert.equal(api.createCalls(), 1)
+    assert.equal(api.lastRun().integrate_status, 'waiting')
+    assert.match(first.stdout, /is waiting for these DNS records/)
+
+    const resumed = await runCli(['integrate'], {
+      home, cwd: repo, env,
+      respond: [
+        { when: /Resume the custom subdomain setup/, send: 'y\n' },
+        { when: DNS_MENU, send: '\n' },
+        { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      ],
+    })
+    assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr)
+    assert.match(resumed.stdout, /metrics\.example\.com is active\./)
+    assert.match(resumed.stdout, /from your frontend directory, or set endpoints/)
+    assert.doesNotMatch(resumed.stdout, CONFIRM_CONFIGURE)
+    assert.equal(api.createCalls(), 1)
+    assert.equal(api.verifyCalls(), 1)
+    assert.equal(api.lastRun().integrate_status, 'completed')
+    assert.equal(api.lastRun().subdomain_outcome, 'needs_action')
+    assert.equal(gateway.bodies().length, 0)
+    assert.deepEqual(readdirSync(repo, { recursive: true }), before)
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json'), 'utf8')), {})
+  })
+}
+
+test('subdomain setup from the backend wizard menu does not run a second agent', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.activateAfterVerify()
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = join(makeRepo(), 'api')
+  const gateway = await startGateway(subdomainAgent(join(repo, 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['integrate'], {
+    home, cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+    respond: [
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: DNS_MENU, send: '\n' },
+      { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${DOWN}\n` },
+    ],
+  })
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.equal(result.stdout.match(APPLYING)?.length, 1)
+  assert.doesNotMatch(result.stdout, CONFIRM_CONFIGURE)
+  assert.doesNotMatch(gateway.bodies().join('\n'), /The CLI verified that the custom subdomain/)
+  assert.equal(api.createCalls(), 1)
+  assert.equal(api.verifyCalls(), 1)
+  assert.equal(api.lastRun().subdomain_outcome, 'needs_action')
+})
+
+test('--subdomain in an empty directory still requires authentication, but --analyze stays read-only', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  const home = makeHome()
+  const repo = makeHome()
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], { home, cwd: repo })
+  assert.equal(result.status, 1, result.stdout + result.stderr)
+  assert.match(result.stdout, /needs a live session/)
+  assert.equal(existsSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json')), false)
+
+  seedAuth(home, api.url)
+  const analysis = await runCli(['--ci', 'integrate', '--analyze', '--subdomain', HOSTNAME], { home, cwd: repo })
+  assert.equal(analysis.status, 0, analysis.stdout + analysis.stderr)
   assert.equal(api.createCalls(), 0)
+  assert.equal(existsSync(join(home, '.config', 'fingerprint', 'subdomain-setups.json')), false)
 })
 
 test('creating a pending subdomain in CI makes no model calls and leaves endpoints unchanged', async (t) => {

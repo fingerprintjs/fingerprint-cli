@@ -160,8 +160,10 @@ function applySubdomainStep(root: string, hostname: string): Promise<IntegrateOu
 }
 
 async function provisionThen(root: string, next: () => Promise<IntegrateOutcome>): Promise<IntegrateOutcome> {
-  log.step('Set up environment variables')
-  await provisionForRepo(root)
+  if (analyzeRepo(root).hasFrontendSkill) {
+    log.step('Set up environment variables')
+    await provisionForRepo(root)
+  }
   return next()
 }
 

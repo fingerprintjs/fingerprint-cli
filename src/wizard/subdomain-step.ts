@@ -76,12 +76,6 @@ export async function runSubdomainStep(
     return outcome
   }
   try {
-    if (!analyzeRepo(root).hasFrontendSkill) {
-      log.error('The custom subdomain step needs a curated frontend skill, and none matches this stack.')
-      markFailure('subdomain_no_frontend_skill')
-      process.exitCode = 1
-      return end('failed', 'failed')
-    }
     current = await findSubdomain(service, hostname)
     resumed = Boolean(current)
     let recordsShown = false
@@ -95,6 +89,14 @@ export async function runSubdomainStep(
     let offeredDomainConnect = false
     while (true) {
       if (current.status === 'active') {
+        if (!analyzeRepo(root).hasFrontendSkill) {
+          log.success(`${hostname} is active.`)
+          log.info(
+            `No supported frontend detected here. Run fingerprint integrate --subdomain ${hostname} from your frontend directory, or set endpoints to https://${hostname} in your app manually.`
+          )
+          clearPendingSubdomainSetup(root)
+          return end('completed', 'needs_action')
+        }
         if (!options.yes && !autoYes() && !(await confirm({ message: `Update your app to use ${hostname}?`, default: true }))) {
           log.info(resumeHint(hostname))
           return end('skipped', 'needs_action')
