@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.2.6
+
+### Patch Changes
+
+- Run custom subdomain setup directly in the CLI, even without a frontend, and use the agent only to update supported apps after activation and confirmation. ([4b333d6](https://github.com/fingerprintjs/fingerprint-cli/commit/4b333d6bfaa0aa700c5eafbafd6dabd73da88844))
+
 ## 0.2.5
 
 ### Patch Changes
