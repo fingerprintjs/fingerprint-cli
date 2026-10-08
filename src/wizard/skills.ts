@@ -98,7 +98,7 @@ const ALLOWED_PACKAGES = new Set([
 
 // Strip a version/tag suffix to get the bare package name. Scoped names start with '@', so a real
 // version specifier is an '@' after position 0 (e.g. '@fingerprint/react@^4' -> '@fingerprint/react').
-function packageName(spec: string): string {
+export function packageName(spec: string): string {
   const at = spec.lastIndexOf('@')
   return at > 0 ? spec.slice(0, at) : spec
 }

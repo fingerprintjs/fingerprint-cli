@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startManagementApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, runCli } from './helpers/harness.js'
@@ -122,4 +122,61 @@ test('declining an interactive install is not a failure', async () => {
   assert.equal(res.status, 0, `expected exit 0\n${res.stdout}\n${res.stderr}`)
   assert.match(res.stdout, /Skipped — install manually/)
   assert.ok(!res.stdout.includes('should not have run'), 'declined install still executed pnpm')
+})
+
+function seedReactPackage(repo, available = true) {
+  const manifest = join(repo, 'web', 'package.json')
+  const pkg = JSON.parse(readFileSync(manifest, 'utf8'))
+  pkg.dependencies['@fingerprint/react'] = '^3.0.0'
+  writeFileSync(manifest, JSON.stringify(pkg))
+  if (available) {
+    const dir = join(repo, 'web', 'node_modules', '@fingerprint/react')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'index.js'), 'module.exports = {}\n')
+  }
+}
+
+test('continuing the wizard does not reinstall packages already available to the app', async () => {
+  const ctx = setup()
+  seedReactPackage(ctx.repo)
+  const pnpm = makeFakePnpm({ version: '11.1.3', onInstall: 'exit 1' })
+  const gw = await startGateway(join(ctx.repo, 'web', 'fingerprint.js'), '// integration\n')
+  try {
+    const result = await runCli(['integrate'], {
+      home: ctx.home,
+      cwd: ctx.repo,
+      env: { FINGERPRINT_SKILLS_DIR: ctx.skillsDir, FINGERPRINT_GATEWAY_URL: gw.url, PATH: `${pnpm.dir}:${process.env.PATH}` },
+      respond: [
+        { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+        { when: /What's next\?/, send: '\n' },
+        { when: /❯ (\x1b\[[0-9;]*m)*Protect against ad blockers/, send: '\x1b[B\n' },
+      ],
+    })
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(result.stdout, /Setting up server-side verification/)
+    assert.doesNotMatch(result.stdout, /Installing @fingerprint/)
+    assert.equal(pnpm.args(), '')
+  } finally {
+    await gw.close()
+  }
+})
+
+test('a later run installs only the missing package, not the existing SDK', async () => {
+  const ctx = setup()
+  seedReactPackage(ctx.repo)
+  ctx.skillsDir = makeSkillsDir({ 'fingerprint-react': ['@fingerprint/react', '@fingerprint/agent'] })
+  const pnpm = makeFakePnpm({ version: '11.1.3', onInstall: 'exit 0' })
+  const result = await integrate({ ...ctx, fakeBin: pnpm.dir })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(pnpm.args(), /^add --allow-build=@fingerprint\/agent @fingerprint\/agent@latest$/m)
+  assert.doesNotMatch(pnpm.args(), /@fingerprint\/react/)
+})
+
+test('a package declared but unavailable after an incomplete install is installed again', async () => {
+  const ctx = setup()
+  seedReactPackage(ctx.repo, false)
+  const pnpm = makeFakePnpm({ version: '11.1.3', onInstall: 'exit 0' })
+  const result = await integrate({ ...ctx, fakeBin: pnpm.dir })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(pnpm.args(), /@fingerprint\/react@latest/)
 })
