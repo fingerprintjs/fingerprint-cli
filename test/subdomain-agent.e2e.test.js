@@ -36,12 +36,14 @@ test('a pending subdomain leaves the step waiting with the DNS records to add', 
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${DOWN}\n` }, // [server-side verification, custom subdomain]
-      { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
+      { when: HOSTNAME_PROMPT, send: 'metrics\n' }, // not a hostname: asked again, no API call
+      { when: /Enter a hostname like/, send: `${'\x7f'.repeat('metrics'.length)}${HOSTNAME}\n` }, // the rejected text stays in the field
       { when: DNS_MENU, send: LATER },
     ],
   })
 
   assert.equal(result.status, 0, result.stderr)
+  assert.equal(api.createCalls(), 1)
   assert.equal(result.stdout.match(APPLYING)?.length, 1, result.stdout)
   assert.match(result.stdout, CREATING)
   assert.equal(result.stdout.match(FINISHED)?.length, 1, result.stdout)

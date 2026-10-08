@@ -20,9 +20,17 @@ type ApplyStep = (root: string, hostname: string) => Promise<IntegrateOutcome>
 export async function askSubdomainHostname(): Promise<string> {
   const hostname = await input({
     message: 'What subdomain would you like to use? (e.g., metrics.yourdomain.com)',
-    validate: (value) => (value.trim() ? true : 'Enter a hostname.'),
+    validate: (value) => (isHostname(value) ? true : 'Enter a hostname like metrics.yourdomain.com.'),
   })
   return normalizeHostname(hostname)
+}
+
+// Shape only, so a typo is asked again instead of ending the run on the API's 422. Whether the
+// hostname is acceptable (apex, reserved names, limits) stays the API's call.
+const HOSTNAME_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+const HOSTNAME = new RegExp(`^${HOSTNAME_LABEL}(?:\\.${HOSTNAME_LABEL})+$`, 'i')
+export function isHostname(value: string): boolean {
+  return HOSTNAME.test(normalizeHostname(value))
 }
 
 export async function askResumeSubdomain(hostname: string): Promise<boolean> {
