@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.2.5
+
+### Patch Changes
+
+- The wizard's agent runs on `claude-sonnet-5-5`, the only model the LLM gateway accepts. `FINGERPRINT_WIZARD_MODEL` isn't read. ([f76574f](https://github.com/fingerprintjs/fingerprint-cli/commit/f76574f57747ab6d64181d399856b6552bfccd66))
+
 ## 0.2.4
 
 ### Patch Changes
