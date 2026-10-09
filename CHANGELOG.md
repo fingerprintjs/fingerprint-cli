@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.2.7
+
+### Patch Changes
+
+- Skip npm-family dependency installs when the required packages are already declared and available, and show step-specific progress headings when continuing the integration. ([ac39533](https://github.com/fingerprintjs/fingerprint-cli/commit/ac3953306c11f03f93453054628182c81e5c62ab))
+
 ## 0.2.6
 
 ### Patch Changes
