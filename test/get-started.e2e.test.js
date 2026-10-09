@@ -47,7 +47,6 @@ test('integrate installs the orchestrator with the framework skills and lets it 
   assert.doesNotMatch(res.stdout, /What's next/)
 })
 
-const APPLYING = /Applying .* via fingerprint-get-started/g
 // Keys for the "What's next?" menu: Enter takes the first offered step; the last entry is "stop".
 const FIRST = '\n'
 const DOWN = '\x1b[B'
@@ -80,7 +79,9 @@ test('after a step the user picks the next one by name, and the agent is told to
   await gw.close()
 
   assert.equal(res.status, 0, res.stderr)
-  assert.equal(res.stdout.match(APPLYING)?.length, 2, res.stdout)
+  assert.equal(res.stdout.match(/Setting up Fingerprint/g)?.length, 1, res.stdout)
+  assert.match(res.stdout, /Setting up server-side verification/)
+  assert.doesNotMatch(res.stdout, /Apply integration|Applying .* via fingerprint-get-started/)
   // The user is told to test before choosing, and the choice reaches the agent as an explicit step.
   assert.match(res.stdout, /Test this step now/)
   assert.match(res.stdout, /Set up server-side verification/)
@@ -114,8 +115,36 @@ test('choosing server-side verification in a frontend-only repo asks where the b
   await gw.close()
 
   assert.equal(res.status, 0, res.stderr)
-  assert.match(res.stdout, /Applying fingerprint-react via fingerprint-get-started/)
-  assert.match(res.stdout, new RegExp(`Applying fingerprint-node via fingerprint-get-started in ${backend}`))
+  assert.match(res.stdout, /Setting up Fingerprint/)
+  assert.match(res.stdout, /Setting up server-side verification/)
+})
+
+test('continuing the remaining checklist uses a specific heading and does not announce another install', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  writeFileSync(join(repo, 'api', 'server.js'), "import { Client } from '@fingerprint/node-sdk'\n")
+  writeFileSync(join(repo, 'web', '.env'), 'VITE_FINGERPRINT_ENDPOINTS=https://metrics.example.com\n')
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), 'const endpoints = import.meta.env.VITE_FINGERPRINT_ENDPOINTS\n')
+  try {
+    const res = await runCli(['integrate'], {
+      home,
+      cwd: repo,
+      env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gw.url },
+      respond: [
+        { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+        { when: /What's next\?/, send: '\n' },
+        { when: /Continuing the integration checklist[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      ],
+    })
+    assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`)
+    assert.equal(res.stdout.match(/Setting up Fingerprint/g)?.length, 1, res.stdout)
+    assert.match(res.stdout, /Continuing the integration checklist/)
+    assert.doesNotMatch(res.stdout, /Apply integration|Applying .* via fingerprint-get-started/)
+    assert.match(gw.bodies().join('\n'), /Do only this step: the next unfinished checklist step/)
+  } finally {
+    await gw.close()
+  }
 })
 
 // The CLI installs the backend skill's packages after step 1, so @fingerprint/node-sdk lands in the

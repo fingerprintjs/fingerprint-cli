@@ -10,7 +10,7 @@ import { makeHome, makeRepo, makeStaticRepo, makeSkillsDir, runCli, seedAuth } f
 const HOSTNAME = 'metrics.example.com'
 const ID = 'certv2_123'
 const DOWN = '\x1b[B'
-const APPLYING = /Applying .* via fingerprint-get-started/g
+const APPLYING = /Setting up Fingerprint/g
 const FINISHED = /Agent finished applying the integration/g
 const DNS_MENU = /is waiting for its DNS records\. What's next\?/
 const CREATING = /Setting up metrics\.example\.com/

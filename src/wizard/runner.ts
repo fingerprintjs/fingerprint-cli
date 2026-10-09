@@ -9,7 +9,8 @@ import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
-import { assertAllowedPackage, getStartedSkills, installSkills, skillMeta, SkillMeta } from './skills.js'
+import { assertAllowedPackage, getStartedSkills, installSkills, packageName, skillMeta, SkillMeta } from './skills.js'
+import { missingPackages } from './packages.js'
 import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
@@ -144,7 +145,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     // Server-side verification is the one step that may live in another repo.
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
-      if (backend) outcome = await provisionAndApply(backend, opts)
+      if (backend) outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step })
       continue
     }
     outcome =
@@ -167,19 +168,28 @@ async function provisionThen(root: string, next: () => Promise<IntegrateOutcome>
   return next()
 }
 
-// The steps the CLI can offer after one lands. `step` is what the agent is told to do; `more` has
-// none, so the agent's audit picks the next not-done step (rules, tagging, request filtering, ...).
+// The steps the CLI can offer after one lands. `step` is what the agent is told to do.
 type NextStep = 'server' | 'proxy' | 'more'
-const NEXT_STEPS: Record<NextStep, { name: string; step?: string }> = {
+const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: string }> = {
   server: {
     name: 'Set up server-side verification to get more signals',
+    activity: 'Setting up server-side verification',
     step: 'Quick start step 2 — access detailed insights: verify the event server-side with the Server API',
   },
   proxy: {
     name: 'Protect against ad blockers with a custom subdomain',
+    activity: 'Working on the custom subdomain',
     step: 'Quick start step 3 — protect against ad blockers: custom subdomain / proxy integration',
   },
-  more: { name: 'Continue with the remaining steps (rules, tagging, request filtering)' },
+  more: {
+    name: 'Continue with the remaining steps (rules, tagging, request filtering)',
+    activity: 'Continuing the integration checklist',
+    step: 'the next unfinished checklist step (rules, tagging, request filtering)',
+  },
+}
+
+function stepActivity(step?: string): string {
+  return Object.values(NEXT_STEPS).find((next) => next.step === step)?.activity ?? 'Setting up Fingerprint'
 }
 
 // The user sets the pace: test the step that just landed, then pick the next one. The quick-start
@@ -257,7 +267,7 @@ function sourceFiles(dir: string): string[] {
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean }): Promise<IntegrateOutcome> {
+async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string }): Promise<IntegrateOutcome> {
   log.step('Set up environment variables')
   const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
@@ -317,7 +327,7 @@ async function applyIntegration(
   // The subdomain step says what is happening to the subdomain; "applying" would suggest the
   // integration is being redone.
   if (opts.subdomain) log.step(`Updating your app to use ${opts.subdomain}`)
-  else log.step('Apply integration')
+  else log.step(stepActivity(opts.step))
   return runAgent(analysis, opts.step, opts.subdomain, inline)
 }
 
@@ -344,8 +354,6 @@ export async function runAgent(
   installSkills(analysis.root, ids)
   const metas = ids.map(skillMeta)
 
-  if (!subdomain) log.step(`Applying ${analysis.skills.join(' + ')} via ${GET_STARTED_SKILL} in ${analysis.root}`)
-
   const endpointVar = analysis.frontend ? conventionFor(analysis.frontend).endpointVar : undefined
   // Outside the subdomain step, tell the agent about an endpoint the CLI already wrote: it cannot
   // read .env, and without this it audits step 3 as not done and asks the user to add the variable.
@@ -363,7 +371,7 @@ export async function runAgent(
     },
   })
 
-  const run = await runAgentTurn(response, subdomain ? 'Working on the custom subdomain' : 'Setting up the integration')
+  const run = await runAgentTurn(response, subdomain ? 'Working on the custom subdomain' : stepActivity(step))
   if (!run.ok) {
     markFailure('agent_failed')
     process.exitCode = 1
@@ -667,7 +675,7 @@ function pnpmAllowBuildFlags(cwd: string, pkgs: string[]): string[] {
   } catch {
     return []
   }
-  return pkgs.map((p) => `--allow-build=${bareName(p)}`)
+  return pkgs.map((p) => `--allow-build=${packageName(p)}`)
 }
 
 // The package's install scripts were skipped (pnpm < 10.5, or an approval the flag couldn't give).
@@ -699,12 +707,13 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
       log.info(`No package.json in ${app.rel} — skipping install; the agent loads from the CDN instead.`)
       continue
     }
+    const packages = [...new Set(skill.packages)]
+    const missing = jsPm ? missingPackages(app, packages) : packages
+    if (!missing.length) continue
     const [bin, sub] = installCommand(app.packageManager)
-    // The CLI owns dependency versions. For npm-family managers, pin unversioned packages to
-    // @latest so the install ignores any (possibly wrong) range the agent wrote into package.json
-    // and rewrites it to the real published version. pip/poetry don't use @latest syntax and
-    // install latest by name anyway, so leave their packages untouched.
-    const pkgs = jsPm ? skill.packages.map(pinLatest) : skill.packages
+    // Missing npm-family packages use @latest; existing installations keep their versions.
+    // pip/poetry don't use the @latest syntax.
+    const pkgs = jsPm ? missing.map(pinLatest) : missing
     if (isInteractive()) {
       const ok = await confirm({ message: `Install ${pkgs.join(', ')} in ${app.rel}? (${bin} ${sub})`, default: true })
       if (!ok) {
@@ -727,13 +736,6 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
     }
   }
   return failed ? 'failed' : skipped ? 'skipped' : 'completed'
-}
-
-// Scoped names start with '@', so a real version specifier is an '@' anywhere after the first
-// character (e.g. '@fingerprint/react@^4').
-function bareName(pkg: string): string {
-  const at = pkg.lastIndexOf('@')
-  return at > 0 ? pkg.slice(0, at) : pkg
 }
 
 // Append @latest to a package spec that has no version.
