@@ -76,10 +76,11 @@ export async function getFreshAccessToken(): Promise<string> {
     throw new CodedError('login_unreachable', UNREACHABLE)
   })
 
-  // A refresh token that's expired or revoked comes back 400 — nothing to retry, the user has to log
-  // in again. Same outcome for any other failure here, so keep one message.
+  // A refresh token that's expired or revoked comes back 4xx and the user has to log in again; a 429
+  // or 5xx is the service struggling, which logging in again won't fix.
   if (!res.ok) {
     debugLog(`token refresh failed: HTTP ${res.status}`)
+    if (res.status === 429 || res.status >= 500) throw new CodedError('login_unreachable', UNREACHABLE)
     throw new CodedError('session_expired', SESSION_EXPIRED)
   }
 

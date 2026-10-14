@@ -285,7 +285,7 @@ test('an integrate that gives up for want of a session reports why, not just err
   assert.equal(res.status, 1)
 
   assert.match(errorProps(api).status, /error/)
-  assert.equal(errorProps(api).error_code, 'session_unavailable')
+  assert.equal(errorProps(api).error_code, 'not_authenticated')
 
   await api.close()
 })

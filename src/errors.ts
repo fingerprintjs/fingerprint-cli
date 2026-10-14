@@ -11,6 +11,7 @@ export class CodedError extends Error {
 export function errorCode(err: unknown): string {
   if (err instanceof CodedError) return err.code
   if (!(err instanceof Error)) return 'unknown'
+  if (typeof err.name !== 'string' || !err.name) return 'unknown'
   if (err.name === 'ExitPromptError') return 'cancelled'
   if (err.name === 'Error') return 'unknown'
   const name = err.name

@@ -6,6 +6,7 @@ import { log, printFailure } from '../wizard/log.js'
 import { requireAuth } from '../utils/session.js'
 import { addRunProperties, track } from '../analytics/track.js'
 import { markFailure } from '../analytics/failure.js'
+import { errorCode } from '../errors.js'
 import { pendingSubdomainSetup } from '../wizard/subdomain-setups.js'
 import { autoYes } from '../utils/ci.js'
 
@@ -91,7 +92,7 @@ async function settleSession(): Promise<boolean> {
     // Report the specific reason — missing session, expired session, or an unreachable login service,
     // which is a network problem no amount of logging in will fix.
     const message = err instanceof Error ? err.message : String(err)
-    markFailure('session_unavailable', err)
+    markFailure(errorCode(err), err)
     printFailure({
       title: 'Can’t start the integration',
       reason: `${withoutLoginHint(message)}\nApplying provisions API keys for your workspace, so it needs a live session.`,
