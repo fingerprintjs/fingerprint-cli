@@ -18,5 +18,6 @@ export function errorCode(err: unknown): string {
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
     .replace(/[^a-z0-9_]/g, '')
+  if (!name.replace(/_/g, '')) return 'unknown'
   return `unknown_${name}`.slice(0, 64)
 }

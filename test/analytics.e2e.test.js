@@ -396,6 +396,9 @@ test('an unclassified throw reports its error type in a code the relay accepts',
   const odd = new Error('x')
   odd.name = 'Weird-Name.42' + 'X'.repeat(80)
   assert.match(errorCode(odd), /^[a-z][a-z0-9_]{0,63}$/)
+  const punct = new Error('x')
+  punct.name = '.-!'
+  assert.equal(errorCode(punct), 'unknown')
 })
 
 test('an unauthenticated run reports through the anonymous route, with no key attached', async () => {

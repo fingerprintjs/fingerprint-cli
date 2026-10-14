@@ -474,7 +474,7 @@ test('Ctrl+C at the delete confirmation reports cancelled', async (t) => {
     respond: [{ when: /Delete metrics\.example\.com/, send: '\x03' }],
   })
 
-  assert.equal(api.events.find((e) => e.event === 'cli_command_run').properties.error_code, 'cancelled')
+  assert.equal(api.events.find((e) => e.event === 'cli_command_run')?.properties?.error_code, 'cancelled')
 })
 
 test('JSON errors distinguish authentication, validation, duplicate, limit, rate limiting, and service failures', async (t) => {
