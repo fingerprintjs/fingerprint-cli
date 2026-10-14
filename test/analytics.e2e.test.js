@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VERSION } from '../dist/version.js'
 import { resolveConfig } from '../dist/config/config.js'
+import { errorCode } from '../dist/errors.js'
 
 import {
   makeHome,
@@ -338,6 +339,63 @@ test('a mistyped command reports a code and what was typed', async () => {
   assert.equal(errorProps(api).error_message, 'Unknown command "intergrate".')
 
   await api.close()
+})
+
+test('a logged-out whoami reports not_authenticated', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['whoami'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).error_code, 'not_authenticated')
+
+  await api.close()
+})
+
+test('a logged-out run in CI reports not_authenticated', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['--ci'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).error_code, 'not_authenticated')
+
+  await api.close()
+})
+
+test('quitting the first prompt reports cancelled', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli([], {
+    home: makeHome(),
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
+    respond: [{ when: /Do you already have a Fingerprint account/, send: '\x03' }],
+  })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).error_code, 'cancelled')
+
+  await api.close()
+})
+
+test('a login that cannot reach the auth server reports login_unreachable', async () => {
+  const api = await startManagementApi()
+
+  const res = await runCli(['login'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  assert.equal(res.status, 1)
+
+  assert.equal(errorProps(api).error_code, 'login_unreachable')
+
+  await api.close()
+})
+
+test('an unclassified throw reports its error type in a code the relay accepts', () => {
+  assert.equal(errorCode(new TypeError('x')), 'unknown_type_error')
+  assert.equal(errorCode(new Error('x')), 'unknown')
+  assert.equal(errorCode('x'), 'unknown')
+  const odd = new Error('x')
+  odd.name = 'Weird-Name.42' + 'X'.repeat(80)
+  assert.match(errorCode(odd), /^[a-z][a-z0-9_]{0,63}$/)
 })
 
 test('an unauthenticated run reports through the anonymous route, with no key attached', async () => {

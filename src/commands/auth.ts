@@ -2,6 +2,7 @@ import { select } from '../utils/prompt.js'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { isCi } from '../utils/ci.js'
+import { NotAuthenticatedError } from '../utils/session.js'
 import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
 import { integrateCommand } from './integrate.js'
@@ -80,7 +81,7 @@ export function logout() {
 
 export function whoami() {
   const auth = getAuthState()
-  if (!auth?.managementApiKey) throw new Error('Not logged in')
+  if (!auth?.managementApiKey) throw new NotAuthenticatedError()
   console.log(`${color.dim('subscription')}  ${color.bold(auth.workspaceId)}`)
   console.log(`${color.dim('region')}        ${color.bold(auth.region)}`)
   // Written only by logins that got an email claim, so older state and issuers without it stay quiet.
