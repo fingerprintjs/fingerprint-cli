@@ -433,6 +433,31 @@ test('declining the resume, or a timed-out subdomain, stops the offer', async (t
   assert.doesNotMatch(afterTimeout.stdout, resumeOffer)
 })
 
+test('an expired subdomain stops without verifying DNS or calling the agent', async (t) => {
+  const api = await startSubdomainApi()
+  t.after(() => api.close())
+  api.seedStatus('expired')
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const gateway = await startGateway(subdomainAgent(join(repo, 'web', 'fingerprint.js')))
+  t.after(() => gateway.close())
+
+  const result = await runCli(['--ci', 'integrate', '--subdomain', HOSTNAME], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
+  })
+
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /certificate has expired.*fingerprint subdomains delete metrics\.example\.com/)
+  assert.doesNotMatch(result.stdout, /Certificate issuance is still in progress|Waiting for DNS propagation/)
+  assert.equal(api.createCalls(), 0)
+  assert.equal(api.verifyCalls(), 0)
+  assert.equal(gateway.bodies().length, 0)
+  assert.equal(api.lastRun().subdomain_outcome, 'expired')
+})
+
 test('--subdomain goes straight to the step, in CI too', async (t) => {
   const api = await startSubdomainApi()
   t.after(() => api.close())

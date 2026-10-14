@@ -353,6 +353,25 @@ test('get human output includes status and every DNS record', async (t) => {
   assert.deepEqual(api.requests.map(({ method, path }) => `${method} ${path}`), [`GET /subdomains/${ID}`])
 })
 
+test('get hides the HTTP verification placeholder and explains an expired certificate', async (t) => {
+  const value = subdomainWithoutCaa({ status: 'expired' })
+  value.dns_records.verification = { type: 'CNAME', host: '', value: '', status: 'validated' }
+  const api = await startApi((request) => {
+    if (request.method === 'GET' && request.path === `/subdomains/${ID}`) {
+      return { body: { data: value } }
+    }
+  })
+  t.after(() => api.close())
+
+  const result = await run(api, ['subdomains', 'get', ID])
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.doesNotMatch(result.stdout, /CNAME/)
+  assert.match(result.stdout, /1\.2\.3\.4[\s\S]*5\.6\.7\.8/)
+  assert.match(result.stdout, /certificate has expired[\s\S]*fingerprint subdomains delete metrics\.example\.com/)
+  assert.doesNotMatch(result.stdout, /propagation|fingerprint subdomains verify/)
+})
+
 test('create directs users to correct DNS when only the CAA record still needs validation', async (t) => {
   const value = subdomain()
   value.dns_records.routing.forEach((record) => (record.status = 'validated'))

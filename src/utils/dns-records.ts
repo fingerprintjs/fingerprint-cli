@@ -7,8 +7,9 @@ export const CLOUDFLARE_DNS_ONLY_HINT =
   'On Cloudflare, set the records to DNS only (proxying off) — proxied records do not validate.'
 
 export function dnsRecords(subdomain: Subdomain): DnsRecord[] {
+  const verification = subdomain.dns_records.verification
   return [
-    subdomain.dns_records.verification,
+    ...(verification?.host && verification.value ? [verification] : []),
     ...subdomain.dns_records.routing,
     ...(subdomain.dns_records.caa ? [subdomain.dns_records.caa] : []),
   ]

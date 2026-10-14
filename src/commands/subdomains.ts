@@ -268,6 +268,11 @@ function printNextStep(subdomain: Subdomain): void {
     case 'failed':
       console.log('\nSubdomain setup failed. Contact Fingerprint support before retrying.')
       break
+    case 'expired':
+      console.log('\nThe certificate has expired. To set it up again, delete this subdomain and create it again:')
+      console.log(`  fingerprint subdomains delete ${hostname}`)
+      console.log(`  fingerprint subdomains create ${hostname}`)
+      break
   }
 }
 
