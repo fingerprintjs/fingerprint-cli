@@ -2,6 +2,7 @@ import { resolveConfig } from '../config/config.js'
 import { debugLog } from '../utils/log-file.js'
 import { decodeJwtPayload, discoverEndpoints, type TokenResponse } from './browserLogin.js'
 import { getAuthState, updateAuthState } from './tokenStore.js'
+import { CodedError } from '../errors.js'
 
 // The access token from login is short-lived, so "am I logged in?" can't just mean "is there a file on
 // disk?". This module is the single place that hands out a token known to still be good: it checks the
@@ -54,9 +55,9 @@ export function hasUsableSession(): boolean {
 // Returns an access token that is valid now, refreshing it first if needed.
 export async function getFreshAccessToken(): Promise<string> {
   const auth = getAuthState()
-  if (!auth?.accessToken) throw new Error(LOGGED_OUT)
+  if (!auth?.accessToken) throw new CodedError('not_authenticated', LOGGED_OUT)
   if (!isSpent(auth.accessToken)) return auth.accessToken
-  if (!auth.refreshToken) throw new Error(SESSION_EXPIRED)
+  if (!auth.refreshToken) throw new CodedError('session_expired', SESSION_EXPIRED)
 
   const cfg = resolveConfig()
   const { token_endpoint } = await discoverEndpoints(cfg.oauthIssuer)
@@ -72,20 +73,21 @@ export async function getFreshAccessToken(): Promise<string> {
     // Network-level failure: rejects rather than returning a response, so it never reaches the
     // !res.ok branch below and would otherwise surface as a bare "fetch failed".
     debugLog(`token refresh fetch failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
-    throw new Error(UNREACHABLE)
+    throw new CodedError('login_unreachable', UNREACHABLE)
   })
 
-  // A refresh token that's expired or revoked comes back 400 — nothing to retry, the user has to log
-  // in again. Same outcome for any other failure here, so keep one message.
+  // A refresh token that's expired or revoked comes back 4xx and the user has to log in again; a 429
+  // or 5xx is the service struggling, which logging in again won't fix.
   if (!res.ok) {
     debugLog(`token refresh failed: HTTP ${res.status}`)
-    throw new Error(SESSION_EXPIRED)
+    if (res.status === 429 || res.status >= 500) throw new CodedError('login_unreachable', UNREACHABLE)
+    throw new CodedError('session_expired', SESSION_EXPIRED)
   }
 
   const token = (await res.json()) as TokenResponse
   if (!token.access_token) {
     debugLog('token refresh returned no access_token')
-    throw new Error(SESSION_EXPIRED)
+    throw new CodedError('session_expired', SESSION_EXPIRED)
   }
 
   // Refresh tokens rotate: the response carries the one to use next time, and the old one is now dead.

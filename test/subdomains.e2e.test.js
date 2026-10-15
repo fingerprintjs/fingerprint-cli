@@ -482,6 +482,20 @@ test('interactive delete by hostname names the resolved resource and can be canc
   ])
 })
 
+test('Ctrl+C at the delete confirmation reports cancelled', async (t) => {
+  const api = await startApi((request) => {
+    if (request.method === 'GET' && request.path === '/subdomains') return { body: { data: [listItem()] } }
+    if (request.method === 'GET' && request.path === `/subdomains/${ID}`) return { body: { data: subdomain() } }
+  })
+  t.after(() => api.close())
+
+  await run(api, ['subdomains', 'delete', 'metrics.example.com'], {
+    respond: [{ when: /Delete metrics\.example\.com/, send: '\x03' }],
+  })
+
+  assert.equal(api.events.find((e) => e.event === 'cli_command_run')?.properties?.error_code, 'cancelled')
+})
+
 test('JSON errors distinguish authentication, validation, duplicate, limit, rate limiting, and service failures', async (t) => {
   const cases = [
     {
