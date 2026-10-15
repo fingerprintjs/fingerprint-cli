@@ -1,6 +1,6 @@
 import { ManagementClient } from './management.js'
 
-export type SubdomainStatus = 'pending' | 'active' | 'timed_out' | 'failed'
+export type SubdomainStatus = 'pending' | 'active' | 'timed_out' | 'failed' | 'expired'
 export type DnsRecordStatus = 'pending_validation' | 'validated' | 'failed'
 
 export interface DnsRecord {
@@ -23,7 +23,8 @@ export interface SubdomainListItem {
 export interface Subdomain extends SubdomainListItem {
   webhook_url: string | null
   dns_records: {
-    verification: DnsRecord
+    // Absent or an empty placeholder for HTTP-validated subdomains; a real CNAME on older ones.
+    verification?: DnsRecord
     routing: DnsRecord[]
     caa?: DnsRecord
     [key: string]: unknown

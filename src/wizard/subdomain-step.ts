@@ -42,7 +42,7 @@ export async function askResumeSubdomain(hostname: string): Promise<boolean> {
 // `waiting` when the user has to come back, `configured` when the app points at the subdomain,
 // `needs_action` when the subdomain is active but the app is not configured yet (no env
 // convention for the frontend, or the user declined the change), `failed` for errors.
-type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out'
+type SubdomainRunOutcome = 'waiting' | 'configured' | 'needs_action' | 'failed' | 'timed_out' | 'expired'
 
 // The analytics outcome of the configure run: only a completed run with the variable written is
 // `configured`; a completed run the CLI could not finish, or a declined one, still needs the user.
@@ -113,7 +113,7 @@ export async function runSubdomainStep(
         const endpointWritten = outcome === 'completed' ? finishSubdomainSetup(root, hostname) : false
         return end(outcome, configureRunOutcome(outcome, endpointWritten))
       }
-      if (current.status === 'failed' || current.status === 'timed_out') {
+      if (current.status === 'failed' || current.status === 'timed_out' || current.status === 'expired') {
         clearPendingSubdomainSetup(root)
         return end(reportTerminalStatus(hostname, current.status), current.status)
       }
@@ -365,11 +365,15 @@ function reportPending(
   log.info(options.propagationNote ? `${CLOUDFLARE_DNS_ONLY_HINT} Propagation can take a few minutes.` : CLOUDFLARE_DNS_ONLY_HINT)
 }
 
-// `failed` needs support; `timed_out` is recoverable by deleting and creating again, so it is
-// reported as waiting rather than as an error of this run.
-function reportTerminalStatus(hostname: string, status: Extract<SubdomainStatus, 'failed' | 'timed_out'>): IntegrateOutcome {
+// `failed` needs support; `timed_out` and `expired` are recoverable by deleting and creating
+// again, so they are reported as waiting rather than as an error of this run.
+function reportTerminalStatus(hostname: string, status: Extract<SubdomainStatus, 'failed' | 'timed_out' | 'expired'>): IntegrateOutcome {
   if (status === 'timed_out') {
     log.warn(`${hostname} timed out before its DNS records validated — delete it (fingerprint subdomains delete ${hostname}) and set it up again.`)
+    return 'waiting'
+  }
+  if (status === 'expired') {
+    log.warn(`${hostname}: the certificate has expired — delete it (fingerprint subdomains delete ${hostname}) and set it up again.`)
     return 'waiting'
   }
   log.error(`${hostname} failed — check it with: fingerprint subdomains get ${hostname}`)
