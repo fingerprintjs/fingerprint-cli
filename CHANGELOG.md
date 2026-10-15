@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.2.8
+
+### Patch Changes
+
+- Hide empty DNS verification records for HTTP-validated subdomains and handle expired certificates without waiting for DNS propagation. ([80c7981](https://github.com/fingerprintjs/fingerprint-cli/commit/80c79817e77ba024996778244fb9c8ee45efca34))
+
 ## 0.2.7
 
 ### Patch Changes
