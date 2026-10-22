@@ -9,6 +9,7 @@ import {
   type SubdomainListItem,
 } from '../api/subdomains.js'
 import { markFailure } from '../analytics/failure.js'
+import { errorCode } from '../errors.js'
 import { isCi } from '../utils/ci.js'
 import { DOMAIN_CONNECT_TIMEOUT_MS, listenForDomainConnect, openDomainConnectLink } from '../utils/domain-connect.js'
 import { requireAuth } from '../utils/session.js'
@@ -220,7 +221,7 @@ async function runCommand(
   } catch (error) {
     // Handled here, so the run's failure reason is recorded here too (see analytics/failure.ts).
     const serialized = serializeSubdomainError(error)
-    markFailure(`subdomain_${serialized.kind}`, serialized.message)
+    markFailure(errorCode(error) === 'cancelled' ? 'cancelled' : `subdomain_${serialized.kind}`, serialized.message)
     if (!options.json) throw new Error(formatError(error))
     printJson({ error: serialized })
     process.exitCode = 1

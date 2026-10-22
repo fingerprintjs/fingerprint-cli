@@ -7,6 +7,7 @@ import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
 import { debugLog } from '../utils/log-file.js'
 import { saveAuthState } from './tokenStore.js'
+import { CodedError } from '../errors.js'
 
 // Browser login is OAuth 2.0 Authorization Code + PKCE against WorkOS AuthKit — the same engine the
 // MCP integration uses. The CLI is a public OAuth client: it starts a loopback server, opens the
@@ -78,10 +79,10 @@ export async function discoverEndpoints(issuer: string): Promise<OAuthServerMeta
   // it never reaches the !res.ok branch below — without this it surfaces as a bare "fetch failed".
   const res = await fetch(url).catch((err: Error) => {
     debugLog(`discovery fetch failed for ${url}: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
-    throw new Error(`Couldn’t reach the login service at ${issuer}. Check your connection and try again.`)
+    throw new CodedError('login_unreachable', `Couldn’t reach the login service at ${issuer}. Check your connection and try again.`)
   })
   if (!res.ok) {
-    throw new Error(`Couldn’t reach the login service (HTTP ${res.status}). Please try again in a few minutes.`)
+    throw new CodedError('login_unreachable', `Couldn’t reach the login service (HTTP ${res.status}). Please try again in a few minutes.`)
   }
   const meta = (await res.json()) as Partial<OAuthServerMetadata>
   if (!meta.authorization_endpoint || !meta.token_endpoint) {
@@ -243,7 +244,8 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
       // Same network-level rejection as in discoverEndpoints — and worse here, since the user already
       // finished in the browser, so a bare "fetch failed" gives no hint that retrying is all it takes.
       debugLog(`token exchange fetch failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
-      throw new Error(
+      throw new CodedError(
+        'login_unreachable',
         `Couldn’t reach the login service to finish signing in. Check your connection and run \`fingerprint ${intent}\` again.`
       )
     })

@@ -1,5 +1,6 @@
 import { confirm, input, select } from '@inquirer/prompts'
 import { markFailure } from '../analytics/failure.js'
+import { errorCode } from '../errors.js'
 import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 import { ManagementApiError } from '../api/management.js'
 import { serializeSubdomainError, type SerializedSubdomainError } from '../api/subdomain-errors.js'
@@ -197,7 +198,7 @@ export async function runSubdomainStep(
     const serialized = serializeSubdomainError(error)
     // A 422 comes with a generic message that points at `violations`; those are the part to show.
     log.error(`Custom subdomain setup failed: ${describeSubdomainError(serialized)}`)
-    markFailure(`subdomain_${serialized.kind}`, serialized.message)
+    markFailure(errorCode(error) === 'cancelled' ? 'cancelled' : `subdomain_${serialized.kind}`, serialized.message)
     process.exitCode = 1
     return 'failed'
   }

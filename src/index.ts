@@ -13,7 +13,7 @@ import { color } from './utils/color.js'
 import { printFiglet } from './utils/figlet.js'
 import { track } from './analytics/track.js'
 import { markFailure, runFailure } from './analytics/failure.js'
-import { CodedError } from './errors.js'
+import { CodedError, errorCode } from './errors.js'
 import { VERSION } from './version.js'
 
 const program = new Command()
@@ -156,7 +156,7 @@ async function defaultCommand(unknownCommand?: string) {
   console.log()
 
   if (!auth?.managementApiKey) {
-    if (isCi()) throw new Error('Not authenticated. Run `fingerprint login` first.')
+    if (isCi()) throw new CodedError('not_authenticated', 'Not authenticated. Run `fingerprint login` first.')
     // Ask whether they have an account (login vs signup), then run browser auth for both new and
     // returning users (signup + onboarding happen in the browser) and chain straight into integrate.
     await startAuth()
@@ -227,6 +227,6 @@ program
   .catch(async (err) => {
     console.error(err.message)
     process.exitCode = 1
-    markFailure(err instanceof CodedError ? err.code : 'unknown', err)
+    markFailure(errorCode(err), err)
     await reportRun('error')
   })

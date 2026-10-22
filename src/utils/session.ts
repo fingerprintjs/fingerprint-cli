@@ -1,8 +1,9 @@
 import { getAuthState } from '../auth/tokenStore.js'
+import { CodedError } from '../errors.js'
 
-export class NotAuthenticatedError extends Error {
+export class NotAuthenticatedError extends CodedError {
   constructor() {
-    super('Not logged in. Run: fingerprint login')
+    super('not_authenticated', 'Not logged in. Run: fingerprint login')
     this.name = 'NotAuthenticatedError'
   }
 }
