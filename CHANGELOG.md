@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.2.9
+
+### Patch Changes
+
+- Report cancelled prompts, missing sessions, and an unreachable login service with their own error codes instead of `unknown`. ([dcdb5ae](https://github.com/fingerprintjs/fingerprint-cli/commit/dcdb5ae656440c62c58df0e5abee0d3f103dc041))
+
 ## 0.2.8
 
 ### Patch Changes
