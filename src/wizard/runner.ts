@@ -20,6 +20,7 @@ import { recordWizardStep } from '../analytics/track.js'
 import { normalizeHostname } from '../api/subdomains.js'
 import { clearPendingSubdomainSetup, pendingSubdomainSetup } from './subdomain-setups.js'
 import { askResumeSubdomain, askSubdomainHostname, runSubdomainStep } from './subdomain-step.js'
+import { connectMcp } from './mcp.js'
 
 // Tools the agent may use. No Bash: the agent only edits code; the CLI runs package installs
 // itself (deterministic, no shell handed to the model). Read-only tools are auto-allowed; the
@@ -109,6 +110,8 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
   // is behind us it drops out of the menu.
   const done = new Set<NextStep>()
+  let mcpConnected = false
+  let mcpOffered = true
   const unfinished = opts.subdomain ? undefined : pendingSubdomainSetup(root)
   const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep, { yes: opts.yes })
   if (opts.subdomain) {
@@ -137,9 +140,16 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     const analysis = analyzeRepo(root)
     if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
     if (analysis.frontend && usesConfiguredEndpoint(analysis.frontend)) done.add('proxy')
-    const next = await askNextStep(done)
+    const next = await askNextStep(done, { offerMcp: mcpOffered, testHint: !mcpConnected })
     recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
+    // Not an integration step: nothing to test afterwards, so the menu comes straight back.
+    mcpConnected = next === 'mcp'
+    if (next === 'mcp') {
+      mcpOffered = false
+      await connectMcp()
+      continue
+    }
     // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
     if (next !== 'more') done.add(next)
     // Server-side verification is the one step that may live in another repo.
@@ -194,15 +204,18 @@ function stepActivity(step?: string): string {
 
 // The user sets the pace: test the step that just landed, then pick the next one. The quick-start
 // steps are offered by name; the rest only once those are behind us, so nothing is skipped ahead.
-async function askNextStep(done: Set<NextStep>): Promise<NextStep | 'stop'> {
+async function askNextStep(done: Set<NextStep>, opts: { offerMcp: boolean; testHint: boolean }): Promise<NextStep | 'mcp' | 'stop'> {
   const quickStartDone = done.has('server') && done.has('proxy')
   const offered = (Object.keys(NEXT_STEPS) as NextStep[]).filter((s) => !done.has(s) && (s !== 'more' || quickStartDone))
-  log.line()
-  log.info('Test this step now — start your dev server and check the result described above — then choose what to do next.')
-  return select<NextStep | 'stop'>({
+  if (opts.testHint) {
+    log.line()
+    log.info('Test this step now — start your dev server and check the result described above — then choose what to do next.')
+  }
+  return select<NextStep | 'mcp' | 'stop'>({
     message: "What's next?",
     choices: [
       ...offered.map((s) => ({ name: NEXT_STEPS[s].name, value: s })),
+      ...(opts.offerMcp ? [{ name: 'Connect Fingerprint to your coding agent (MCP)', value: 'mcp' as const }] : []),
       { name: 'Stop here for now (run fingerprint again to continue later)', value: 'stop' },
     ],
   })
