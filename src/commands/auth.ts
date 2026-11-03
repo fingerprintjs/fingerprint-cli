@@ -1,6 +1,7 @@
 import { select } from '../utils/prompt.js'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
+import { hasUsableSession } from '../auth/refresh.js'
 import { isCi } from '../utils/ci.js'
 import { NotAuthenticatedError } from '../utils/session.js'
 import { color } from '../utils/color.js'
@@ -36,13 +37,19 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 // to (say) generate a key doesn't drag the user into a full integration. `intent` forces the sign-in
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
-  const { intent, chosen } = await resolveIntent(opts.intent)
-  // At the moment of the answer rather than after login returns. Waiting recorded the intent of
-  // people who finished and nobody else, which hid the drop-off this event exists to measure: the
-  // browser tab closed on the signup form, the login that errored.
-  if (chosen) await track('cli_auth_intent_selected', { intent })
-  const result = await loginWithBrowser({ intent })
-  log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
+  const stored = getAuthState()
+  // A stored session that's still live (or renewable) is reused for login; signup still opens the browser.
+  if (opts.intent === 'login' && stored?.managementApiKey && hasUsableSession()) {
+    log.success(`Signed in ${color.dim(`workspace ${color.bold(stored.workspaceId)}`)}`)
+  } else {
+    const { intent, chosen } = await resolveIntent(opts.intent)
+    // At the moment of the answer rather than after login returns. Waiting recorded the intent of
+    // people who finished and nobody else, which hid the drop-off this event exists to measure: the
+    // browser tab closed on the signup form, the login that errored.
+    if (chosen) await track('cli_auth_intent_selected', { intent })
+    const result = await loginWithBrowser({ intent })
+    log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
+  }
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.

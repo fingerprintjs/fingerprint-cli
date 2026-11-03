@@ -129,3 +129,21 @@ test('a token that is still valid is used as-is, with no refresh round-trip', as
   assert.equal(auth.grants().length, 0, 'refreshed a token that had not expired')
   assert.equal(readAuth(home).refreshToken, 'rt_1', 'rewrote the refresh token needlessly')
 })
+
+test('login with a valid stored session reuses it instead of opening the browser', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url, { accessToken: liveJwt(), refreshToken: 'rt_1' })
+  const repo = makeRepo()
+
+  const res = await runCli(['login'], {
+    home,
+    cwd: repo,
+    // Reaching integrate's confirm proves login chained on the stored session; decline there.
+    respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }],
+  })
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.doesNotMatch(res.stdout, /If it doesn't open, visit/)
+  assert.match(res.stdout, /Signed in/)
+  assert.match(res.stdout, /Integrate Fingerprint into this repo/)
+})
