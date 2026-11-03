@@ -20,14 +20,14 @@ after(async () => {
   await api.close()
 })
 
-// A `claude` on PATH that logs its arguments; `--version` exits with `versionExit`, `mcp get` with 1
-// (the server isn't there yet), everything else with 0.
-function fakeClaude(versionExit = 0) {
+// A `claude` on PATH that logs its arguments; `--version` exits with `versionExit`, `mcp add` prints
+// `addError` to stderr and exits 1 when given, everything else exits 0.
+function fakeClaude(versionExit = 0, addError = '') {
   const bin = mkdtempSync(join(tmpdir(), 'fp-bin-'))
   const calls = join(bin, 'calls.log')
   writeFileSync(
     join(bin, 'claude'),
-    `#!/bin/sh\necho "$@" >> "${calls}"\n[ "$1" = "--version" ] && exit ${versionExit}\n[ "$1 $2" = "mcp get" ] && exit 1\nexit 0\n`
+    `#!/bin/sh\necho "$@" >> "${calls}"\n[ "$1" = "--version" ] && exit ${versionExit}\n[ "$1 $2" = "mcp add" ] && [ -n "${addError}" ] && { echo "${addError}" >&2; exit 1; }\nexit 0\n`
   )
   chmodSync(join(bin, 'claude'), 0o755)
   return { path: `${bin}:${process.env.PATH}`, calls: () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '') }
@@ -78,6 +78,28 @@ test('connecting MCP adds the server to Claude Code and Cursor, keeping Cursor s
   const menu = res.stdout.slice(res.stdout.lastIndexOf('Is my custom subdomain active yet?'))
   assert.doesNotMatch(menu, /Test this step now/)
   assert.doesNotMatch(menu, /Connect Fingerprint to your coding agent \(MCP\)/)
+})
+
+test('a server already in Claude Code user config is reported, a failed add shows why, and an empty Cursor config is filled', async () => {
+  for (const [addError, expected] of [
+    ['MCP server fingerprint already exists in user config', /Already in Claude Code/],
+    ['Invalid transport type', /Couldn't add to Claude Code: Invalid transport type/],
+  ]) {
+    const home = makeHome()
+    seedAuth(home, api.url)
+    mkdirSync(join(home, '.cursor'))
+    writeFileSync(join(home, '.cursor', 'mcp.json'), '')
+    const claude = fakeClaude(0, addError)
+
+    const res = await runToMcp({ home, path: claude.path }, [
+      { when: /Add the Fingerprint MCP server/, send: 'y\n' },
+      { when: /Is my custom subdomain active yet\?[\s\S]*What's next\?/, send: STOP },
+    ])
+
+    assert.equal(res.status, 0, res.stderr)
+    assert.match(res.stdout, expected)
+    assert.match(res.stdout, /Added to Cursor/)
+  }
 })
 
 test('with no supported agent, connecting MCP prints how to add it by hand and writes nothing', async () => {

@@ -28,9 +28,14 @@ function detectClients(): McpClient[] {
       name: 'Claude Code',
       target: `claude ${CLAUDE_ADD.join(' ')}`,
       add: () => {
-        if (runs('claude', ['mcp', 'get', 'fingerprint'])) return false
-        execFileSync('claude', CLAUDE_ADD, { stdio: 'pipe', timeout: 15_000 })
-        return true
+        try {
+          execFileSync('claude', CLAUDE_ADD, { stdio: 'pipe', timeout: 15_000 })
+          return true
+        } catch (e) {
+          // Only a user-scope registration counts as already there; `mcp get` also matches project or local ones.
+          if (/already exists in user config/.test(output(e))) return false
+          throw e
+        }
       },
     })
   }
@@ -49,10 +54,17 @@ function runs(bin: string, args: string[]): boolean {
   }
 }
 
+// What a failed command printed, falling back to the error message.
+function output(e: unknown): string {
+  const { stderr, stdout, message } = e as { stderr?: Buffer; stdout?: Buffer; message: string }
+  return `${stderr ?? ''}${stdout ?? ''}`.trim() || message
+}
+
 function addToCursor(): boolean {
   const path = join(homedir(), '.cursor', 'mcp.json')
-  // An unreadable config throws rather than being overwritten.
-  const current = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {}
+  // An empty file counts as no config; an unreadable one throws rather than being overwritten.
+  const text = existsSync(path) ? readFileSync(path, 'utf8').trim() : ''
+  const current = text ? JSON.parse(text) : {}
   const next = withFingerprintServer(current)
   if (!next) return false
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`)
@@ -91,7 +103,7 @@ export async function connectMcp(): Promise<void> {
       const label = client.add() ? `Added to ${client.name}` : `Already in ${client.name}`
       log.success(`${label.padEnd(width)}${color.dim(`(${client.target})`)}`)
     } catch (e) {
-      log.warn(`Couldn't add to ${client.name}: ${(e as Error).message.split('\n')[0]}`)
+      log.warn(`Couldn't add to ${client.name}: ${output(e)}`)
     }
   }
   log.line()
