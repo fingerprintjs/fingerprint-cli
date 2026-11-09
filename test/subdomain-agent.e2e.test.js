@@ -1024,6 +1024,11 @@ function startGateway(next) {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
     req.on('end', () => {
+      // The pre-flight session check; not an agent turn.
+      if (req.url.startsWith('/v1/messages/count_tokens')) {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        return res.end('{"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}')
+      }
       if (!req.url.startsWith('/v1/messages')) {
         res.writeHead(200, { 'content-type': 'application/json' })
         return res.end('{}')
