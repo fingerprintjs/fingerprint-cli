@@ -624,6 +624,10 @@ function buildGetStartedPrompt(
           `The user is setting up Fingerprint for: ${chosen.map((u) => `${u.title} (.claude/skills/${u.skill}/SKILL.md)`).join(', ')}.`,
           'Read those skills before this step and apply their guidance to it. Start from their tutorial',
           'defaults; do not enable signals or enforcement beyond what they recommend.',
+          'In the backend, add the use case\'s code even when no route uses it yet: the bot + Suspect Score',
+          'gate and the pattern logic (device binding, velocity limit, ...) as modules, wired into the',
+          'matching route if the app has one; otherwise show the call in a comment and name the route',
+          'that is missing. Never scaffold that route.',
         ]
       : []),
     // A static site has no env file to point at, so the values go in the prompt instead — telling
