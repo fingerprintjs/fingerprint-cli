@@ -108,7 +108,8 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   let outcome: IntegrateOutcome
   // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
   // is behind us it drops out of the menu.
-  const done = new Set<NextStep>()
+  const done = new Set<NextStep | 'install'>()
+  let audited = false
   const unfinished = opts.subdomain ? undefined : pendingSubdomainSetup(root)
   const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep, { yes: opts.yes })
   if (opts.subdomain) {
@@ -126,8 +127,25 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       clearPendingSubdomainSetup(root)
       recordWizardStep('resume_declined')
     }
-    recordWizardStep('install')
-    outcome = await provisionAndApply(root, opts)
+    const progress = integrationProgress(root)
+    // Step 1 is behind us when the frontend has the SDK, or when there is no frontend and the backend
+    // already verifies events. A verified backend next to an untouched frontend still starts at step 1.
+    const started = progress.installed || (!progress.analysis.frontend && progress.server)
+    if (started && !opts.yes && !autoYes()) {
+      // Fingerprint is already in this repo: say which steps are done and ask what to do next,
+      // instead of offering to "integrate" an app that is integrated.
+      recordWizardStep('resume_steps')
+      await provisionEnv(root)
+      reportProgress(progress)
+      if (progress.installed) done.add('install')
+      if (progress.server) done.add('server')
+      if (progress.proxy) done.add('proxy')
+      outcome = 'completed'
+      audited = true
+    } else {
+      recordWizardStep('install')
+      outcome = await provisionAndApply(root, opts)
+    }
   }
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
   // checklist ran dry.
@@ -137,7 +155,8 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     const analysis = analyzeRepo(root)
     if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
     if (analysis.frontend && usesConfiguredEndpoint(analysis.frontend)) done.add('proxy')
-    const next = await askNextStep(done)
+    const next = await askNextStep(done, { afterAudit: audited })
+    audited = false
     recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
     // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
@@ -168,6 +187,42 @@ async function provisionThen(root: string, next: () => Promise<IntegrateOutcome>
   return next()
 }
 
+// What the repo already shows of the Get Started checklist: the install (step 1) once the frontend
+// imports a client SDK, server-side verification (step 2) once the backend imports the server SDK,
+// the custom subdomain (step 3) once the frontend references the configured endpoint.
+interface IntegrationProgress {
+  analysis: RepoAnalysis
+  installed: boolean
+  server: boolean
+  proxy: boolean
+}
+
+function integrationProgress(root: string): IntegrationProgress {
+  const analysis = analyzeRepo(root)
+  return {
+    analysis,
+    installed: Boolean(analysis.frontend && usesClientSdk(analysis.frontend)),
+    server: Boolean(analysis.backend && usesServerSdk(analysis.backend)),
+    proxy: Boolean(analysis.frontend && usesConfiguredEndpoint(analysis.frontend)),
+  }
+}
+
+// `◇ Get Started progress`: what is done, where, and what is left — so the first question the user
+// sees on a repo that already has Fingerprint is "what's next?", not "integrate?".
+function reportProgress({ analysis, installed, server, proxy }: IntegrationProgress): void {
+  const where = (app: DetectedApp) => (app.rel === '.' ? 'this app' : app.rel)
+  log.step('Get Started progress')
+  if (installed && analysis.frontend) log.success(`Fingerprint is installed in ${where(analysis.frontend)}`)
+  if (server && analysis.backend) log.success(`Server-side verification is set up in ${where(analysis.backend)}`)
+  if (proxy) log.success('The agent is served from your custom subdomain')
+  const remaining = [
+    ...(server ? [] : ['server-side verification']),
+    ...(proxy ? [] : ['a custom subdomain against ad blockers']),
+    'rules, tagging and request filtering',
+  ]
+  log.info(`Remaining: ${remaining.join(', then ')}.`)
+}
+
 // The steps the CLI can offer after one lands. `step` is what the agent is told to do.
 type NextStep = 'server' | 'proxy' | 'more'
 const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: string }> = {
@@ -193,12 +248,15 @@ function stepActivity(step?: string): string {
 }
 
 // The user sets the pace: test the step that just landed, then pick the next one. The quick-start
-// steps are offered by name; the rest only once those are behind us, so nothing is skipped ahead.
-async function askNextStep(done: Set<NextStep>): Promise<NextStep | 'stop'> {
-  const quickStartDone = done.has('server') && done.has('proxy')
-  const offered = (Object.keys(NEXT_STEPS) as NextStep[]).filter((s) => !done.has(s) && (s !== 'more' || quickStartDone))
-  log.line()
-  log.info('Test this step now — start your dev server and check the result described above — then choose what to do next.')
+// steps are offered by name; the remaining checklist (rules, tagging, request filtering) once
+// server-side verification is in place — the subdomain can be skipped, it must not block the rest.
+// `afterAudit`: the menu follows the progress report, not a step the user should test first.
+async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false } = {}): Promise<NextStep | 'stop'> {
+  const offered = (Object.keys(NEXT_STEPS) as NextStep[]).filter((s) => !done.has(s) && (s !== 'more' || done.has('server')))
+  if (!afterAudit) {
+    log.line()
+    log.info('Test this step now — start your dev server and check the result described above — then choose what to do next.')
+  }
   return select<NextStep | 'stop'>({
     message: "What's next?",
     choices: [
@@ -222,6 +280,24 @@ async function askBackendPath(): Promise<string | undefined> {
 const SERVER_SDK_IMPORT = /(?<![\w.$])(?:from|import|require)\s*\(?\s*['"]@fingerprint\/node-sdk['"]|^\s*(?:import|from)\s+fingerprint_server_sdk\b/m
 const JS_COMMENT = /\/\*[\s\S]*?\*\/|\/\/.*$/gm
 const PY_COMMENT = /"""[\s\S]*?"""|'''[\s\S]*?'''|#.*$/gm
+
+// Step 1 is in place once the frontend's code imports a client SDK (@fingerprint/react, /vue,
+// /agent, …): the package in the manifest alone could be a leftover install.
+const CLIENT_SDK_IMPORT = /(?<![\w.$])(?:from|import|require)\s*\(?\s*['"]@fingerprint\/(?!node-sdk['"])[\w-]+['"]/m
+
+function usesClientSdk(app: DetectedApp): boolean {
+  try {
+    return sourceFiles(app.dir).some((file) => {
+      try {
+        return CLIENT_SDK_IMPORT.test(readFileSync(file, 'utf8').replace(JS_COMMENT, ''))
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    return false
+  }
+}
 
 function usesServerSdk(app: DetectedApp): boolean {
   try {
@@ -268,12 +344,16 @@ function sourceFiles(dir: string): string[] {
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
 async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string }): Promise<IntegrateOutcome> {
+  await provisionEnv(root)
+  return applyIntegration(root, opts)
+}
+
+async function provisionEnv(root: string): Promise<void> {
   log.step('Set up environment variables')
   const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
     log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
   }
-  return applyIntegration(root, opts)
 }
 
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
