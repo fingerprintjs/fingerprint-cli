@@ -129,8 +129,10 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       clearPendingSubdomainSetup(root)
       recordWizardStep('resume_declined')
     }
-    if (!opts.yes && !autoYes()) chosen = await askUseCases()
     const progress = integrationProgress(root)
+    // A use case is applied in the server check, so it is asked where the backend is: here when
+    // this repo has one, otherwise when the user points at the backend from the menu.
+    if (!opts.yes && !autoYes() && progress.analysis.backend) chosen = await askUseCases()
     // Step 1 is behind us when the frontend has the SDK, or when there is no frontend and the backend
     // already verifies events. A verified backend next to an untouched frontend still starts at step 1.
     const started = progress.installed || (!progress.analysis.frontend && progress.server)
@@ -150,7 +152,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       // A use case lives in the server check, so with a backend here both quick-start steps land
       // in one run: a menu after the frontend install alone would offer "server-side verification"
       // with nothing use-case-specific on screen yet.
-      const bothSteps = chosen.length > 0 && Boolean(progress.analysis.backend)
+      const bothSteps = chosen.length > 0 && Boolean(progress.analysis.frontend && progress.analysis.backend)
       outcome = await provisionAndApply(root, { yes: opts.yes, useCases: chosen, step: bothSteps ? USE_CASE_FIRST_STEP : undefined })
       if (bothSteps) done.add('server')
     }
@@ -172,7 +174,10 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     // Server-side verification is the one step that may live in another repo.
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
-      if (backend) outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen })
+      if (backend) {
+        chosen = await askUseCases()
+        outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen })
+      }
       continue
     }
     outcome =

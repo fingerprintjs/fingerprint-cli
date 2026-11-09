@@ -267,6 +267,43 @@ test('choosing a use case installs its skills and tells the agent about it on ev
   assert.ok(bodies.some((b) => /next unfinished checklist step/.test(b) && useCaseLine.test(b)), 'a later step still names the use case')
 })
 
+test('a frontend-only repo is asked about use cases once it points at its backend', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const frontend = mkdtempSync(join(tmpdir(), 'fp-fe-'))
+  writeFileSync(join(frontend, 'package.json'), JSON.stringify({ name: 'fe', dependencies: { react: '^18' } }))
+  const backend = join(makeRepo(), 'api')
+  const skillsDir = makeSkillsDir()
+  addUseCaseSkill(skillsDir, 'fingerprint-protect-action', [])
+  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
+  const gw = await startGateway(join(frontend, 'fingerprint.js'), '// integration\n')
+
+  const res = await runCli(['integrate'], {
+    home,
+    cwd: frontend,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+    respond: [
+      { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
+      { when: /What's next\?/, send: FIRST }, // server-side verification
+      { when: /Path to your backend repo/, send: `${backend}\n` },
+      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
+      { when: /Which use cases\?/, send: `${SPACE}\n` },
+      { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
+      { when: SECOND_MENU, send: `${UP}\n` }, // → stop
+    ],
+  })
+  const bodies = gw.bodies()
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  // Not asked before the frontend install: the question comes with the backend.
+  assert.ok(res.stdout.indexOf('specific use case') > res.stdout.indexOf('Path to your backend repo'), res.stdout)
+  const useCaseLine = /setting up Fingerprint for: Account Takeover/
+  assert.ok(bodies.some((b) => /one step at a time/.test(b) && !useCaseLine.test(b)), 'the frontend install has no use case')
+  assert.ok(bodies.some((b) => /Quick start step 2/.test(b) && useCaseLine.test(b)), 'the backend step names the use case')
+  assert.ok(readdirSync(join(backend, '.claude', 'skills')).includes('fingerprint-device-account-binding'))
+})
+
 test('declining the use case question is the basic integration', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
