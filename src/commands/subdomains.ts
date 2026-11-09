@@ -217,7 +217,7 @@ async function runCommand(
   action: (service: SubdomainsService) => Promise<void>
 ): Promise<void> {
   try {
-    // JSON output is for scripts, which can't finish a browser sign-in: fail with the error instead.
+    // JSON output is for scripts, which can't finish a browser sign-in.
     if (options.json) requireAuth()
     else await requireAuthOrSignIn()
     await action(new SubdomainsService())

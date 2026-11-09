@@ -277,7 +277,6 @@ const errorProps = (api) => {
 test('an integrate that gives up for want of a session reports why, not just error', async () => {
   const api = await startManagementApi()
 
-  // --ci: interactively, integrate would sign the user in instead of giving up.
   const res = await runCli(['integrate', '--ci'], {
     home: makeHome(),
     cwd: makeRepo(),

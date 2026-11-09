@@ -154,9 +154,7 @@ async function defaultCommand(unknownCommand?: string) {
 
   if (!signedIn) {
     if (isCi()) throw new CodedError('not_authenticated', 'Not authenticated. Run `fingerprint login` first.')
-    // A stored key with a dead session means they have an account, so go straight to sign-in. Otherwise
-    // ask whether they have one (login vs signup). Either way browser auth runs (signup + onboarding
-    // happen in the browser) and chains straight into integrate.
+    // A stored key means they have an account, so skip the login/signup question.
     await (auth?.managementApiKey ? login() : startAuth())
     return
   }

@@ -70,17 +70,13 @@ export async function ensureAuth(): Promise<void> {
   if (!getAuthState()?.managementApiKey) throw new CodedError('not_authenticated', 'Authentication required.')
 }
 
-// A command that needs a session but finds none (or a dead one) signs the user in on the spot instead
-// of failing with "run fingerprint login". Returns false when there's no one to drive a browser (CI),
-// so the caller fails as it would have. An expired session means they have an account, so the
-// login/signup question is skipped.
+// Sign in on the spot instead of failing. False in CI, where there's no one to drive a browser.
 export async function signInNow(expired: boolean): Promise<boolean> {
   if (isCi()) return false
   await authenticate({ chain: false, intent: expired ? 'login' : undefined })
   return true
 }
 
-// `requireAuth`, signing in first when nothing usable is stored.
 export async function requireAuthOrSignIn() {
   const auth = getAuthState()
   if (!auth?.managementApiKey || !hasUsableSession()) await signInNow(Boolean(auth?.managementApiKey))

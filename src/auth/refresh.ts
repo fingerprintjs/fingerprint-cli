@@ -15,7 +15,7 @@ import { CodedError } from '../errors.js'
 // Renew slightly early so a token that passes the check is still valid when the request lands.
 const EXPIRY_SKEW_MS = 60_000
 
-const LOGIN_HINT = 'Run: fingerprint login'
+export const LOGIN_HINT = 'Run: fingerprint login'
 const LOGGED_OUT = `Not logged in. ${LOGIN_HINT}`
 const SESSION_EXPIRED = `Your session expired. ${LOGIN_HINT}`
 // A dead connection is not a dead session: renewing needs the network, and so would logging in again,

@@ -147,13 +147,23 @@ export function startAuthServer({ deadTokenEndpoint = false } = {}) {
 // A fake LLM gateway speaking Anthropic's /v1/messages streaming protocol, scripted to make the
 // agent perform exactly one Write (the "integration"), then end the turn. `writeTarget` is the
 // absolute file the agent will create; the test points FINGERPRINT_GATEWAY_URL at this.
-export function startGateway(writeTarget, writeContent) {
+// `rejectToken` fails the pre-flight session check (count_tokens) with 403 invalid_token, like the real gateway.
+export function startGateway(writeTarget, writeContent, { rejectToken } = {}) {
   let calls = 0
   const bodies = []
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
     req.on('end', () => {
+      if (req.url.startsWith('/v1/messages/count_tokens')) {
+        const token = (req.headers.authorization ?? '').replace(/^Bearer /, '')
+        if (rejectToken && token === rejectToken) {
+          res.writeHead(403, { 'content-type': 'application/json' })
+          return res.end('{"error":"invalid_token"}')
+        }
+        res.writeHead(400, { 'content-type': 'application/json' })
+        return res.end('{"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}')
+      }
       if (!req.url.startsWith('/v1/messages')) {
         res.writeHead(200, { 'content-type': 'application/json' })
         return res.end('{}')
@@ -258,10 +268,7 @@ export function makeServedStaticRepo(dependencies = { fastify: '^5', '@fastify/s
 
 // Async (not spawnSync): the fake servers run in this same process, so the event loop must stay
 // free to answer the child's HTTP requests while it runs — spawnSync would deadlock.
-// Stands in for the user finishing a browser sign-in: reads the redirect URI and state out of the
-// authorize URL the CLI printed and calls its loopback back with a code. The fake auth server's /token
-// answers any grant with a live token, so the CLI carries on as signed in. Needs FINGERPRINT_NO_BROWSER
-// in the run's env, or the CLI opens a real browser too.
+// Finishes a browser sign-in for the CLI: hits its loopback with a code taken from the printed authorize URL.
 export function finishBrowserLogin(stdout) {
   const plain = stdout.replace(/\x1b\[[0-9;]*m/g, '')
   const authUrl = new URL(plain.match(/https?:\/\/\S+\/authorize\?\S+/)[0])
@@ -274,7 +281,7 @@ export function finishBrowserLogin(stdout) {
 // `respond` scripts interactive prompts: [{ when: /pattern/, send: 'n\n' }, ...] — each entry
 // fires once, in order, when its pattern appears on stdout (writing all answers up front doesn't
 // work: the first prompt's key listener would swallow the buffered input meant for the next one).
-// `send` may be a function instead of input; it gets the stdout so far (see finishBrowserLogin).
+// `send` may be a function of the stdout so far (see finishBrowserLogin).
 export function runCli(args, { home, cwd, env = {}, respond } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], {

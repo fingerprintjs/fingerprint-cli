@@ -204,7 +204,6 @@ test('bare subdomains without auth in CI prints only the login error without req
   const api = await startApi(() => undefined)
   t.after(() => api.close())
 
-  // --ci: interactively, the command would sign the user in instead of failing.
   const result = await runCli(['subdomains', '--ci'], {
     home: makeHome(),
     env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },

@@ -223,7 +223,6 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   log.info('Opening your browser...')
   log.info(`  ${color.dim(`If it doesn't open, visit:`)}`)
   log.info(`  ${color.dim(authUrl.toString())}`)
-  // FINGERPRINT_NO_BROWSER (tests, SSH sessions) leaves the printed URL as the only way in.
   if (!process.env.FINGERPRINT_NO_BROWSER) {
     await open(authUrl.toString()).catch(() => {
       // Browser couldn't be opened automatically; the printed URL is the fallback.

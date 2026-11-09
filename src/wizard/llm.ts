@@ -1,5 +1,10 @@
-import { getFreshAccessToken } from '../auth/refresh.js'
+import { getFreshAccessToken, LOGIN_HINT } from '../auth/refresh.js'
 import { resolveConfig } from '../config/config.js'
+import { CodedError } from '../errors.js'
+import { debugLog } from '../utils/log-file.js'
+
+// The only model the gateway accepts.
+const MODEL = 'claude-sonnet-5-5'
 
 export interface LlmConfig {
   model: string
@@ -27,6 +32,24 @@ export async function resolveLlmConfig(): Promise<LlmConfig> {
     ANTHROPIC_API_KEY: undefined, // don't let a stray key override the gateway routing
   }
 
-  // The gateway rejects any other model; naming it here lets the SDK shape requests for the model that runs.
-  return { model: 'claude-sonnet-5-5', env }
+  return { model: MODEL, env }
+}
+
+// An unexpired token can still be one the gateway rejects (other environment, revoked). count_tokens
+// with no messages is refused upstream before any model is spent, so it only proves the token works.
+export async function verifyGatewayAccess(accessToken: string): Promise<void> {
+  const res = await fetch(`${resolveConfig().gatewayUrl}/v1/messages/count_tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ model: MODEL, messages: [] }),
+  }).catch((err: Error) => {
+    debugLog(`gateway session check failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
+    throw new CodedError('gateway_unreachable', 'Couldn’t reach the Fingerprint LLM gateway to check your session. Check your connection and try again.')
+  })
+  if (res.status !== 401 && res.status !== 403) return
+  const { error } = (await res.json().catch(() => ({}))) as { error?: string }
+  debugLog(`gateway rejected the access token: HTTP ${res.status} ${error ?? ''}`)
+  // Other 403s are about the request, not the token.
+  if (res.status === 403 && error !== 'invalid_token' && error !== 'insufficient_scope') return
+  throw new CodedError('session_invalid', `Your session is no longer valid. ${LOGIN_HINT}`)
 }
