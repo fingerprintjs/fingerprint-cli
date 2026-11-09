@@ -147,7 +147,12 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       audited = true
     } else {
       recordWizardStep('install')
-      outcome = await provisionAndApply(root, { yes: opts.yes, useCases: chosen })
+      // A use case lives in the server check, so with a backend here both quick-start steps land
+      // in one run: a menu after the frontend install alone would offer "server-side verification"
+      // with nothing use-case-specific on screen yet.
+      const bothSteps = chosen.length > 0 && Boolean(progress.analysis.backend)
+      outcome = await provisionAndApply(root, { yes: opts.yes, useCases: chosen, step: bothSteps ? USE_CASE_FIRST_STEP : undefined })
+      if (bothSteps) done.add('server')
     }
   }
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
@@ -245,6 +250,11 @@ const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: strin
     step: 'the next unfinished checklist step (rules, tagging, request filtering)',
   },
 }
+
+// The first run of a use-case setup in a repo with a backend: install and server-side verification
+// together, so the use case's server check is in place before the user is asked what's next.
+const USE_CASE_FIRST_STEP =
+  'Quick start steps 1 and 2 together — install Fingerprint in the frontend and verify the event server-side with the Server API, applying the use-case skill in both'
 
 function stepActivity(step?: string): string {
   return Object.values(NEXT_STEPS).find((next) => next.step === step)?.activity ?? 'Setting up Fingerprint'

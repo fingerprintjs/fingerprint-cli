@@ -246,8 +246,10 @@ test('choosing a use case installs its skills and tells the agent about it on ev
       { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
       { when: /Which use cases\?/, send: `${SPACE}\n` }, // the first entry: Account Takeover
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
-      { when: /What's next\?/, send: FIRST }, // server-side verification
-      { when: SECOND_MENU, send: `${UP}\n` }, // → stop
+      // Install and server-side verification landed together, so the menu is [subdomain, remaining
+      // steps, stop]; pick the remaining steps, then stop at the menu after that run.
+      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: /Continuing the integration checklist[\s\S]*❯ (\x1b\[[0-9;]*m)*Protect against ad blockers/, send: `${UP}\n` },
     ],
   })
   const bodies = gw.bodies()
@@ -257,10 +259,12 @@ test('choosing a use case installs its skills and tells the agent about it on ev
   assert.match(res.stdout, /Protect your users/)
   const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
   assert.deepEqual(installed, ['fingerprint-device-account-binding', 'fingerprint-get-started', 'fingerprint-node', 'fingerprint-protect-action', 'fingerprint-react'])
-  // Both the first step and the one picked from the menu carry the use case.
+  // The use case lives in the server check, so the first run does both quick-start steps and the
+  // menu never offers server-side verification on its own.
+  assert.doesNotMatch(res.stdout, /Set up server-side verification/)
   const useCaseLine = /setting up Fingerprint for: Account Takeover \(\.claude\/skills\/fingerprint-device-account-binding\/SKILL\.md\)/
-  assert.ok(bodies.some((b) => /one step at a time/.test(b) && useCaseLine.test(b)), 'step 1 prompt names the use case')
-  assert.ok(bodies.some((b) => /Quick start step 2/.test(b) && useCaseLine.test(b)), 'step 2 prompt names the use case')
+  assert.ok(bodies.some((b) => /Quick start steps 1 and 2 together/.test(b) && useCaseLine.test(b)), 'first run does both steps for the use case')
+  assert.ok(bodies.some((b) => /next unfinished checklist step/.test(b) && useCaseLine.test(b)), 'a later step still names the use case')
 })
 
 test('declining the use case question is the basic integration', async () => {
