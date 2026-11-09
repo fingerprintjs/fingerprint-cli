@@ -8,6 +8,7 @@ import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
 import { integrateCommand } from './integrate.js'
 import { pinAuthForTracking, track } from '../analytics/track.js'
+import { CodedError } from '../errors.js'
 
 type Intent = 'login' | 'signup'
 
@@ -66,7 +67,7 @@ export const startAuth = (opts: { chain?: boolean } = {}) => authenticate(opts)
 export async function ensureAuth(): Promise<void> {
   if (getAuthState()?.managementApiKey) return
   await startAuth({ chain: false })
-  if (!getAuthState()?.managementApiKey) throw new Error('Authentication required.')
+  if (!getAuthState()?.managementApiKey) throw new CodedError('not_authenticated', 'Authentication required.')
 }
 
 // A command that needs a session but finds none (or a dead one) signs the user in on the spot instead

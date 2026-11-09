@@ -73,21 +73,22 @@ export async function getFreshAccessToken(): Promise<string> {
     // Network-level failure: rejects rather than returning a response, so it never reaches the
     // !res.ok branch below and would otherwise surface as a bare "fetch failed".
     debugLog(`token refresh fetch failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
-    throw new CodedError('login_unreachable', UNREACHABLE)
+    throw new CodedError('login_unreachable', UNREACHABLE, { cause: err })
   })
 
   // A refresh token that's expired or revoked comes back 4xx and the user has to log in again; a 429
   // or 5xx is the service struggling, which logging in again won't fix.
   if (!res.ok) {
     debugLog(`token refresh failed: HTTP ${res.status}`)
-    if (res.status === 429 || res.status >= 500) throw new CodedError('login_unreachable', UNREACHABLE)
-    throw new CodedError('session_expired', SESSION_EXPIRED)
+    const cause = `token refresh HTTP ${res.status}`
+    if (res.status === 429 || res.status >= 500) throw new CodedError('login_unreachable', UNREACHABLE, { cause })
+    throw new CodedError('session_expired', SESSION_EXPIRED, { cause })
   }
 
   const token = (await res.json()) as TokenResponse
   if (!token.access_token) {
     debugLog('token refresh returned no access_token')
-    throw new CodedError('session_expired', SESSION_EXPIRED)
+    throw new CodedError('session_expired', SESSION_EXPIRED, { cause: 'token refresh returned no access_token' })
   }
 
   // Refresh tokens rotate: the response carries the one to use next time, and the old one is now dead.

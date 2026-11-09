@@ -69,7 +69,7 @@ function createPkce(): { verifier: string; challenge: string } {
 // gateway verifies the signature on its side. We only need to read the claims WorkOS stuffed in.
 export function decodeJwtPayload(token: string): Record<string, unknown> {
   const part = token.split('.')[1]
-  if (!part) throw new Error('Malformed token from WorkOS.')
+  if (!part) throw new CodedError('login_bad_token', 'Malformed token from WorkOS.')
   return JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>
 }
 
@@ -79,14 +79,18 @@ export async function discoverEndpoints(issuer: string): Promise<OAuthServerMeta
   // it never reaches the !res.ok branch below — without this it surfaces as a bare "fetch failed".
   const res = await fetch(url).catch((err: Error) => {
     debugLog(`discovery fetch failed for ${url}: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
-    throw new CodedError('login_unreachable', `Couldn’t reach the login service at ${issuer}. Check your connection and try again.`)
+    throw new CodedError('login_unreachable', `Couldn’t reach the login service at ${issuer}. Check your connection and try again.`, {
+      cause: err,
+    })
   })
   if (!res.ok) {
-    throw new CodedError('login_unreachable', `Couldn’t reach the login service (HTTP ${res.status}). Please try again in a few minutes.`)
+    throw new CodedError('login_unreachable', `Couldn’t reach the login service (HTTP ${res.status}). Please try again in a few minutes.`, {
+      cause: `discovery HTTP ${res.status}`,
+    })
   }
   const meta = (await res.json()) as Partial<OAuthServerMetadata>
   if (!meta.authorization_endpoint || !meta.token_endpoint) {
-    throw new Error('Login service returned unexpected metadata. Please try again in a few minutes.')
+    throw new CodedError('login_bad_metadata', 'Login service returned unexpected metadata. Please try again in a few minutes.')
   }
   return { authorization_endpoint: meta.authorization_endpoint, token_endpoint: meta.token_endpoint }
 }
@@ -122,9 +126,14 @@ function startLoopback(
          <p>${ok ? 'You can close this tab and return to your terminal.' : 'Return to your terminal and try again.'}</p>
          </body>`
       )
-      if (error) return failCode(new Error(`Authorization was denied (${error}).`))
-      if (!code) return failCode(new Error('No authorization code returned.'))
-      if (state !== expectedState) return failCode(new Error('State mismatch — aborting for safety.'))
+      if (error) {
+        const description = url.searchParams.get('error_description')
+        return failCode(
+          new CodedError('login_denied', `Authorization was denied (${error}).`, description ? { cause: description } : undefined)
+        )
+      }
+      if (!code) return failCode(new CodedError('login_no_code', 'No authorization code returned.'))
+      if (state !== expectedState) return failCode(new CodedError('login_state_mismatch', 'State mismatch — aborting for safety.'))
       settleCode(code)
     })
 
@@ -139,7 +148,7 @@ function startLoopback(
     const tryListen = () => {
       const port = CALLBACK_PORTS[portIndex]
       if (port === undefined) {
-        rejectServer(new Error(`Couldn’t open a local port for login (tried ${CALLBACK_PORTS.join(', ')}).`))
+        rejectServer(new CodedError('login_port_unavailable', `Couldn’t open a local port for login (tried ${CALLBACK_PORTS.join(', ')}).`))
         return
       }
       server.once('error', (err: NodeJS.ErrnoException) => {
@@ -175,7 +184,8 @@ function headlessReason(): string | undefined {
 export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {}): Promise<BrowserLoginResult> {
   const cfg = resolveConfig()
   if (!cfg.oauthIssuer || !cfg.oauthClientId) {
-    throw new Error(
+    throw new CodedError(
+      'login_not_configured',
       'CLI login is not configured yet (missing OAuth issuer/client id). Set FINGERPRINT_OAUTH_ISSUER and FINGERPRINT_OAUTH_CLIENT_ID.'
     )
   }
@@ -228,7 +238,7 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   try {
     const code = await waitForCode.catch((e: Error) => {
       if (e.message === 'timeout') {
-        throw new Error(`Timed out after ${Math.round(timeoutMs / 60000)} minutes. Run \`fingerprint ${intent}\` again.`)
+        throw new CodedError('login_timeout', `Timed out after ${Math.round(timeoutMs / 60000)} minutes. Run \`fingerprint ${intent}\` again.`)
       }
       throw e
     })
@@ -249,11 +259,16 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
       debugLog(`token exchange fetch failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
       throw new CodedError(
         'login_unreachable',
-        `Couldn’t reach the login service to finish signing in. Check your connection and run \`fingerprint ${intent}\` again.`
+        `Couldn’t reach the login service to finish signing in. Check your connection and run \`fingerprint ${intent}\` again.`,
+        { cause: err }
       )
     })
     if (!tokenRes.ok) {
-      throw new Error(`Login failed while exchanging the code (HTTP ${tokenRes.status}). Run \`fingerprint ${intent}\` again.`)
+      throw new CodedError(
+        'login_exchange_failed',
+        `Login failed while exchanging the code (HTTP ${tokenRes.status}). Run \`fingerprint ${intent}\` again.`,
+        { cause: (await tokenRes.text().catch(() => '')).slice(0, 200) || undefined }
+      )
     }
     const token = (await tokenRes.json()) as TokenResponse
 
@@ -270,14 +285,14 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
     const firstDash = subject.indexOf('-')
     const secondDash = subject.indexOf('-', firstDash + 1)
     if (firstDash < 0 || secondDash < 0) {
-      throw new Error('Login token was not in the expected format. Run `fingerprint login` again.')
+      throw new CodedError('login_bad_token', 'Login token was not in the expected format. Run `fingerprint login` again.')
     }
     const serverApiKey = subject.slice(0, firstDash)
     const managementApiKey = subject.slice(firstDash + 1, secondDash)
     const region = subject.slice(secondDash + 1)
     const workspaceId = String(claims['urn:fingerprint:sub_id'] ?? '')
     if (!managementApiKey) {
-      throw new Error('Login succeeded but no API key was returned. Run `fingerprint login` again.')
+      throw new CodedError('login_no_key', 'Login succeeded but no API key was returned. Run `fingerprint login` again.')
     }
 
     // No refresh token means the session dies with this access token (minutes), so leave a trail —

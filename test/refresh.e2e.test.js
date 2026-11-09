@@ -113,6 +113,10 @@ test('a refresh that cannot reach the login service says so, without claiming th
   assert.match(out, /reach the login service to renew your session/i)
   assert.doesNotMatch(out, /session expired/i)
   assert.equal(gw.calls(), 0, 'called the gateway without a live token')
+  // The report carries the network cause the user-facing line leaves out.
+  const run = api.analyticsEvents().filter((e) => e.body.event === 'cli_command_run').at(-1).body.properties
+  assert.equal(run.error_code, 'login_unreachable')
+  assert.match(run.error_message, /renew your session.* — cause: fetch failed — cause: \S/)
 })
 
 test('a token that is still valid is used as-is, with no refresh round-trip', async () => {

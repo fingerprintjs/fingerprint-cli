@@ -386,6 +386,7 @@ test('a login that cannot reach the auth server reports login_unreachable', asyn
   assert.equal(res.status, 1)
 
   assert.equal(errorProps(api).error_code, 'login_unreachable')
+  assert.match(errorProps(api).error_message, /reach the login service.* — cause: fetch failed — cause: \S/)
 
   await api.close()
 })
