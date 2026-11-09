@@ -277,7 +277,8 @@ const errorProps = (api) => {
 test('an integrate that gives up for want of a session reports why, not just error', async () => {
   const api = await startManagementApi()
 
-  const res = await runCli(['integrate'], {
+  // --ci: interactively, integrate would sign the user in instead of giving up.
+  const res = await runCli(['integrate', '--ci'], {
     home: makeHome(),
     cwd: makeRepo(),
     env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
@@ -425,7 +426,7 @@ test('an unauthenticated run withholds the events that need a workspace', async 
   // `integrate` provisions keys, so it fails without auth. The Management API would reject
   // `cli_integrate_skipped` on the anonymous route anyway; this keeps the guaranteed 400 off the wire.
   const empty = mkdtempSync(join(tmpdir(), 'fp-anon-'))
-  await runCli(['integrate'], { home: makeHome(), cwd: empty, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  await runCli(['integrate', '--ci'], { home: makeHome(), cwd: empty, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
 
   assert.ok(!names(api).includes('cli_integrate_skipped'))
   assert.ok(!names(api).includes('cli_integrate_started'))

@@ -258,9 +258,23 @@ export function makeServedStaticRepo(dependencies = { fastify: '^5', '@fastify/s
 
 // Async (not spawnSync): the fake servers run in this same process, so the event loop must stay
 // free to answer the child's HTTP requests while it runs — spawnSync would deadlock.
+// Stands in for the user finishing a browser sign-in: reads the redirect URI and state out of the
+// authorize URL the CLI printed and calls its loopback back with a code. The fake auth server's /token
+// answers any grant with a live token, so the CLI carries on as signed in. Needs FINGERPRINT_NO_BROWSER
+// in the run's env, or the CLI opens a real browser too.
+export function finishBrowserLogin(stdout) {
+  const plain = stdout.replace(/\x1b\[[0-9;]*m/g, '')
+  const authUrl = new URL(plain.match(/https?:\/\/\S+\/authorize\?\S+/)[0])
+  const callback = new URL(authUrl.searchParams.get('redirect_uri'))
+  callback.searchParams.set('code', 'code_1')
+  callback.searchParams.set('state', authUrl.searchParams.get('state'))
+  return fetch(callback)
+}
+
 // `respond` scripts interactive prompts: [{ when: /pattern/, send: 'n\n' }, ...] — each entry
 // fires once, in order, when its pattern appears on stdout (writing all answers up front doesn't
 // work: the first prompt's key listener would swallow the buffered input meant for the next one).
+// `send` may be a function instead of input; it gets the stdout so far (see finishBrowserLogin).
 export function runCli(args, { home, cwd, env = {}, respond } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], {
@@ -281,7 +295,8 @@ export function runCli(args, { home, cwd, env = {}, respond } = {}) {
       stdout += d
       while (pending.length && pending[0].when.test(stdout)) {
         const { send } = pending.shift()
-        child.stdin.write(send)
+        if (typeof send === 'function') send(stdout)
+        else child.stdin.write(send)
       }
     })
     child.stderr.on('data', (d) => (stderr += d))

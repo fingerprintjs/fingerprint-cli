@@ -3,7 +3,7 @@ import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { hasUsableSession } from '../auth/refresh.js'
 import { isCi } from '../utils/ci.js'
-import { NotAuthenticatedError } from '../utils/session.js'
+import { NotAuthenticatedError, requireAuth } from '../utils/session.js'
 import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
 import { integrateCommand } from './integrate.js'
@@ -37,19 +37,13 @@ async function resolveIntent(intent?: Intent): Promise<{ intent: Intent; chosen:
 // to (say) generate a key doesn't drag the user into a full integration. `intent` forces the sign-in
 // or sign-up page; omit it to ask the user (same flow either way).
 async function authenticate(opts: { chain?: boolean; intent?: Intent } = {}) {
-  const stored = getAuthState()
-  // A stored session that's still live (or renewable) is reused for login; signup still opens the browser.
-  if (opts.intent === 'login' && stored?.managementApiKey && hasUsableSession()) {
-    log.success(`Signed in ${color.dim(`workspace ${color.bold(stored.workspaceId)}`)}`)
-  } else {
-    const { intent, chosen } = await resolveIntent(opts.intent)
-    // At the moment of the answer rather than after login returns. Waiting recorded the intent of
-    // people who finished and nobody else, which hid the drop-off this event exists to measure: the
-    // browser tab closed on the signup form, the login that errored.
-    if (chosen) await track('cli_auth_intent_selected', { intent })
-    const result = await loginWithBrowser({ intent })
-    log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
-  }
+  const { intent, chosen } = await resolveIntent(opts.intent)
+  // At the moment of the answer rather than after login returns. Waiting recorded the intent of
+  // people who finished and nobody else, which hid the drop-off this event exists to measure: the
+  // browser tab closed on the signup form, the login that errored.
+  if (chosen) await track('cli_auth_intent_selected', { intent })
+  const result = await loginWithBrowser({ intent })
+  log.success(`Signed in ${color.dim(`workspace ${color.bold(result.workspaceId)}`)}`)
   // The workspace was chosen in the browser and is already in the auth state, so there's nothing to
   // select here — go straight into integrating the repo in the current directory. `integrate` no-ops
   // with a message if this dir isn't a supported stack.
@@ -73,6 +67,23 @@ export async function ensureAuth(): Promise<void> {
   if (getAuthState()?.managementApiKey) return
   await startAuth({ chain: false })
   if (!getAuthState()?.managementApiKey) throw new Error('Authentication required.')
+}
+
+// A command that needs a session but finds none (or a dead one) signs the user in on the spot instead
+// of failing with "run fingerprint login". Returns false when there's no one to drive a browser (CI),
+// so the caller fails as it would have. An expired session means they have an account, so the
+// login/signup question is skipped.
+export async function signInNow(expired: boolean): Promise<boolean> {
+  if (isCi()) return false
+  await authenticate({ chain: false, intent: expired ? 'login' : undefined })
+  return true
+}
+
+// `requireAuth`, signing in first when nothing usable is stored.
+export async function requireAuthOrSignIn() {
+  const auth = getAuthState()
+  if (!auth?.managementApiKey || !hasUsableSession()) await signInNow(Boolean(auth?.managementApiKey))
+  return requireAuth()
 }
 
 // The CLI stores only a workspace-scoped Management API key, not a session, so logout just drops the

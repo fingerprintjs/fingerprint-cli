@@ -213,9 +213,12 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
   log.info('Opening your browser...')
   log.info(`  ${color.dim(`If it doesn't open, visit:`)}`)
   log.info(`  ${color.dim(authUrl.toString())}`)
-  await open(authUrl.toString()).catch(() => {
-    // Browser couldn't be opened automatically; the printed URL is the fallback.
-  })
+  // FINGERPRINT_NO_BROWSER (tests, SSH sessions) leaves the printed URL as the only way in.
+  if (!process.env.FINGERPRINT_NO_BROWSER) {
+    await open(authUrl.toString()).catch(() => {
+      // Browser couldn't be opened automatically; the printed URL is the fallback.
+    })
+  }
   if (intent === 'signup') {
     log.info('If you’re already signed in on your browser, you’ll be asked to log into that workspace.')
     log.info('Otherwise, check your inbox and click the confirmation link, then finish setup in the browser.')

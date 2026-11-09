@@ -14,6 +14,7 @@ import {
   readAuth,
   expiredJwt,
   liveJwt,
+  finishBrowserLogin,
 } from './helpers/harness.js'
 
 // Access tokens are short-lived, so a session has to survive its own access token expiring. These
@@ -68,7 +69,8 @@ test('an expired access token is refreshed and the rotated refresh token is pers
   assert.ok(existsSync(target), `agent did not write ${target}\n${res.stdout}\n${res.stderr}`)
 })
 
-test('an expired token with no refresh token fails before provisioning touches the repo', async () => {
+// In CI there's no one to drive a browser, so a dead session is a hard stop.
+test('an expired token with no refresh token fails in CI before provisioning touches the repo', async () => {
   const home = makeHome()
   seedAuth(home, api.url, { accessToken: expiredJwt() })
   const repo = makeRepo()
@@ -76,7 +78,7 @@ test('an expired token with no refresh token fails before provisioning touches t
   const auth = await startAuthServer()
   const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// should never be written\n')
 
-  const res = await runCli(['integrate', '--yes'], { home, cwd: repo, env: integrateEnv(auth, gw, skillsDir) })
+  const res = await runCli(['integrate', '--yes', '--ci'], { home, cwd: repo, env: integrateEnv(auth, gw, skillsDir) })
   await Promise.all([auth.close(), gw.close()])
 
   assert.notEqual(res.status, 0, 'expected a non-zero exit')
@@ -130,20 +132,89 @@ test('a token that is still valid is used as-is, with no refresh round-trip', as
   assert.equal(readAuth(home).refreshToken, 'rt_1', 'rewrote the refresh token needlessly')
 })
 
-test('login with a valid stored session reuses it instead of opening the browser', async () => {
-  const home = makeHome()
-  seedAuth(home, api.url, { accessToken: liveJwt(), refreshToken: 'rt_1' })
-  const repo = makeRepo()
+// Interactive runs don't stop at a dead session: the command signs the user in and carries on. The
+// loopback callback is driven by the test (see finishBrowserLogin); the fake auth server hands back a
+// live token, and the run continues on it.
+function signInEnv(auth, gw, skillsDir) {
+  return { ...integrateEnv(auth, gw, skillsDir), FINGERPRINT_MANAGEMENT_API_URL: api.url, FINGERPRINT_NO_BROWSER: '1' }
+}
+const whenWaitingForBrowser = /Waiting for you to finish in the browser/
 
-  const res = await runCli(['login'], {
+test('an expired token with no refresh token signs in through the browser, then integrates', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url, { accessToken: expiredJwt() })
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  const target = join(repo, 'web', 'fingerprint.js')
+  const auth = await startAuthServer()
+  const gw = await startGateway(target, '// fingerprint integration applied\n')
+
+  const res = await runCli(['integrate', '--yes'], {
     home,
     cwd: repo,
-    // Reaching integrate's confirm proves login chained on the stored session; decline there.
-    respond: [{ when: /Integrate Fingerprint into this repo/, send: 'n\n' }],
+    env: signInEnv(auth, gw, skillsDir),
+    respond: [{ when: whenWaitingForBrowser, send: finishBrowserLogin }],
   })
+  await Promise.all([auth.close(), gw.close()])
 
   assert.equal(res.status, 0, res.stderr)
-  assert.doesNotMatch(res.stdout, /If it doesn't open, visit/)
-  assert.match(res.stdout, /Signed in/)
+  // Straight to sign-in: an expired session belongs to someone who has an account.
+  assert.match(res.stdout, /Sign in/)
+  assert.doesNotMatch(res.stdout, /Do you already have a Fingerprint account/)
+  assert.doesNotMatch(res.stdout + res.stderr, /Can’t start the integration/)
+  // The code exchange is the only grant; nothing tried to refresh a token that had no refresh token.
+  assert.deepEqual(
+    auth.grants().map((g) => g.grant_type),
+    ['authorization_code']
+  )
+  assert.ok(existsSync(target), `agent did not write ${target}\n${res.stdout}\n${res.stderr}`)
+})
+
+test('bare fingerprint with an expired session goes straight to sign-in, then integrate', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url, { accessToken: expiredJwt() })
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  const auth = await startAuthServer()
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// should never be written\n')
+
+  const res = await runCli([], {
+    home,
+    cwd: repo,
+    env: signInEnv(auth, gw, skillsDir),
+    respond: [
+      { when: whenWaitingForBrowser, send: finishBrowserLogin },
+      // Reaching integrate's confirm proves sign-in chained into it; decline there.
+      { when: /Integrate Fingerprint into this repo/, send: 'n\n' },
+    ],
+  })
+  await Promise.all([auth.close(), gw.close()])
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.doesNotMatch(res.stdout, /Signed in · workspace/)
+  assert.doesNotMatch(res.stdout, /Do you already have a Fingerprint account/)
+  assert.match(res.stdout, /Sign in/)
   assert.match(res.stdout, /Integrate Fingerprint into this repo/)
+})
+
+test('keys with no session asks login or signup, signs in, then prints the key', async () => {
+  const auth = await startAuthServer()
+  const res = await runCli(['keys', 'public'], {
+    home: makeHome(),
+    env: {
+      FINGERPRINT_MANAGEMENT_API_URL: api.url,
+      FINGERPRINT_OAUTH_ISSUER: auth.url,
+      FINGERPRINT_OAUTH_CLIENT_ID: 'client_test',
+      FINGERPRINT_NO_BROWSER: '1',
+    },
+    respond: [
+      // Enter picks the first choice: "Yes — log in".
+      { when: /Do you already have a Fingerprint account/, send: '\n' },
+      { when: whenWaitingForBrowser, send: finishBrowserLogin },
+    ],
+  })
+  await auth.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /pub_123/)
 })

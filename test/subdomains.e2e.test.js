@@ -200,11 +200,12 @@ test('bare subdomains lists resources and help, while --help works without auth 
   assert.match(empty.stdout, /No custom subdomains found[\s\S]*Usage:.*subdomains/)
 })
 
-test('bare subdomains without auth prints only the login error without requesting subdomains', async (t) => {
+test('bare subdomains without auth in CI prints only the login error without requesting subdomains', async (t) => {
   const api = await startApi(() => undefined)
   t.after(() => api.close())
 
-  const result = await runCli(['subdomains'], {
+  // --ci: interactively, the command would sign the user in instead of failing.
+  const result = await runCli(['subdomains', '--ci'], {
     home: makeHome(),
     env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
   })
