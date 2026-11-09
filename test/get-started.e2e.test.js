@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startManagementApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, runCli } from './helpers/harness.js'
+import { startManagementApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, addUseCaseSkill, runCli } from './helpers/harness.js'
 
 // The integration is driven by the fingerprint-get-started orchestrator skill, not a hand-rolled
 // prompt: the CLI installs the orchestrator alongside the detected framework skills, asks the agent
@@ -216,4 +216,98 @@ test('a python backend that imports the server SDK is not offered server-side ve
 
   assert.equal(res.status, 0, res.stderr)
   assert.doesNotMatch(res.stdout, /Set up server-side verification/)
+})
+
+// The use-case question exists once the skills repo has a `use-case` skill. Each lists the business
+// use cases it covers; picking one installs that skill plus what it builds on, and every agent run
+// of the session is told about the use case.
+const ATO = {
+  id: 'fingerprint-device-account-binding',
+  useCases: [
+    { id: 'account-takeover', title: 'Account Takeover', group: 'Protect your users', summary: 'Step up on unknown devices', requires: ['fingerprint-protect-action'] },
+  ],
+}
+const SPACE = ' '
+
+test('choosing a use case installs its skills and tells the agent about it on every step', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  addUseCaseSkill(skillsDir, 'fingerprint-protect-action', [])
+  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
+
+  const res = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+    respond: [
+      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
+      { when: /Which use cases\?/, send: `${SPACE}\n` }, // the first entry: Account Takeover
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: FIRST }, // server-side verification
+      { when: SECOND_MENU, send: `${UP}\n` }, // → stop
+    ],
+  })
+  const bodies = gw.bodies()
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /Protect your users/)
+  const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
+  assert.deepEqual(installed, ['fingerprint-device-account-binding', 'fingerprint-get-started', 'fingerprint-node', 'fingerprint-protect-action', 'fingerprint-react'])
+  // Both the first step and the one picked from the menu carry the use case.
+  const useCaseLine = /setting up Fingerprint for: Account Takeover \(\.claude\/skills\/fingerprint-device-account-binding\/SKILL\.md\)/
+  assert.ok(bodies.some((b) => /one step at a time/.test(b) && useCaseLine.test(b)), 'step 1 prompt names the use case')
+  assert.ok(bodies.some((b) => /Quick start step 2/.test(b) && useCaseLine.test(b)), 'step 2 prompt names the use case')
+})
+
+test('declining the use case question is the basic integration', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
+
+  const res = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+    respond: [
+      { when: /Set up Fingerprint for a specific use case\?/, send: 'n\n' },
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${UP}\n` }, // → stop
+    ],
+  })
+  const requests = gw.bodies().join('\n')
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.doesNotMatch(res.stdout, /Which use cases\?/)
+  const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
+  assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
+  assert.doesNotMatch(requests, /setting up Fingerprint for/)
+})
+
+test('a scripted run never asks about use cases', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
+
+  const res = await runCli(['integrate', '--yes'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+  })
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.doesNotMatch(res.stdout, /specific use case/)
+  const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
+  assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
 })

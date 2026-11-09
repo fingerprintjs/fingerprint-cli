@@ -1,4 +1,4 @@
-import { confirm, input, select } from '@inquirer/prompts'
+import { checkbox, confirm, input, select, Separator } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -9,14 +9,14 @@ import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
-import { assertAllowedPackage, getStartedSkills, installSkills, packageName, skillMeta, SkillMeta } from './skills.js'
+import { assertAllowedPackage, getStartedSkills, installSkills, packageName, skillMeta, SkillMeta, UseCase, useCases } from './skills.js'
 import { missingPackages } from './packages.js'
 import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
 import { markFailure } from '../analytics/failure.js'
-import { recordWizardStep } from '../analytics/track.js'
+import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 import { normalizeHostname } from '../api/subdomains.js'
 import { clearPendingSubdomainSetup, pendingSubdomainSetup } from './subdomain-setups.js'
 import { askResumeSubdomain, askSubdomainHostname, runSubdomainStep } from './subdomain-step.js'
@@ -110,6 +110,8 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   // is behind us it drops out of the menu.
   const done = new Set<NextStep | 'install'>()
   let audited = false
+  // The use cases chosen up front, handed to every agent run so each step follows their skills.
+  let chosen: UseCase[] = []
   const unfinished = opts.subdomain ? undefined : pendingSubdomainSetup(root)
   const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep, { yes: opts.yes })
   if (opts.subdomain) {
@@ -127,6 +129,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       clearPendingSubdomainSetup(root)
       recordWizardStep('resume_declined')
     }
+    if (!opts.yes && !autoYes()) chosen = await askUseCases()
     const progress = integrationProgress(root)
     // Step 1 is behind us when the frontend has the SDK, or when there is no frontend and the backend
     // already verifies events. A verified backend next to an untouched frontend still starts at step 1.
@@ -144,7 +147,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       audited = true
     } else {
       recordWizardStep('install')
-      outcome = await provisionAndApply(root, opts)
+      outcome = await provisionAndApply(root, { yes: opts.yes, useCases: chosen })
     }
   }
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
@@ -164,13 +167,13 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     // Server-side verification is the one step that may live in another repo.
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
-      if (backend) outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step })
+      if (backend) outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen })
       continue
     }
     outcome =
       next === 'proxy'
         ? await subdomainStep(await askSubdomainHostname())
-        : await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
+        : await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step, useCases: chosen })
   }
   return outcome
 }
@@ -266,6 +269,32 @@ async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false
   })
 }
 
+// Which use cases to set Fingerprint up for, grouped as the docs group them. The entries come from
+// the `use-case` skills in the skills repo, so the question only exists once one has shipped.
+// Picking nothing is the way back to the basic install.
+async function askUseCases(): Promise<UseCase[]> {
+  const all = useCases()
+  if (!all.length) return []
+  const wanted = await confirm({
+    message:
+      'Set up Fingerprint for a specific use case? (adds which signals to check, what to tag, which rules to create and how to respond, on top of the install)',
+    default: false,
+  })
+  const chosen = wanted
+    ? await checkbox<UseCase>({
+        message: 'Which use cases? (space to select, Enter to confirm; none = basic setup)',
+        choices: [...new Set(all.map((u) => u.group))].flatMap((group) => [
+          new Separator(`── ${group} ──`),
+          ...all.filter((u) => u.group === group).map((u) => ({ name: u.title, value: u, description: u.summary })),
+        ]),
+      })
+    : []
+  recordWizardStep(chosen.length ? 'use_case' : 'basic')
+  // Ids only — which use cases people pick decides which pattern skill gets attention next.
+  if (chosen.length) addRunProperties({ use_cases: chosen.map((u) => u.id).join(',') })
+  return chosen
+}
+
 // Where the backend lives, or undefined to skip the step. Relative paths resolve from the shell's
 // cwd, like --path.
 async function askBackendPath(): Promise<string | undefined> {
@@ -343,7 +372,7 @@ function sourceFiles(dir: string): string[] {
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string }): Promise<IntegrateOutcome> {
+async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string; useCases?: UseCase[] }): Promise<IntegrateOutcome> {
   await provisionEnv(root)
   return applyIntegration(root, opts)
 }
@@ -361,7 +390,7 @@ async function provisionEnv(root: string): Promise<void> {
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
 async function applyIntegration(
   root: string,
-  opts: { yes?: boolean; step?: string; subdomain?: string } = {}
+  opts: { yes?: boolean; step?: string; subdomain?: string; useCases?: UseCase[] } = {}
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
@@ -408,7 +437,7 @@ async function applyIntegration(
   // integration is being redone.
   if (opts.subdomain) log.step(`Updating your app to use ${opts.subdomain}`)
   else log.step(stepActivity(opts.step))
-  return runAgent(analysis, opts.step, opts.subdomain, inline)
+  return runAgent(analysis, opts.step, opts.subdomain, inline, opts.useCases)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -420,14 +449,17 @@ export async function runAgent(
   analysis: RepoAnalysis,
   step?: string,
   subdomain?: string,
-  inline?: InlineValues
+  inline?: InlineValues,
+  chosen: UseCase[] = []
 ): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
-  // The orchestrator drives; the detected framework skills and the feature skills for the later
-  // checklist steps are what it can delegate to.
-  const ids = [GET_STARTED_SKILL, ...analysis.skills, ...getStartedSkills()]
+  // The orchestrator drives; the detected framework skills, the feature skills for the later
+  // checklist steps, and the pattern skills behind the chosen use cases are what it can delegate to.
+  const ids = [
+    ...new Set([GET_STARTED_SKILL, ...analysis.skills, ...getStartedSkills(), ...chosen.flatMap((u) => [u.skill, ...u.requires])]),
+  ]
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
   // rather than us stuffing their full text into the prompt every turn.
@@ -439,7 +471,7 @@ export async function runAgent(
   // read .env, and without this it audits step 3 as not done and asks the user to add the variable.
   const configured = analysis.frontend && !subdomain ? configuredEndpoint(analysis.frontend) : undefined
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured, chosen),
     options: {
       model: llm.model,
       env: llm.env,
@@ -559,7 +591,8 @@ function buildGetStartedPrompt(
   subdomain?: string,
   endpointVar?: string,
   inline?: InlineValues,
-  configured?: { envVar: string; envFile: string; endpoint: string }
+  configured?: { envVar: string; envFile: string; endpoint: string },
+  chosen: UseCase[] = []
 ): string {
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
@@ -569,6 +602,15 @@ function buildGetStartedPrompt(
     'Tell the user how to verify it, then stop. Do not announce or suggest what the next step is —',
     'the CLI asks the user about that.',
     `Detected: ${describeStack(analysis)}.`,
+    // The use-case skills say what each step does differently (where to identify, what to tag,
+    // what the server check does); the orchestrator reads them before every step.
+    ...(chosen.length
+      ? [
+          `The user is setting up Fingerprint for: ${chosen.map((u) => `${u.title} (.claude/skills/${u.skill}/SKILL.md)`).join(', ')}.`,
+          'Read those skills before this step and apply their guidance to it. Start from their tutorial',
+          'defaults; do not enable signals or enforcement beyond what they recommend.',
+        ]
+      : []),
     // A static site has no env file to point at, so the values go in the prompt instead — telling
     // it to read a bundler-prefixed variable that nothing defines is what leaves `undefined` in
     // the page.
