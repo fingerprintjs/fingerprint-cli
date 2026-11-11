@@ -163,6 +163,9 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
 
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
+    // "Bring in your frontend" is for a backend-only repo, whose check has no event ID to verify
+    // yet; a repo with a frontend installs it as step 1 and an empty one has nothing to send to.
+    if (analysis.frontend || !analysis.backend) done.add('frontend')
     if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
     if (analysis.frontend && usesConfiguredEndpoint(analysis.frontend)) done.add('proxy')
     const next = await askNextStep(done, { afterAudit: audited })
@@ -171,13 +174,19 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     if (next === 'stop') break
     // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
     if (next !== 'more') done.add(next)
-    // Server-side verification is the one step that may live in another repo.
+    // The other half of the app may live in another repo: the backend for server-side
+    // verification, the frontend that sends the event ID for a backend-only repo.
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
       if (backend) {
         chosen = await askUseCases()
         outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen })
       }
+      continue
+    }
+    if (next === 'frontend') {
+      const frontend = await askFrontendPath()
+      if (frontend) outcome = await provisionAndApply(frontend, { yes: opts.yes, step: NEXT_STEPS.frontend.step, useCases: chosen })
       continue
     }
     outcome =
@@ -237,8 +246,13 @@ function reportProgress({ analysis, installed, server, proxy }: IntegrationProgr
 }
 
 // The steps the CLI can offer after one lands. `step` is what the agent is told to do.
-type NextStep = 'server' | 'proxy' | 'more'
+type NextStep = 'frontend' | 'server' | 'proxy' | 'more'
 const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: string }> = {
+  frontend: {
+    name: 'Bring in your frontend: install Fingerprint there so it sends the event ID to this backend',
+    activity: 'Installing Fingerprint in the frontend',
+    step: 'Quick start step 1 — install Fingerprint in this frontend and send the event_id to the backend with every protected request (login, signup, checkout, ...): the backend already verifies events with the Server API',
+  },
   server: {
     name: 'Set up server-side verification to get more signals',
     activity: 'Setting up server-side verification',
@@ -314,6 +328,11 @@ async function askUseCases(): Promise<UseCase[]> {
 // cwd, like --path.
 async function askBackendPath(): Promise<string | undefined> {
   const path = (await input({ message: 'Server-side verification needs a backend. Path to your backend repo (Enter to skip):' })).trim()
+  return path ? resolve(path) : undefined
+}
+
+async function askFrontendPath(): Promise<string | undefined> {
+  const path = (await input({ message: 'The backend needs an event ID from the frontend. Path to your frontend repo (Enter to skip):' })).trim()
   return path ? resolve(path) : undefined
 }
 
