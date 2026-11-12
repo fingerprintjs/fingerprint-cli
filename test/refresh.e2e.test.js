@@ -250,6 +250,26 @@ test('a token the gateway rejects is treated as a dead session: sign in again, t
   assert.ok(existsSync(target), `agent did not write ${target}\n${res.stdout}\n${res.stderr}`)
 })
 
+test('a gateway that cannot check the session fails without asking to sign in', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url, { accessToken: liveJwt(), refreshToken: 'rt_1' })
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  const auth = await startAuthServer()
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// should never be written\n', { unavailable: true })
+
+  const res = await runCli(['integrate', '--yes'], { home, cwd: repo, env: signInEnv(auth, gw, skillsDir) })
+  await Promise.all([auth.close(), gw.close()])
+
+  assert.notEqual(res.status, 0, 'expected a non-zero exit')
+  const out = res.stderr + res.stdout
+  assert.match(out, /couldn’t check your session \(HTTP 503\)/i)
+  assert.doesNotMatch(out, whenWaitingForBrowser)
+  assert.equal(auth.grants().length, 0, 'signed in over a gateway outage')
+  assert.ok(!existsSync(join(repo, 'web', '.env')), 'provisioned keys without a verified session')
+  assert.equal(gw.calls(), 0, 'called the agent without a verified session')
+})
+
 test('a token the gateway rejects fails in CI before provisioning touches the repo', async () => {
   const home = makeHome()
   const rejected = foreignJwt()

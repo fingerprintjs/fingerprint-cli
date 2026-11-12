@@ -44,8 +44,11 @@ export async function verifyGatewayAccess(accessToken: string): Promise<void> {
     body: JSON.stringify({ model: MODEL, messages: [] }),
   }).catch((err: Error) => {
     debugLog(`gateway session check failed: ${err.message}${err.cause ? ` (${String(err.cause)})` : ''}`)
-    throw new CodedError('gateway_unreachable', 'Couldn’t reach the Fingerprint LLM gateway to check your session. Check your connection and try again.')
+    throw new CodedError('gateway_unreachable', 'Couldn’t reach the Fingerprint LLM gateway to check your session. Check your connection and try again.', { cause: err })
   })
+  if (res.status === 429 || res.status >= 500) {
+    throw new CodedError('gateway_unavailable', `The Fingerprint LLM gateway couldn’t check your session (HTTP ${res.status}). Try again in a few minutes.`)
+  }
   if (res.status !== 401 && res.status !== 403) return
   const { error } = (await res.json().catch(() => ({}))) as { error?: string }
   debugLog(`gateway rejected the access token: HTTP ${res.status} ${error ?? ''}`)

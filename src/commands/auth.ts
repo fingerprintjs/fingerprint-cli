@@ -1,7 +1,6 @@
 import { select } from '../utils/prompt.js'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
-import { hasUsableSession } from '../auth/refresh.js'
 import { isCi } from '../utils/ci.js'
 import { NotAuthenticatedError, requireAuth } from '../utils/session.js'
 import { color } from '../utils/color.js'
@@ -77,9 +76,10 @@ export async function signInNow(expired: boolean): Promise<boolean> {
   return true
 }
 
+// `keys` and `subdomains` send only the Management API key, which doesn't expire, so a spent access
+// token is no reason to sign in here. Integrate checks the session itself.
 export async function requireAuthOrSignIn() {
-  const auth = getAuthState()
-  if (!auth?.managementApiKey || !hasUsableSession()) await signInNow(Boolean(auth?.managementApiKey))
+  if (!getAuthState()?.managementApiKey) await signInNow(false)
   return requireAuth()
 }
 

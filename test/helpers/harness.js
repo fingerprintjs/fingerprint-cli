@@ -147,8 +147,9 @@ export function startAuthServer({ deadTokenEndpoint = false } = {}) {
 // A fake LLM gateway speaking Anthropic's /v1/messages streaming protocol, scripted to make the
 // agent perform exactly one Write (the "integration"), then end the turn. `writeTarget` is the
 // absolute file the agent will create; the test points FINGERPRINT_GATEWAY_URL at this.
-// `rejectToken` fails the pre-flight session check (count_tokens) with 403 invalid_token, like the real gateway.
-export function startGateway(writeTarget, writeContent, { rejectToken } = {}) {
+// `rejectToken` fails the pre-flight session check (count_tokens) with 403 invalid_token, like the real
+// gateway; `unavailable` answers it with 503, like a gateway that can't reach the token verifier.
+export function startGateway(writeTarget, writeContent, { rejectToken, unavailable } = {}) {
   let calls = 0
   const bodies = []
   const server = createServer((req, res) => {
@@ -156,6 +157,10 @@ export function startGateway(writeTarget, writeContent, { rejectToken } = {}) {
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       if (req.url.startsWith('/v1/messages/count_tokens')) {
+        if (unavailable) {
+          res.writeHead(503, { 'content-type': 'application/json' })
+          return res.end('{"error":"token_verification_unavailable"}')
+        }
         const token = (req.headers.authorization ?? '').replace(/^Bearer /, '')
         if (rejectToken && token === rejectToken) {
           res.writeHead(403, { 'content-type': 'application/json' })

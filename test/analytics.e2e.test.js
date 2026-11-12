@@ -292,30 +292,32 @@ test('an integrate that gives up for want of a session reports why, not just err
 
 test('a skills clone that cannot reach the network is reported as its own failure', async () => {
   const api = await startManagementApi()
+  const gw = await startGateway('/unused', '')
   const home = makeHome()
   seedAuth(home, api.url)
 
   const res = await runCli(['integrate', '--yes'], {
     home,
     cwd: makeRepo(),
-    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, FINGERPRINT_GATEWAY_URL: gw.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
   })
   assert.equal(res.status, 1)
 
   assert.equal(errorProps(api).error_code, 'skills_fetch_failed')
 
-  await api.close()
+  await Promise.all([api.close(), gw.close()])
 })
 
 test('the reported message says what actually failed', async () => {
   const api = await startManagementApi()
+  const gw = await startGateway('/unused', '')
   const home = makeHome()
   seedAuth(home, api.url)
 
   await runCli(['integrate', '--yes'], {
     home,
     cwd: makeRepo(),
-    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, FINGERPRINT_GATEWAY_URL: gw.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
   })
 
   assert.match(errorProps(api).error_message, /Could not fetch skills/)
@@ -323,7 +325,7 @@ test('the reported message says what actually failed', async () => {
   assert.match(message, /fatal: destination path '~\/\.config\/fingerprint\/skills' already exists/)
   assert.ok(!message.includes(home))
 
-  await api.close()
+  await Promise.all([api.close(), gw.close()])
 })
 
 test('a mistyped command reports a code and what was typed', async () => {

@@ -216,10 +216,11 @@ async function runCommand(
   options: OutputOptions,
   action: (service: SubdomainsService) => Promise<void>
 ): Promise<void> {
+  // Outside the handler below: a sign-in failure is the login's own, not a subdomain API error.
+  // JSON output is for scripts, which can't finish a browser sign-in.
+  if (!options.json) await requireAuthOrSignIn()
   try {
-    // JSON output is for scripts, which can't finish a browser sign-in.
-    if (options.json) requireAuth()
-    else await requireAuthOrSignIn()
+    requireAuth()
     await action(new SubdomainsService())
   } catch (error) {
     // Handled here, so the run's failure reason is recorded here too (see analytics/failure.ts).
