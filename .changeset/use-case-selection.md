@@ -1,0 +1,5 @@
+---
+"fingerprint": minor
+---
+
+`fingerprint integrate` in a repo that already has Fingerprint audits the code first, reports which Get Started steps are done (installed, server-side verification, custom subdomain) and asks "What's next?" with only the remaining steps; the remaining-steps option is offered as soon as server-side verification is done, so skipping the custom subdomain does not block it. When the skills repo provides use-case skills, it asks whether to set Fingerprint up for a specific use case (account takeover, coupon abuse, ...) where the backend is: before the first step in a repo with a backend (install and server-side verification then land in one run), or when a frontend-only repo points at its backend from the menu. The chosen use cases go to the agent for every step. In a backend-only repo the first "What's next?" entry is to bring in the frontend, since the backend's check needs an event ID the frontend sends: it asks for the frontend repo's path and installs Fingerprint there. Picking none, `--yes` and `--ci` run the basic integration.

@@ -86,6 +86,32 @@ export function getStartedSkills(): string[] {
   })
 }
 
+// A business use case (account takeover, coupon abuse, ...) as the skills repo lists it on the
+// pattern skill that covers it. `skill` is that skill; `requires` are the ones it builds on.
+export interface UseCase {
+  id: string
+  title: string
+  group: string
+  summary: string
+  skill: string
+  requires: string[]
+}
+
+// Every use case the installed `use-case` skills cover, in skills-repo order. Empty until the
+// skills repo ships one, so the CLI's use-case question appears with the first pattern skill.
+export function useCases(): UseCase[] {
+  const dir = join(skillsDir(), 'skills')
+  return readdirSync(dir).flatMap((skill) => {
+    try {
+      const meta = JSON.parse(readFileSync(join(dir, skill, 'skill.json'), 'utf8'))
+      if (meta.category !== 'use-case') return []
+      return (meta.useCases ?? []).map((u: Omit<UseCase, 'skill'>) => ({ ...u, requires: u.requires ?? [], skill }))
+    } catch {
+      return []
+    }
+  })
+}
+
 // The skills repo is an external supply chain, and its `packages` are handed to a host-side
 // `npm`/`pip install` — where a postinstall script runs arbitrary code. So never install an
 // arbitrary name from a skill: allow only Fingerprint's own scoped packages plus a fixed set of

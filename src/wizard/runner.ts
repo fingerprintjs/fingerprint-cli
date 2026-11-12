@@ -1,4 +1,4 @@
-import { confirm, input, select } from '@inquirer/prompts'
+import { checkbox, confirm, input, select, Separator } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -9,14 +9,14 @@ import { resolveLlmConfig } from './llm.js'
 import { log } from './log.js'
 import { renderMarkdown } from '../utils/markdown.js'
 import { Spinner, activityFor } from './spinner.js'
-import { assertAllowedPackage, getStartedSkills, installSkills, packageName, skillMeta, SkillMeta } from './skills.js'
+import { assertAllowedPackage, getStartedSkills, installSkills, packageName, skillMeta, SkillMeta, UseCase, useCases } from './skills.js'
 import { missingPackages } from './packages.js'
 import { autoYes, isCi } from '../utils/ci.js'
 import { isVerbose } from '../utils/verbose.js'
 import { isInteractive } from '../utils/interactive.js'
 import { debugLog } from '../utils/log-file.js'
 import { markFailure } from '../analytics/failure.js'
-import { recordWizardStep } from '../analytics/track.js'
+import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 import { normalizeHostname } from '../api/subdomains.js'
 import { clearPendingSubdomainSetup, pendingSubdomainSetup } from './subdomain-setups.js'
 import { askResumeSubdomain, askSubdomainHostname, runSubdomainStep } from './subdomain-step.js'
@@ -108,7 +108,10 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   let outcome: IntegrateOutcome
   // Steps the user has taken (or declined) this run, plus what the repo already shows. Once a step
   // is behind us it drops out of the menu.
-  const done = new Set<NextStep>()
+  const done = new Set<NextStep | 'install'>()
+  let audited = false
+  // The use cases chosen up front, handed to every agent run so each step follows their skills.
+  let chosen: UseCase[] = []
   const unfinished = opts.subdomain ? undefined : pendingSubdomainSetup(root)
   const subdomainStep = (hostname: string) => runSubdomainStep(root, hostname, applySubdomainStep, { yes: opts.yes })
   if (opts.subdomain) {
@@ -126,8 +129,33 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       clearPendingSubdomainSetup(root)
       recordWizardStep('resume_declined')
     }
-    recordWizardStep('install')
-    outcome = await provisionAndApply(root, opts)
+    const progress = integrationProgress(root)
+    // A use case is applied in the server check, so it is asked where the backend is: here when
+    // this repo has one, otherwise when the user points at the backend from the menu.
+    if (!opts.yes && !autoYes() && progress.analysis.backend) chosen = await askUseCases()
+    // Step 1 is behind us when the frontend has the SDK, or when there is no frontend and the backend
+    // already verifies events. A verified backend next to an untouched frontend still starts at step 1.
+    const started = progress.installed || (!progress.analysis.frontend && progress.server)
+    if (started && !opts.yes && !autoYes()) {
+      // Fingerprint is already in this repo: say which steps are done and ask what to do next,
+      // instead of offering to "integrate" an app that is integrated.
+      recordWizardStep('resume_steps')
+      await provisionEnv(root)
+      reportProgress(progress)
+      if (progress.installed) done.add('install')
+      if (progress.server) done.add('server')
+      if (progress.proxy) done.add('proxy')
+      outcome = 'completed'
+      audited = true
+    } else {
+      recordWizardStep('install')
+      // A use case lives in the server check, so with a backend here both quick-start steps land
+      // in one run: a menu after the frontend install alone would offer "server-side verification"
+      // with nothing use-case-specific on screen yet.
+      const bothSteps = chosen.length > 0 && Boolean(progress.analysis.frontend && progress.analysis.backend)
+      outcome = await provisionAndApply(root, { yes: opts.yes, useCases: chosen, step: bothSteps ? USE_CASE_FIRST_STEP : undefined })
+      if (bothSteps) done.add('server')
+    }
   }
   // Scripted runs (--yes, --ci) get exactly one step — auto-continuing would loop until the
   // checklist ran dry.
@@ -135,23 +163,36 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
 
   while (outcome === 'completed') {
     const analysis = analyzeRepo(root)
+    // "Bring in your frontend" is for a backend-only repo, whose check has no event ID to verify
+    // yet; a repo with a frontend installs it as step 1 and an empty one has nothing to send to.
+    if (analysis.frontend || !analysis.backend) done.add('frontend')
     if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
     if (analysis.frontend && usesConfiguredEndpoint(analysis.frontend)) done.add('proxy')
-    const next = await askNextStep(done)
+    const next = await askNextStep(done, { afterAudit: audited })
+    audited = false
     recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
     // `more` stays on offer: each pick is one remaining step, until the audit finds nothing left.
     if (next !== 'more') done.add(next)
-    // Server-side verification is the one step that may live in another repo.
+    // The other half of the app may live in another repo: the backend for server-side
+    // verification, the frontend that sends the event ID for a backend-only repo.
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
-      if (backend) outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step })
+      if (backend) {
+        chosen = await askUseCases()
+        outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen })
+      }
+      continue
+    }
+    if (next === 'frontend') {
+      const frontend = await askFrontendPath()
+      if (frontend) outcome = await provisionAndApply(frontend, { yes: opts.yes, step: NEXT_STEPS.frontend.step, useCases: chosen })
       continue
     }
     outcome =
       next === 'proxy'
         ? await subdomainStep(await askSubdomainHostname())
-        : await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step })
+        : await applyIntegration(root, { yes: true, step: NEXT_STEPS[next].step, useCases: chosen })
   }
   return outcome
 }
@@ -168,9 +209,50 @@ async function provisionThen(root: string, next: () => Promise<IntegrateOutcome>
   return next()
 }
 
+// What the repo already shows of the Get Started checklist: the install (step 1) once the frontend
+// imports a client SDK, server-side verification (step 2) once the backend imports the server SDK,
+// the custom subdomain (step 3) once the frontend references the configured endpoint.
+interface IntegrationProgress {
+  analysis: RepoAnalysis
+  installed: boolean
+  server: boolean
+  proxy: boolean
+}
+
+function integrationProgress(root: string): IntegrationProgress {
+  const analysis = analyzeRepo(root)
+  return {
+    analysis,
+    installed: Boolean(analysis.frontend && usesClientSdk(analysis.frontend)),
+    server: Boolean(analysis.backend && usesServerSdk(analysis.backend)),
+    proxy: Boolean(analysis.frontend && usesConfiguredEndpoint(analysis.frontend)),
+  }
+}
+
+// `◇ Get Started progress`: what is done, where, and what is left — so the first question the user
+// sees on a repo that already has Fingerprint is "what's next?", not "integrate?".
+function reportProgress({ analysis, installed, server, proxy }: IntegrationProgress): void {
+  const where = (app: DetectedApp) => (app.rel === '.' ? 'this app' : app.rel)
+  log.step('Get Started progress')
+  if (installed && analysis.frontend) log.success(`Fingerprint is installed in ${where(analysis.frontend)}`)
+  if (server && analysis.backend) log.success(`Server-side verification is set up in ${where(analysis.backend)}`)
+  if (proxy) log.success('The agent is served from your custom subdomain')
+  const remaining = [
+    ...(server ? [] : ['server-side verification']),
+    ...(proxy ? [] : ['a custom subdomain against ad blockers']),
+    'rules, tagging and request filtering',
+  ]
+  log.info(`Remaining: ${remaining.join(', then ')}.`)
+}
+
 // The steps the CLI can offer after one lands. `step` is what the agent is told to do.
-type NextStep = 'server' | 'proxy' | 'more'
+type NextStep = 'frontend' | 'server' | 'proxy' | 'more'
 const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: string }> = {
+  frontend: {
+    name: 'Bring in your frontend: install Fingerprint there so it sends the event ID to this backend',
+    activity: 'Installing Fingerprint in the frontend',
+    step: 'Quick start step 1 — install Fingerprint in this frontend and send the event_id to the backend with every protected request (login, signup, checkout, ...): the backend already verifies events with the Server API',
+  },
   server: {
     name: 'Set up server-side verification to get more signals',
     activity: 'Setting up server-side verification',
@@ -188,17 +270,25 @@ const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: strin
   },
 }
 
+// The first run of a use-case setup in a repo with a backend: install and server-side verification
+// together, so the use case's server check is in place before the user is asked what's next.
+const USE_CASE_FIRST_STEP =
+  'Quick start steps 1 and 2 together — install Fingerprint in the frontend and verify the event server-side with the Server API, applying the use-case skill in both'
+
 function stepActivity(step?: string): string {
   return Object.values(NEXT_STEPS).find((next) => next.step === step)?.activity ?? 'Setting up Fingerprint'
 }
 
 // The user sets the pace: test the step that just landed, then pick the next one. The quick-start
-// steps are offered by name; the rest only once those are behind us, so nothing is skipped ahead.
-async function askNextStep(done: Set<NextStep>): Promise<NextStep | 'stop'> {
-  const quickStartDone = done.has('server') && done.has('proxy')
-  const offered = (Object.keys(NEXT_STEPS) as NextStep[]).filter((s) => !done.has(s) && (s !== 'more' || quickStartDone))
-  log.line()
-  log.info('Test this step now — start your dev server and check the result described above — then choose what to do next.')
+// steps are offered by name; the remaining checklist (rules, tagging, request filtering) once
+// server-side verification is in place — the subdomain can be skipped, it must not block the rest.
+// `afterAudit`: the menu follows the progress report, not a step the user should test first.
+async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false } = {}): Promise<NextStep | 'stop'> {
+  const offered = (Object.keys(NEXT_STEPS) as NextStep[]).filter((s) => !done.has(s) && (s !== 'more' || done.has('server')))
+  if (!afterAudit) {
+    log.line()
+    log.info('Test this step now — start your dev server and check the result described above — then choose what to do next.')
+  }
   return select<NextStep | 'stop'>({
     message: "What's next?",
     choices: [
@@ -208,10 +298,41 @@ async function askNextStep(done: Set<NextStep>): Promise<NextStep | 'stop'> {
   })
 }
 
+// Which use cases to set Fingerprint up for, grouped as the docs group them. The entries come from
+// the `use-case` skills in the skills repo, so the question only exists once one has shipped.
+// Picking nothing is the way back to the basic install.
+async function askUseCases(): Promise<UseCase[]> {
+  const all = useCases()
+  if (!all.length) return []
+  const wanted = await confirm({
+    message:
+      'Set up Fingerprint for a specific use case? (adds which signals to check, what to tag, which rules to create and how to respond, on top of the install)',
+    default: false,
+  })
+  const chosen = wanted
+    ? await checkbox<UseCase>({
+        message: 'Which use cases? (space to select, Enter to confirm; none = basic setup)',
+        choices: [...new Set(all.map((u) => u.group))].flatMap((group) => [
+          new Separator(`── ${group} ──`),
+          ...all.filter((u) => u.group === group).map((u) => ({ name: u.title, value: u, description: u.summary })),
+        ]),
+      })
+    : []
+  recordWizardStep(chosen.length ? 'use_case' : 'basic')
+  // Ids only — which use cases people pick decides which pattern skill gets attention next.
+  if (chosen.length) addRunProperties({ use_cases: chosen.map((u) => u.id).join(',') })
+  return chosen
+}
+
 // Where the backend lives, or undefined to skip the step. Relative paths resolve from the shell's
 // cwd, like --path.
 async function askBackendPath(): Promise<string | undefined> {
   const path = (await input({ message: 'Server-side verification needs a backend. Path to your backend repo (Enter to skip):' })).trim()
+  return path ? resolve(path) : undefined
+}
+
+async function askFrontendPath(): Promise<string | undefined> {
+  const path = (await input({ message: 'The backend needs an event ID from the frontend. Path to your frontend repo (Enter to skip):' })).trim()
   return path ? resolve(path) : undefined
 }
 
@@ -222,6 +343,24 @@ async function askBackendPath(): Promise<string | undefined> {
 const SERVER_SDK_IMPORT = /(?<![\w.$])(?:from|import|require)\s*\(?\s*['"]@fingerprint\/node-sdk['"]|^\s*(?:import|from)\s+fingerprint_server_sdk\b/m
 const JS_COMMENT = /\/\*[\s\S]*?\*\/|\/\/.*$/gm
 const PY_COMMENT = /"""[\s\S]*?"""|'''[\s\S]*?'''|#.*$/gm
+
+// Step 1 is in place once the frontend's code imports a client SDK (@fingerprint/react, /vue,
+// /agent, …): the package in the manifest alone could be a leftover install.
+const CLIENT_SDK_IMPORT = /(?<![\w.$])(?:from|import|require)\s*\(?\s*['"]@fingerprint\/(?!node-sdk['"])[\w-]+['"]/m
+
+function usesClientSdk(app: DetectedApp): boolean {
+  try {
+    return sourceFiles(app.dir).some((file) => {
+      try {
+        return CLIENT_SDK_IMPORT.test(readFileSync(file, 'utf8').replace(JS_COMMENT, ''))
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    return false
+  }
+}
 
 function usesServerSdk(app: DetectedApp): boolean {
   try {
@@ -267,13 +406,17 @@ function sourceFiles(dir: string): string[] {
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string }): Promise<IntegrateOutcome> {
+async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string; useCases?: UseCase[] }): Promise<IntegrateOutcome> {
+  await provisionEnv(root)
+  return applyIntegration(root, opts)
+}
+
+async function provisionEnv(root: string): Promise<void> {
   log.step('Set up environment variables')
   const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
     log.warn(`Make sure these backend(s) load .env (dotenv): ${needsDotenv.map((a) => a.rel).join(', ')}`)
   }
-  return applyIntegration(root, opts)
 }
 
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
@@ -281,7 +424,7 @@ async function provisionAndApply(root: string, opts: { yes?: boolean; step?: str
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
 async function applyIntegration(
   root: string,
-  opts: { yes?: boolean; step?: string; subdomain?: string } = {}
+  opts: { yes?: boolean; step?: string; subdomain?: string; useCases?: UseCase[] } = {}
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
@@ -328,7 +471,7 @@ async function applyIntegration(
   // integration is being redone.
   if (opts.subdomain) log.step(`Updating your app to use ${opts.subdomain}`)
   else log.step(stepActivity(opts.step))
-  return runAgent(analysis, opts.step, opts.subdomain, inline)
+  return runAgent(analysis, opts.step, opts.subdomain, inline, opts.useCases)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -340,14 +483,17 @@ export async function runAgent(
   analysis: RepoAnalysis,
   step?: string,
   subdomain?: string,
-  inline?: InlineValues
+  inline?: InlineValues,
+  chosen: UseCase[] = []
 ): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
   const llm = await resolveLlmConfig()
-  // The orchestrator drives; the detected framework skills and the feature skills for the later
-  // checklist steps are what it can delegate to.
-  const ids = [GET_STARTED_SKILL, ...analysis.skills, ...getStartedSkills()]
+  // The orchestrator drives; the detected framework skills, the feature skills for the later
+  // checklist steps, and the pattern skills behind the chosen use cases are what it can delegate to.
+  const ids = [
+    ...new Set([GET_STARTED_SKILL, ...analysis.skills, ...getStartedSkills(), ...chosen.flatMap((u) => [u.skill, ...u.requires])]),
+  ]
 
   // Install skills into the repo's .claude/skills/ so the agent reads them on demand,
   // rather than us stuffing their full text into the prompt every turn.
@@ -359,7 +505,7 @@ export async function runAgent(
   // read .env, and without this it audits step 3 as not done and asks the user to add the variable.
   const configured = analysis.frontend && !subdomain ? configuredEndpoint(analysis.frontend) : undefined
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured, chosen),
     options: {
       model: llm.model,
       env: llm.env,
@@ -479,7 +625,8 @@ function buildGetStartedPrompt(
   subdomain?: string,
   endpointVar?: string,
   inline?: InlineValues,
-  configured?: { envVar: string; envFile: string; endpoint: string }
+  configured?: { envVar: string; envFile: string; endpoint: string },
+  chosen: UseCase[] = []
 ): string {
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
@@ -489,6 +636,19 @@ function buildGetStartedPrompt(
     'Tell the user how to verify it, then stop. Do not announce or suggest what the next step is —',
     'the CLI asks the user about that.',
     `Detected: ${describeStack(analysis)}.`,
+    // The use-case skills say what each step does differently (where to identify, what to tag,
+    // what the server check does); the orchestrator reads them before every step.
+    ...(chosen.length
+      ? [
+          `The user is setting up Fingerprint for: ${chosen.map((u) => `${u.title} (.claude/skills/${u.skill}/SKILL.md)`).join(', ')}.`,
+          'Read those skills before this step and apply their guidance to it. Start from their tutorial',
+          'defaults; do not enable signals or enforcement beyond what they recommend.',
+          'In the backend, add the use case\'s code even when no route uses it yet: the bot + Suspect Score',
+          'gate and the pattern logic (device binding, velocity limit, ...) as modules, wired into the',
+          'matching route if the app has one; otherwise show the call in a comment and name the route',
+          'that is missing. Never scaffold that route.',
+        ]
+      : []),
     // A static site has no env file to point at, so the values go in the prompt instead — telling
     // it to read a bundler-prefixed variable that nothing defines is what leaves `undefined` in
     // the page.
