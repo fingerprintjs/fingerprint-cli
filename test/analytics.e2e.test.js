@@ -177,7 +177,8 @@ test('logout reports with the credential it just dropped', async () => {
 
   // And it still actually logged out: a follow-up run has no credential, so it reports through the
   // anonymous route and `cli_command_run` never fires, because `whoami` exits before it settles.
-  const after = await runCli(['whoami'], { home, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  // In CI, so a logged-out whoami fails instead of offering to sign in.
+  const after = await runCli(['whoami', '--ci'], { home, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
   assert.equal(after.status, 1)
   const anonymous = api.analyticsEvents().filter((e) => e.path === '/analytics/anonymous-events')
   assert.deepEqual(
