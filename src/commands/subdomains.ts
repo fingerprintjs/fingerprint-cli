@@ -13,6 +13,7 @@ import { errorCode } from '../errors.js'
 import { isCi } from '../utils/ci.js'
 import { DOMAIN_CONNECT_TIMEOUT_MS, listenForDomainConnect, openDomainConnectLink } from '../utils/domain-connect.js'
 import { requireAuth } from '../utils/session.js'
+import { requireAuthOrSignIn } from './auth.js'
 
 interface OutputOptions {
   json?: boolean
@@ -31,7 +32,7 @@ export function registerSubdomainsCommands(program: Command): void {
     .command('subdomains')
     .description('Manage custom subdomains for the active workspace')
     .action(async function () {
-      requireAuth()
+      await requireAuthOrSignIn()
       try {
         await listSubdomains({})
       } finally {
@@ -215,6 +216,9 @@ async function runCommand(
   options: OutputOptions,
   action: (service: SubdomainsService) => Promise<void>
 ): Promise<void> {
+  // Outside the handler below: a sign-in failure is the login's own, not a subdomain API error.
+  // JSON output is for scripts, which can't finish a browser sign-in.
+  if (!options.json) await requireAuthOrSignIn()
   try {
     requireAuth()
     await action(new SubdomainsService())

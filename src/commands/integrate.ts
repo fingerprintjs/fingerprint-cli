@@ -9,6 +9,8 @@ import { markFailure } from '../analytics/failure.js'
 import { errorCode } from '../errors.js'
 import { pendingSubdomainSetup } from '../wizard/subdomain-setups.js'
 import { autoYes } from '../utils/ci.js'
+import { verifyGatewayAccess } from '../wizard/llm.js'
+import { signInNow } from './auth.js'
 
 export async function integrateCommand(
   opts: { path?: string; analyze?: boolean; yes?: boolean; subdomain?: string; skipHeading?: boolean; chained?: boolean } = {}
@@ -79,18 +81,20 @@ export async function integrateCommand(
   addRunProperties({ integrate_status: outcome })
 }
 
-// Settle the session before anything provisions keys or edits files, refreshing the access token if
-// it's spent. A missing session and a refresh that can't be renewed have the same fix, so they share
-// one failure block — printed here rather than thrown, since the top-level handler prints a bare
-// message with none of the recovery hints.
-async function settleSession(): Promise<boolean> {
+// Settle the session before anything provisions keys or edits files. Failures are printed here rather
+// than thrown, since the top-level handler prints a bare message with none of the recovery hints.
+async function settleSession(signIn = true): Promise<boolean> {
   try {
     requireAuth()
-    await getFreshAccessToken()
+    await verifyGatewayAccess(await getFreshAccessToken())
     return true
   } catch (err) {
-    // Report the specific reason — missing session, expired session, or an unreachable login service,
-    // which is a network problem no amount of logging in will fix.
+    // A dead session is fixed by signing in here; an unreachable service isn't.
+    const code = errorCode(err)
+    const dead = code === 'not_authenticated' || code === 'session_expired' || code === 'session_invalid'
+    if (signIn && dead && (await signInNow(code !== 'not_authenticated'))) {
+      return settleSession(false)
+    }
     const message = err instanceof Error ? err.message : String(err)
     markFailure(errorCode(err), err)
     printFailure({

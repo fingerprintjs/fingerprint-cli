@@ -2,11 +2,12 @@ import { select } from '../utils/prompt.js'
 import { clearAuthState, getAuthState } from '../auth/tokenStore.js'
 import { loginWithBrowser } from '../auth/browserLogin.js'
 import { isCi } from '../utils/ci.js'
-import { NotAuthenticatedError } from '../utils/session.js'
+import { NotAuthenticatedError, requireAuth } from '../utils/session.js'
 import { color } from '../utils/color.js'
 import { log } from '../wizard/log.js'
 import { integrateCommand } from './integrate.js'
 import { pinAuthForTracking, track } from '../analytics/track.js'
+import { CodedError } from '../errors.js'
 
 type Intent = 'login' | 'signup'
 
@@ -65,7 +66,21 @@ export const startAuth = (opts: { chain?: boolean } = {}) => authenticate(opts)
 export async function ensureAuth(): Promise<void> {
   if (getAuthState()?.managementApiKey) return
   await startAuth({ chain: false })
-  if (!getAuthState()?.managementApiKey) throw new Error('Authentication required.')
+  if (!getAuthState()?.managementApiKey) throw new CodedError('not_authenticated', 'Authentication required.')
+}
+
+// Sign in on the spot instead of failing. False in CI, where there's no one to drive a browser.
+export async function signInNow(expired: boolean): Promise<boolean> {
+  if (isCi()) return false
+  await authenticate({ chain: false, intent: expired ? 'login' : undefined })
+  return true
+}
+
+// `keys` and `subdomains` send only the Management API key, which doesn't expire, so a spent access
+// token is no reason to sign in here. Integrate checks the session itself.
+export async function requireAuthOrSignIn() {
+  if (!getAuthState()?.managementApiKey) await signInNow(false)
+  return requireAuth()
 }
 
 // The CLI stores only a workspace-scoped Management API key, not a session, so logout just drops the
@@ -79,9 +94,12 @@ export function logout() {
   log.info('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
 
-export function whoami() {
-  const auth = getAuthState()
-  if (!auth?.managementApiKey) throw new NotAuthenticatedError()
+export async function whoami() {
+  if (!getAuthState()?.managementApiKey) {
+    if (isCi()) throw new NotAuthenticatedError()
+    console.log('You don’t seem to be signed in.')
+  }
+  const auth = await requireAuthOrSignIn()
   console.log(`${color.dim('subscription')}  ${color.bold(auth.workspaceId)}`)
   console.log(`${color.dim('region')}        ${color.bold(auth.region)}`)
   // Written only by logins that got an email claim, so older state and issuers without it stay quiet.

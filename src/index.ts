@@ -117,6 +117,9 @@ async function defaultCommand(unknownCommand?: string) {
   }
 
   const auth = getAuthState()
+  // A stored key isn't a live session, so check the token too: otherwise an expired login announces
+  // "Signed in" a few lines above the sign-in-required failure it's about to hit.
+  const signedIn = Boolean(auth?.managementApiKey) && hasUsableSession()
 
   // Welcome message: what Fingerprint does, what this CLI does about it, and where to go next.
   // Deliberately not a step list — the only step the user takes is answering the account prompt
@@ -132,13 +135,7 @@ async function defaultCommand(unknownCommand?: string) {
   console.log(color.dim('   This CLI sets up Fingerprint end to end. It detects your stack, provisions'))
   console.log(color.dim('   API keys, and writes the integration into your code.'))
   console.log()
-  // A stored key isn't a live session, so check the token too: otherwise an expired login announces
-  // "Signed in" a few lines above the sign-in-required failure it's about to hit.
-  console.log(
-    auth?.managementApiKey && hasUsableSession()
-      ? `   Signed in · workspace ${auth.workspaceId}`
-      : '   Sign in or create an account to get started.'
-  )
+  console.log(signedIn ? `   Signed in · workspace ${auth?.workspaceId}` : '   Sign in or create an account to get started.')
   console.log()
   const commands: [string, string][] = [
     ['fingerprint', 'this guided setup, start to finish'],
@@ -155,11 +152,10 @@ async function defaultCommand(unknownCommand?: string) {
   }
   console.log()
 
-  if (!auth?.managementApiKey) {
+  if (!signedIn) {
     if (isCi()) throw new CodedError('not_authenticated', 'Not authenticated. Run `fingerprint login` first.')
-    // Ask whether they have an account (login vs signup), then run browser auth for both new and
-    // returning users (signup + onboarding happen in the browser) and chain straight into integrate.
-    await startAuth()
+    // A stored key means they have an account, so skip the login/signup question.
+    await (auth?.managementApiKey ? login() : startAuth())
     return
   }
 
