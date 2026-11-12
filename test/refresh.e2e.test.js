@@ -197,6 +197,30 @@ test('bare fingerprint with an expired session goes straight to sign-in, then in
   assert.match(res.stdout, /Integrate Fingerprint into this repo/)
 })
 
+test('whoami with no session says so, signs in, then prints the workspace', async () => {
+  const home = makeHome()
+  const auth = await startAuthServer()
+
+  const res = await runCli(['whoami'], {
+    home,
+    env: {
+      FINGERPRINT_MANAGEMENT_API_URL: api.url,
+      FINGERPRINT_OAUTH_ISSUER: auth.url,
+      FINGERPRINT_OAUTH_CLIENT_ID: 'client_test',
+      FINGERPRINT_NO_BROWSER: '1',
+    },
+    respond: [
+      { when: /Do you already have a Fingerprint account/, send: '\n' },
+      { when: whenWaitingForBrowser, send: finishBrowserLogin },
+    ],
+  })
+  await auth.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /don’t seem to be signed in/)
+  assert.match(res.stdout, /subscription/)
+})
+
 test('keys with no session asks login or signup, signs in, then prints the key', async () => {
   const auth = await startAuthServer()
   const res = await runCli(['keys', 'public'], {

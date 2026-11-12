@@ -94,9 +94,12 @@ export function logout() {
   log.info('Logged out. (The CLI API key remains in your workspace — revoke it from the dashboard if needed.)')
 }
 
-export function whoami() {
-  const auth = getAuthState()
-  if (!auth?.managementApiKey) throw new NotAuthenticatedError()
+export async function whoami() {
+  if (!getAuthState()?.managementApiKey) {
+    if (isCi()) throw new NotAuthenticatedError()
+    console.log('You don’t seem to be signed in.')
+  }
+  const auth = await requireAuthOrSignIn()
   console.log(`${color.dim('subscription')}  ${color.bold(auth.workspaceId)}`)
   console.log(`${color.dim('region')}        ${color.bold(auth.region)}`)
   // Written only by logins that got an email claim, so older state and issuers without it stay quiet.

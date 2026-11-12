@@ -346,7 +346,7 @@ test('a mistyped command reports a code and what was typed', async () => {
 test('a logged-out whoami reports not_authenticated', async () => {
   const api = await startManagementApi()
 
-  const res = await runCli(['whoami'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  const res = await runCli(['whoami', '--ci'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
   assert.equal(res.status, 1)
 
   assert.equal(errorProps(api).error_code, 'not_authenticated')
