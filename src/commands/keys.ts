@@ -1,7 +1,7 @@
 import { select } from '@inquirer/prompts'
 import { ManagementClient } from '../api/management.js'
 import { fetchPublicKey } from '../api/keys.js'
-import { requireAuth } from '../utils/session.js'
+import { requireAuthOrSignIn } from './auth.js'
 import { isCi } from '../utils/ci.js'
 import { addRunProperties } from '../analytics/track.js'
 
@@ -9,7 +9,7 @@ import { addRunProperties } from '../analytics/track.js'
 // you just need a credential to copy; `fingerprint integrate` is what writes keys into your .env files
 // and wires them into the code. With no `type` it asks which key you want.
 export async function keysCommand(type?: string) {
-  const auth = requireAuth()
+  const auth = await requireAuthOrSignIn()
   const client = new ManagementClient()
 
   const kind = type ?? (await pickKind())

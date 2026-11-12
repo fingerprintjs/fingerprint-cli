@@ -177,7 +177,8 @@ test('logout reports with the credential it just dropped', async () => {
 
   // And it still actually logged out: a follow-up run has no credential, so it reports through the
   // anonymous route and `cli_command_run` never fires, because `whoami` exits before it settles.
-  const after = await runCli(['whoami'], { home, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  // In CI, so a logged-out whoami fails instead of offering to sign in.
+  const after = await runCli(['whoami', '--ci'], { home, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
   assert.equal(after.status, 1)
   const anonymous = api.analyticsEvents().filter((e) => e.path === '/analytics/anonymous-events')
   assert.deepEqual(
@@ -277,7 +278,7 @@ const errorProps = (api) => {
 test('an integrate that gives up for want of a session reports why, not just error', async () => {
   const api = await startManagementApi()
 
-  const res = await runCli(['integrate'], {
+  const res = await runCli(['integrate', '--ci'], {
     home: makeHome(),
     cwd: makeRepo(),
     env: { FINGERPRINT_MANAGEMENT_API_URL: api.url },
@@ -292,30 +293,32 @@ test('an integrate that gives up for want of a session reports why, not just err
 
 test('a skills clone that cannot reach the network is reported as its own failure', async () => {
   const api = await startManagementApi()
+  const gw = await startGateway('/unused', '')
   const home = makeHome()
   seedAuth(home, api.url)
 
   const res = await runCli(['integrate', '--yes'], {
     home,
     cwd: makeRepo(),
-    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, FINGERPRINT_GATEWAY_URL: gw.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
   })
   assert.equal(res.status, 1)
 
   assert.equal(errorProps(api).error_code, 'skills_fetch_failed')
 
-  await api.close()
+  await Promise.all([api.close(), gw.close()])
 })
 
 test('the reported message says what actually failed', async () => {
   const api = await startManagementApi()
+  const gw = await startGateway('/unused', '')
   const home = makeHome()
   seedAuth(home, api.url)
 
   await runCli(['integrate', '--yes'], {
     home,
     cwd: makeRepo(),
-    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
+    env: { FINGERPRINT_MANAGEMENT_API_URL: api.url, FINGERPRINT_GATEWAY_URL: gw.url, PATH: `${makeFailingGit()}:${process.env.PATH}` },
   })
 
   assert.match(errorProps(api).error_message, /Could not fetch skills/)
@@ -323,7 +326,7 @@ test('the reported message says what actually failed', async () => {
   assert.match(message, /fatal: destination path '~\/\.config\/fingerprint\/skills' already exists/)
   assert.ok(!message.includes(home))
 
-  await api.close()
+  await Promise.all([api.close(), gw.close()])
 })
 
 test('a mistyped command reports a code and what was typed', async () => {
@@ -344,7 +347,7 @@ test('a mistyped command reports a code and what was typed', async () => {
 test('a logged-out whoami reports not_authenticated', async () => {
   const api = await startManagementApi()
 
-  const res = await runCli(['whoami'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  const res = await runCli(['whoami', '--ci'], { home: makeHome(), env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
   assert.equal(res.status, 1)
 
   assert.equal(errorProps(api).error_code, 'not_authenticated')
@@ -385,6 +388,7 @@ test('a login that cannot reach the auth server reports login_unreachable', asyn
   assert.equal(res.status, 1)
 
   assert.equal(errorProps(api).error_code, 'login_unreachable')
+  assert.match(errorProps(api).error_message, /reach the login service.* — cause: fetch failed — cause: \S/)
 
   await api.close()
 })
@@ -425,7 +429,7 @@ test('an unauthenticated run withholds the events that need a workspace', async 
   // `integrate` provisions keys, so it fails without auth. The Management API would reject
   // `cli_integrate_skipped` on the anonymous route anyway; this keeps the guaranteed 400 off the wire.
   const empty = mkdtempSync(join(tmpdir(), 'fp-anon-'))
-  await runCli(['integrate'], { home: makeHome(), cwd: empty, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
+  await runCli(['integrate', '--ci'], { home: makeHome(), cwd: empty, env: { FINGERPRINT_MANAGEMENT_API_URL: api.url } })
 
   assert.ok(!names(api).includes('cli_integrate_skipped'))
   assert.ok(!names(api).includes('cli_integrate_started'))

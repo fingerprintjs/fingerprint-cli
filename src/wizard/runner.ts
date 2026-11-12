@@ -732,6 +732,8 @@ async function installPackages(analysis: RepoAnalysis, skills: SkillMeta[]): Pro
       log.info(`  To run them: in ${app.rel}, pnpm approve-builds, then ${bin} ${sub} ${pkgs.join(' ')}`)
     } else {
       failed = true
+      // The first failed install is the run's reported reason, with the tail of its output as the why.
+      markFailure('install_failed', `${bin} ${sub} ${pkgs.join(' ')} failed in ${app.rel}: ${result.output.trim().slice(-300)}`)
       log.warn(`Install failed in ${app.rel} — run manually: ${bin} ${sub} ${pkgs.join(' ')}`)
     }
   }

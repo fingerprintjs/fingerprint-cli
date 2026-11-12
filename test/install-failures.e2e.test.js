@@ -102,6 +102,8 @@ test('a real install failure fails the run', async () => {
   const run = runs[runs.length - 1]
   assert.equal(run.body.properties.status, 'error')
   assert.equal(run.body.properties.error_code, 'install_failed')
+  // Which install broke and the package manager's own words, not just that one did.
+  assert.match(run.body.properties.error_message, /^pnpm add .*@fingerprint\/react@latest failed in web: .*ERR_PNPM_FETCH_404/)
 })
 
 test('declining an interactive install is not a failure', async () => {
