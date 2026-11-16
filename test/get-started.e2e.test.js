@@ -227,7 +227,6 @@ const ATO = {
     { id: 'account-takeover', title: 'Account Takeover', group: 'Protect your users', summary: 'Step up on unknown devices', requires: ['fingerprint-protect-action'] },
   ],
 }
-const SPACE = ' '
 
 test('choosing a use case installs its skills and tells the agent about it on every step', async () => {
   const home = makeHome()
@@ -243,8 +242,7 @@ test('choosing a use case installs its skills and tells the agent about it on ev
     cwd: repo,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
-      { when: /Which use cases\?/, send: `${SPACE}\n` }, // the first entry: Account Takeover
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}\n` }, // under "Basic installation": Account Takeover
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       // Install and server-side verification landed together, so the menu is [subdomain, remaining
       // steps, stop]; pick the remaining steps, then stop at the menu after that run.
@@ -283,8 +281,7 @@ test('a frontend-only repo is asked about use cases up front and reminded that t
     cwd: frontend,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
-      { when: /Which use cases\?/, send: `${SPACE}\n` },
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
       { when: /Path to your backend repo/, send: `${backend}\n` },
@@ -298,7 +295,7 @@ test('a frontend-only repo is asked about use cases up front and reminded that t
   assert.equal(res.status, 0, res.stderr)
   assert.match(res.stdout, /lands in the backend: after this step, choose server-side verification/)
   // Asked once, before the install: the pick made up front stands when the backend comes.
-  assert.ok(res.stdout.lastIndexOf('specific use case') < res.stdout.indexOf('Path to your backend repo'), res.stdout)
+  assert.ok(res.stdout.lastIndexOf('How should Fingerprint be set up') < res.stdout.indexOf('Path to your backend repo'), res.stdout)
   const useCaseLine = /setting up Fingerprint for: Account Takeover/
   assert.ok(bodies.some((b) => /one step at a time/.test(b) && useCaseLine.test(b)), 'the frontend install names the use case')
   assert.ok(bodies.some((b) => /Quick start step 2/.test(b) && useCaseLine.test(b)), 'the backend step names the use case')
@@ -327,8 +324,7 @@ test('a backend-only repo is offered its frontend first, so the backend gets an 
     cwd: backend,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
-      { when: /Which use cases\?/, send: `${SPACE}\n` },
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // bring in the frontend
       { when: /Path to your frontend repo/, send: `${frontend}\n` },
@@ -347,7 +343,7 @@ test('a backend-only repo is offered its frontend first, so the backend gets an 
   assert.ok(readdirSync(join(frontend, '.claude', 'skills')).includes('fingerprint-device-account-binding'))
 })
 
-test('declining the use case question is the basic integration', async () => {
+test('the default answer, "Basic installation", is the basic integration', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
@@ -360,7 +356,7 @@ test('declining the use case question is the basic integration', async () => {
     cwd: repo,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /Set up Fingerprint for a specific use case\?/, send: 'n\n' },
+      { when: /How should Fingerprint be set up in this repo\?/, send: '\n' },
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: `${UP}\n` }, // → stop
     ],
@@ -369,37 +365,7 @@ test('declining the use case question is the basic integration', async () => {
   await gw.close()
 
   assert.equal(res.status, 0, res.stderr)
-  assert.doesNotMatch(res.stdout, /Which use cases\?/)
-  const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
-  assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
-  assert.doesNotMatch(requests, /setting up Fingerprint for/)
-})
-
-test('"Back to basic installation" in the list is the basic integration, whatever else is ticked', async () => {
-  const home = makeHome()
-  seedAuth(home, api.url)
-  const repo = makeRepo()
-  const skillsDir = makeSkillsDir()
-  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
-  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
-
-  const res = await runCli(['integrate'], {
-    home,
-    cwd: repo,
-    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
-    respond: [
-      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
-      // Tick the use case, then the last entry (wrapping up to it): back to basic.
-      { when: /Which use cases\?/, send: `${SPACE}${UP}${SPACE}\n` },
-      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
-      { when: /What's next\?/, send: `${UP}\n` }, // → stop
-    ],
-  })
-  const requests = gw.bodies().join('\n')
-  await gw.close()
-
-  assert.equal(res.status, 0, res.stderr)
-  assert.match(res.stdout, /Back to basic installation/)
+  assert.match(res.stdout, /❯ (\x1b\[[0-9;]*m)*Basic installation/)
   const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
   assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
   assert.doesNotMatch(requests, /setting up Fingerprint for/)
@@ -421,7 +387,7 @@ test('a scripted run never asks about use cases', async () => {
   await gw.close()
 
   assert.equal(res.status, 0, res.stderr)
-  assert.doesNotMatch(res.stdout, /specific use case/)
+  assert.doesNotMatch(res.stdout, /How should Fingerprint be set up/)
   const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
   assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
 })

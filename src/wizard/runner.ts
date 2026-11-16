@@ -1,4 +1,4 @@
-import { checkbox, confirm, input, select, Separator } from '@inquirer/prompts'
+import { confirm, input, select, Separator } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -306,28 +306,23 @@ async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false
   })
 }
 
-// Which use cases to set Fingerprint up for, grouped as the docs group them. The entries come from
+// Which use case to set Fingerprint up for, grouped as the docs group them. The entries come from
 // the `use-case` skills in the skills repo, so the question only exists once one has shipped.
-// Picking nothing is the way back to the basic install.
 async function askUseCases(): Promise<UseCase[]> {
   const all = useCases()
   if (!all.length) return []
-  log.info('A use case adds the signals, tags and rules for one problem, such as account takeover or coupon abuse.')
-  const wanted = await confirm({ message: 'Set up Fingerprint for a specific use case?', default: false })
-  const picked = wanted
-    ? await checkbox<UseCase | null>({
-        message: 'Which use cases?',
-        choices: [
-          ...[...new Set(all.map((u) => u.group))].flatMap((group) => [
-            new Separator(`── ${group} ──`),
-            ...all.filter((u) => u.group === group).map((u) => ({ name: u.title, value: u, description: u.summary })),
-          ]),
-          new Separator(),
-          { name: 'Back to basic installation', value: null },
-        ],
-      })
-    : []
-  const chosen = picked.includes(null) ? [] : (picked as UseCase[])
+  // One question: the basic installation first and by default, the use cases under it.
+  const picked = await select<UseCase | null>({
+    message: 'How should Fingerprint be set up in this repo?',
+    choices: [
+      { name: 'Basic installation', value: null, description: 'Identification and server-side verification; a use case can be added later.' },
+      ...[...new Set(all.map((u) => u.group))].flatMap((group) => [
+        new Separator(`── ${group} ──`),
+        ...all.filter((u) => u.group === group).map((u) => ({ name: u.title, value: u, description: u.summary })),
+      ]),
+    ],
+  })
+  const chosen = picked ? [picked] : []
   recordWizardStep(chosen.length ? 'use_case' : 'basic')
   // Ids only — which use cases people pick decides which pattern skill gets attention next.
   if (chosen.length) addRunProperties({ use_cases: chosen.map((u) => u.id).join(',') })
