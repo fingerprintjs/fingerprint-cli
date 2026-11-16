@@ -195,13 +195,14 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
         if (!chosen.length) chosen = await askUseCases()
         // The frontend here landed in an earlier run: the server step gets it too, so the form it
         // wired sends the event ID to the route the step protects.
-        outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen, frontend: analysis.frontend?.dir })
+        // Typing the path is the go-ahead; no second "integrate this repo?".
+        outcome = await provisionAndApply(backend, { yes: true, step: NEXT_STEPS.server.step, useCases: chosen, frontend: analysis.frontend?.dir })
       }
       continue
     }
     if (next === 'frontend') {
       const frontend = await askFrontendPath()
-      if (frontend) outcome = await provisionAndApply(frontend, { yes: opts.yes, step: NEXT_STEPS.frontend.step, useCases: chosen })
+      if (frontend) outcome = await provisionAndApply(frontend, { yes: true, step: NEXT_STEPS.frontend.step, useCases: chosen })
       continue
     }
     outcome =

@@ -110,7 +110,6 @@ test('choosing server-side verification in a frontend-only repo asks where the b
       { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
       { when: /Path to your backend repo/, send: `${backend}\n` },
-      { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
       { when: SECOND_MENU, send: `${UP}\n` }, // [custom subdomain, remaining steps, stop] → stop
     ],
   })
@@ -290,7 +289,6 @@ test('a frontend-only repo is asked about use cases up front and reminded that t
       { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
       { when: /Path to your backend repo/, send: `${backend}\n` },
-      { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
       { when: SECOND_MENU, send: `${UP}\n` }, // → stop
     ],
   })
@@ -335,7 +333,6 @@ test('a backend-only repo is offered its frontend first, so the backend gets an 
       { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // bring in the frontend
       { when: /Path to your frontend repo/, send: `${frontend}\n` },
-      { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
       { when: SECOND_MENU, send: `${UP}\n` }, // → stop
     ],
   })
