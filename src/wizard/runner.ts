@@ -312,20 +312,22 @@ async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false
 async function askUseCases(): Promise<UseCase[]> {
   const all = useCases()
   if (!all.length) return []
-  const wanted = await confirm({
-    message:
-      'Set up Fingerprint for a specific use case? (adds which signals to check, what to tag, which rules to create and how to respond, on top of the install)',
-    default: false,
-  })
-  const chosen = wanted
-    ? await checkbox<UseCase>({
-        message: 'Which use cases? (space to select, Enter to confirm; none = basic setup)',
-        choices: [...new Set(all.map((u) => u.group))].flatMap((group) => [
-          new Separator(`── ${group} ──`),
-          ...all.filter((u) => u.group === group).map((u) => ({ name: u.title, value: u, description: u.summary })),
-        ]),
+  log.info('A use case adds the signals, tags and rules for one problem, such as account takeover or coupon abuse.')
+  const wanted = await confirm({ message: 'Set up Fingerprint for a specific use case?', default: false })
+  const picked = wanted
+    ? await checkbox<UseCase | null>({
+        message: 'Which use cases?',
+        choices: [
+          ...[...new Set(all.map((u) => u.group))].flatMap((group) => [
+            new Separator(`── ${group} ──`),
+            ...all.filter((u) => u.group === group).map((u) => ({ name: u.title, value: u, description: u.summary })),
+          ]),
+          new Separator(),
+          { name: 'Back to basic installation', value: null },
+        ],
       })
     : []
+  const chosen = picked.includes(null) ? [] : (picked as UseCase[])
   recordWizardStep(chosen.length ? 'use_case' : 'basic')
   // Ids only — which use cases people pick decides which pattern skill gets attention next.
   if (chosen.length) addRunProperties({ use_cases: chosen.map((u) => u.id).join(',') })

@@ -375,6 +375,36 @@ test('declining the use case question is the basic integration', async () => {
   assert.doesNotMatch(requests, /setting up Fingerprint for/)
 })
 
+test('"Back to basic installation" in the list is the basic integration, whatever else is ticked', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
+
+  const res = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+    respond: [
+      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
+      // Tick the use case, then the last entry (wrapping up to it): back to basic.
+      { when: /Which use cases\?/, send: `${SPACE}${UP}${SPACE}\n` },
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${UP}\n` }, // → stop
+    ],
+  })
+  const requests = gw.bodies().join('\n')
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /Back to basic installation/)
+  const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
+  assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
+  assert.doesNotMatch(requests, /setting up Fingerprint for/)
+})
+
 test('a scripted run never asks about use cases', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
