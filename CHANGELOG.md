@@ -1,5 +1,11 @@
 # fingerprint
 
+## 0.2.11
+
+### Patch Changes
+
+- Offer to add Fingerprint's MCP server to Claude Code and Cursor from the `integrate` menu, with example prompts to try. ([3ffb0a8](https://github.com/fingerprintjs/fingerprint-cli/commit/3ffb0a853b6312cc80b11c994d26ace1210eb8f9))
+
 ## 0.2.10
 
 ### Patch Changes
