@@ -299,8 +299,8 @@ test('a frontend-only repo is asked about use cases up front and reminded that t
 
   assert.equal(res.status, 0, res.stderr)
   assert.match(res.stdout, /lands in the backend: after this step, choose server-side verification/)
-  // The menu names the step after the use case: it completes the setup, it is not "more signals".
-  assert.match(res.stdout, /❯ (\x1b\[[0-9;]*m)*Add the Account Takeover check to your backend repo to complete the setup/)
+  // The menu says where the step lives and that it completes the use case.
+  assert.match(res.stdout, /❯ (\x1b\[[0-9;]*m)*Set up server-side verification in your backend repo to complete the setup/)
   // Asked once, before the install: the pick made up front stands when the backend comes.
   assert.ok(res.stdout.lastIndexOf('How should Fingerprint be set up') < res.stdout.indexOf('Path to your backend repo'), res.stdout)
   const useCaseLine = /setting up Fingerprint for: Account Takeover/

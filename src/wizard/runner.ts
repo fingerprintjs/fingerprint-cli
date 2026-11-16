@@ -269,7 +269,7 @@ const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: strin
     step: 'Quick start step 1 — install Fingerprint in this frontend and send the event_id to the backend with every protected request (login, signup, checkout, ...): the backend already verifies events with the Server API',
   },
   server: {
-    name: 'Set up server-side verification to get more signals',
+    name: 'Set up server-side verification to protect your app with device-based signals',
     activity: 'Setting up server-side verification',
     step: 'Quick start step 2 — access detailed insights: verify the event server-side with the Server API',
   },
@@ -295,13 +295,12 @@ const USE_CASE_FIRST_STEP =
 const USE_CASE_AUDIT_STEP =
   'Apply the chosen use cases to the existing integration: in the frontend, the action each use case names identifies on submit with its linkedId and tag and sends the event_id to the backend; in the backend, the gate and the use case\'s pattern logic run on that route. Add or edit what is missing; the install and server-side verification are otherwise done'
 
-// What the server-side step is called in the menu, given what this repo has and what was chosen:
-// in a repo without a backend the step lives in another repo, and with a use case it is what
-// completes the use case rather than a way to "get more signals".
+// What the server-side step is called in the menu: in a repo without a backend it lives in
+// another repo, and with a use case it is what completes the use case.
 function serverStepName(analysis: RepoAnalysis, chosen: UseCase[]): string {
-  if (analysis.backend) return NEXT_STEPS.server.name
-  if (chosen.length) return `Add the ${chosen.map((u) => u.title).join(' and ')} check to your backend repo to complete the setup`
-  return 'Set up server-side verification in your backend repo to get more signals'
+  const where = analysis.backend ? '' : ' in your backend repo'
+  const why = chosen.length ? 'to complete the setup' : 'to protect your app with device-based signals'
+  return `Set up server-side verification${where} ${why}`
 }
 
 function stepActivity(step?: string): string {
