@@ -243,7 +243,7 @@ test('choosing a use case installs its skills and tells the agent about it on ev
     cwd: repo,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /How should Fingerprint be set up in this repo\?/, send: `${SPACE}${DOWN}${SPACE}\n` }, // untick "Basic installation", tick the entry under it: Account Takeover
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}\n` }, // tick the entry under "Basic installation": Account Takeover
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       // Install and server-side verification landed together, so the menu is [subdomain, remaining
       // steps, stop]; pick the remaining steps, then stop at the menu after that run.
@@ -255,6 +255,10 @@ test('choosing a use case installs its skills and tells the agent about it on ev
   await gw.close()
 
   assert.equal(res.status, 0, res.stderr)
+  // Ticking a use case unticks the basic entry: the answer line names the use case alone.
+  assert.match(res.stdout, /Enter to\s+confirm\) (\x1b\[[0-9;]*m)*Account Takeover/)
+  assert.match(res.stdout, /◯ Basic installation/)
+  assert.doesNotMatch(res.stdout, /Basic installation, Account Takeover/)
   assert.match(res.stdout, /Protect your users/)
   const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
   assert.deepEqual(installed, ['fingerprint-device-account-binding', 'fingerprint-get-started', 'fingerprint-node', 'fingerprint-protect-action', 'fingerprint-react'])
@@ -282,7 +286,7 @@ test('a frontend-only repo is asked about use cases up front and reminded that t
     cwd: frontend,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /How should Fingerprint be set up in this repo\?/, send: `${SPACE}${DOWN}${SPACE}\n` },
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
       { when: /Path to your backend repo/, send: `${backend}\n` },
@@ -325,7 +329,7 @@ test('a backend-only repo is offered its frontend first, so the backend gets an 
     cwd: backend,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /How should Fingerprint be set up in this repo\?/, send: `${SPACE}${DOWN}${SPACE}\n` },
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // bring in the frontend
       { when: /Path to your frontend repo/, send: `${frontend}\n` },
@@ -387,7 +391,7 @@ test('a repo that already has Fingerprint applies the chosen use case to what is
     cwd: repo,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /How should Fingerprint be set up in this repo\?/, send: `${SPACE}${DOWN}${SPACE}\n` },
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}\n` },
       { when: /What's next\?/, send: `${UP}\n` }, // → stop
     ],
   })
