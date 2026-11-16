@@ -180,7 +180,7 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     if (analysis.frontend || !analysis.backend) done.add('frontend')
     if (analysis.backend && usesServerSdk(analysis.backend)) done.add('server')
     if (analysis.frontend && usesConfiguredEndpoint(analysis.frontend)) done.add('proxy')
-    const next = await askNextStep(done, { afterAudit: audited })
+    const next = await askNextStep(done, { afterAudit: audited, serverName: serverStepName(analysis, chosen) })
     audited = false
     recordWizardStep(next === 'proxy' ? 'subdomain' : next)
     if (next === 'stop') break
@@ -295,6 +295,15 @@ const USE_CASE_FIRST_STEP =
 const USE_CASE_AUDIT_STEP =
   'Apply the chosen use cases to the existing integration: in the frontend, the action each use case names identifies on submit with its linkedId and tag and sends the event_id to the backend; in the backend, the gate and the use case\'s pattern logic run on that route. Add or edit what is missing; the install and server-side verification are otherwise done'
 
+// What the server-side step is called in the menu, given what this repo has and what was chosen:
+// in a repo without a backend the step lives in another repo, and with a use case it is what
+// completes the use case rather than a way to "get more signals".
+function serverStepName(analysis: RepoAnalysis, chosen: UseCase[]): string {
+  if (analysis.backend) return NEXT_STEPS.server.name
+  if (chosen.length) return `Add the ${chosen.map((u) => u.title).join(' and ')} check to your backend repo to complete the setup`
+  return 'Set up server-side verification in your backend repo to get more signals'
+}
+
 function stepActivity(step?: string): string {
   if (step === USE_CASE_AUDIT_STEP) return 'Applying the use cases to the existing integration'
   return Object.values(NEXT_STEPS).find((next) => next.step === step)?.activity ?? 'Setting up Fingerprint'
@@ -304,7 +313,10 @@ function stepActivity(step?: string): string {
 // steps are offered by name; the remaining checklist (rules, tagging, request filtering) once
 // server-side verification is in place — the subdomain can be skipped, it must not block the rest.
 // `afterAudit`: the menu follows the progress report, not a step the user should test first.
-async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false } = {}): Promise<NextStep | 'stop'> {
+async function askNextStep(
+  done: Set<NextStep | 'install'>,
+  { afterAudit = false, serverName = NEXT_STEPS.server.name }: { afterAudit?: boolean; serverName?: string } = {}
+): Promise<NextStep | 'stop'> {
   const offered = (Object.keys(NEXT_STEPS) as NextStep[]).filter((s) => !done.has(s) && (s !== 'more' || done.has('server')))
   if (!afterAudit) {
     log.line()
@@ -313,7 +325,7 @@ async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false
   return select<NextStep | 'stop'>({
     message: "What's next?",
     choices: [
-      ...offered.map((s) => ({ name: NEXT_STEPS[s].name, value: s })),
+      ...offered.map((s) => ({ name: s === 'server' ? serverName : NEXT_STEPS[s].name, value: s })),
       { name: 'Stop here for now (run fingerprint again to continue later)', value: 'stop' },
     ],
   })
