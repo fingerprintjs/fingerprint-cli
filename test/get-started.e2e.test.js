@@ -50,6 +50,7 @@ test('integrate installs the orchestrator with the framework skills and lets it 
 // Keys for the "What's next?" menu: Enter takes the first offered step; the last entry is "stop".
 const FIRST = '\n'
 const DOWN = '\x1b[B'
+const SPACE = ' '
 const UP = '\x1b[A' // wraps to the last entry: "Stop here"
 // The second menu, once it is on screen: the custom subdomain is its first entry, so it carries the
 // pointer (with the highlight's colour codes in between). The question text itself is no marker —
@@ -242,7 +243,7 @@ test('choosing a use case installs its skills and tells the agent about it on ev
     cwd: repo,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}\n` }, // under "Basic installation": Account Takeover
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}\n` }, // tick the entry under "Basic installation": Account Takeover
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       // Install and server-side verification landed together, so the menu is [subdomain, remaining
       // steps, stop]; pick the remaining steps, then stop at the menu after that run.
@@ -281,7 +282,7 @@ test('a frontend-only repo is asked about use cases up front and reminded that t
     cwd: frontend,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}\n` },
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
       { when: /Path to your backend repo/, send: `${backend}\n` },
@@ -324,7 +325,7 @@ test('a backend-only repo is offered its frontend first, so the backend gets an 
     cwd: backend,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
-      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}\n` },
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // bring in the frontend
       { when: /Path to your frontend repo/, send: `${frontend}\n` },
@@ -343,7 +344,7 @@ test('a backend-only repo is offered its frontend first, so the backend gets an 
   assert.ok(readdirSync(join(frontend, '.claude', 'skills')).includes('fingerprint-device-account-binding'))
 })
 
-test('the default answer, "Basic installation", is the basic integration', async () => {
+test('Enter on the default, "Basic installation", is the basic integration', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
   const repo = makeRepo()
@@ -365,7 +366,7 @@ test('the default answer, "Basic installation", is the basic integration', async
   await gw.close()
 
   assert.equal(res.status, 0, res.stderr)
-  assert.match(res.stdout, /❯ (\x1b\[[0-9;]*m)*Basic installation/)
+  assert.match(res.stdout, /◉ (\x1b\[[0-9;]*m)*Basic installation/)
   const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
   assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
   assert.doesNotMatch(requests, /setting up Fingerprint for/)

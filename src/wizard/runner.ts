@@ -1,4 +1,4 @@
-import { confirm, input, select, Separator } from '@inquirer/prompts'
+import { checkbox, confirm, input, select, Separator } from '@inquirer/prompts'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -306,23 +306,24 @@ async function askNextStep(done: Set<NextStep | 'install'>, { afterAudit = false
   })
 }
 
-// Which use case to set Fingerprint up for, grouped as the docs group them. The entries come from
+// Which use cases to set Fingerprint up for, grouped as the docs group them. The entries come from
 // the `use-case` skills in the skills repo, so the question only exists once one has shipped.
 async function askUseCases(): Promise<UseCase[]> {
   const all = useCases()
   if (!all.length) return []
-  // One question: the basic installation first and by default, the use cases under it.
-  const picked = await select<UseCase | null>({
-    message: 'How should Fingerprint be set up in this repo?',
+  // One question: the basic installation first and ticked by default, the use cases under it.
+  // Ticking any use case is the answer; the basic entry is then ignored.
+  const picked = await checkbox<UseCase | null>({
+    message: 'How should Fingerprint be set up in this repo? (space to tick, Enter to confirm)',
     choices: [
-      { name: 'Basic installation', value: null, description: 'Identification and server-side verification; a use case can be added later.' },
+      { name: 'Basic installation', value: null, checked: true, description: 'Identification and server-side verification; use cases can be added later.' },
       ...[...new Set(all.map((u) => u.group))].flatMap((group) => [
         new Separator(`── ${group} ──`),
         ...all.filter((u) => u.group === group).map((u) => ({ name: u.title, value: u, description: u.summary })),
       ]),
     ],
   })
-  const chosen = picked ? [picked] : []
+  const chosen = picked.filter((u): u is UseCase => u !== null)
   recordWizardStep(chosen.length ? 'use_case' : 'basic')
   // Ids only — which use cases people pick decides which pattern skill gets attention next.
   if (chosen.length) addRunProperties({ use_cases: chosen.map((u) => u.id).join(',') })
