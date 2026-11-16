@@ -180,7 +180,9 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       const backend = await askBackendPath()
       if (backend) {
         chosen = await askUseCases()
-        outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen })
+        // The frontend here landed before the use case was known: the server step gets it too, so
+        // the form it wired sends the event ID to the route the step protects.
+        outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen, frontend: analysis.frontend?.dir })
       }
       continue
     }
@@ -406,7 +408,10 @@ function sourceFiles(dir: string): string[] {
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string; useCases?: UseCase[] }): Promise<IntegrateOutcome> {
+async function provisionAndApply(
+  root: string,
+  opts: { yes?: boolean; step?: string; useCases?: UseCase[]; frontend?: string }
+): Promise<IntegrateOutcome> {
   await provisionEnv(root)
   return applyIntegration(root, opts)
 }
@@ -422,9 +427,10 @@ async function provisionEnv(root: string): Promise<void> {
 // Offer to apply the integration for the repo at `root` (after env has been provisioned),
 // then run the agent, so the flow is continuous: set up env → "integrate this repo?" → apply.
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
+// `frontend`: the already-installed frontend in another repo, which the agent may read and edit.
 async function applyIntegration(
   root: string,
-  opts: { yes?: boolean; step?: string; subdomain?: string; useCases?: UseCase[] } = {}
+  opts: { yes?: boolean; step?: string; subdomain?: string; useCases?: UseCase[]; frontend?: string } = {}
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
@@ -471,7 +477,7 @@ async function applyIntegration(
   // integration is being redone.
   if (opts.subdomain) log.step(`Updating your app to use ${opts.subdomain}`)
   else log.step(stepActivity(opts.step))
-  return runAgent(analysis, opts.step, opts.subdomain, inline, opts.useCases)
+  return runAgent(analysis, opts.step, opts.subdomain, inline, opts.useCases, opts.frontend)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -484,7 +490,8 @@ export async function runAgent(
   step?: string,
   subdomain?: string,
   inline?: InlineValues,
-  chosen: UseCase[] = []
+  chosen: UseCase[] = [],
+  frontend?: string
 ): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
@@ -505,11 +512,12 @@ export async function runAgent(
   // read .env, and without this it audits step 3 as not done and asks the user to add the variable.
   const configured = analysis.frontend && !subdomain ? configuredEndpoint(analysis.frontend) : undefined
   const response = query({
-    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured, chosen),
+    prompt: buildGetStartedPrompt(analysis, step, subdomain, endpointVar, inline, configured, chosen, frontend),
     options: {
       model: llm.model,
       env: llm.env,
       cwd: analysis.root,
+      ...(frontend ? { additionalDirectories: [frontend] } : {}),
       systemPrompt: SYSTEM_PROMPT,
       settingSources: ['project'], // discover .claude/skills/
       skills: ids, // load only the skills we installed, not any others already in the repo
@@ -626,7 +634,8 @@ function buildGetStartedPrompt(
   endpointVar?: string,
   inline?: InlineValues,
   configured?: { envVar: string; envFile: string; endpoint: string },
-  chosen: UseCase[] = []
+  chosen: UseCase[] = [],
+  frontend?: string
 ): string {
   const publicVar = analysis.frontend ? conventionFor(analysis.frontend).publicVar : undefined
   return [
@@ -647,6 +656,15 @@ function buildGetStartedPrompt(
           'gate and the pattern logic (device binding, velocity limit, ...) as modules, wired into the',
           'matching route if the app has one; otherwise show the call in a comment and name the route',
           'that is missing. Never scaffold that route.',
+        ]
+      : []),
+    // The frontend was installed in an earlier run, before this step and its use case were known.
+    ...(frontend
+      ? [
+          `The frontend is a separate repo at ${frontend}, installed in an earlier run; you can read and edit`,
+          `it (its skills are under ${frontend}/.claude/skills/). Check it as the orchestrator's step 2 says: the`,
+          'form it wired sends its event_id to the route this step protects, and identifies on the action',
+          'the use case names. Edit the frontend where it differs.',
         ]
       : []),
     // A static site has no env file to point at, so the values go in the prompt instead — telling

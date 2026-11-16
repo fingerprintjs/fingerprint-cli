@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startManagementApi, startGateway, makeHome, seedAuth, makeRepo, makeSkillsDir, addUseCaseSkill, runCli } from './helpers/harness.js'
@@ -301,6 +301,12 @@ test('a frontend-only repo is asked about use cases once it points at its backen
   const useCaseLine = /setting up Fingerprint for: Account Takeover/
   assert.ok(bodies.some((b) => /one step at a time/.test(b) && !useCaseLine.test(b)), 'the frontend install has no use case')
   assert.ok(bodies.some((b) => /Quick start step 2/.test(b) && useCaseLine.test(b)), 'the backend step names the use case')
+  // The frontend landed before the use case was known, so the backend step is told where it is
+  // and to bring it in line.
+  assert.ok(
+    bodies.some((b) => /Quick start step 2/.test(b) && b.includes(`The frontend is a separate repo at ${realpathSync(frontend)}`)),
+    'the backend step is told about the frontend'
+  )
   assert.ok(readdirSync(join(backend, '.claude', 'skills')).includes('fingerprint-device-account-binding'))
 })
 
