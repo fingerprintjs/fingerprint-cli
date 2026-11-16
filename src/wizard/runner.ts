@@ -130,9 +130,14 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       recordWizardStep('resume_declined')
     }
     const progress = integrationProgress(root)
-    // A use case is applied in the server check, so it is asked where the backend is: here when
-    // this repo has one, otherwise when the user points at the backend from the menu.
-    if (!opts.yes && !autoYes() && progress.analysis.backend) chosen = await askUseCases()
+    // Asked up front even without a backend: the frontend install differs per use case (which
+    // action to identify on, what to tag), though the protection itself lands in the backend.
+    if (!opts.yes && !autoYes()) {
+      chosen = await askUseCases()
+      if (chosen.length && !progress.analysis.backend) {
+        log.info('The protection for this use case lands in the backend: after this step, choose server-side verification and point at your backend to complete the setup.')
+      }
+    }
     // Step 1 is behind us when the frontend has the SDK, or when there is no frontend and the backend
     // already verifies events. A verified backend next to an untouched frontend still starts at step 1.
     const started = progress.installed || (!progress.analysis.frontend && progress.server)
@@ -179,9 +184,10 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
     if (next === 'server' && !analysis.backend) {
       const backend = await askBackendPath()
       if (backend) {
-        chosen = await askUseCases()
-        // The frontend here landed before the use case was known: the server step gets it too, so
-        // the form it wired sends the event ID to the route the step protects.
+        // A second chance for whoever picked no use case up front; a pick made then stands.
+        if (!chosen.length) chosen = await askUseCases()
+        // The frontend here landed in an earlier run: the server step gets it too, so the form it
+        // wired sends the event ID to the route the step protects.
         outcome = await provisionAndApply(backend, { yes: opts.yes, step: NEXT_STEPS.server.step, useCases: chosen, frontend: analysis.frontend?.dir })
       }
       continue

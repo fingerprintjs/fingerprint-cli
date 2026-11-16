@@ -267,7 +267,7 @@ test('choosing a use case installs its skills and tells the agent about it on ev
   assert.ok(bodies.some((b) => /next unfinished checklist step/.test(b) && useCaseLine.test(b)), 'a later step still names the use case')
 })
 
-test('a frontend-only repo is asked about use cases once it points at its backend', async () => {
+test('a frontend-only repo is asked about use cases up front and reminded that the backend completes it', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
   const frontend = mkdtempSync(join(tmpdir(), 'fp-fe-'))
@@ -283,11 +283,11 @@ test('a frontend-only repo is asked about use cases once it points at its backen
     cwd: frontend,
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
+      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
+      { when: /Which use cases\?/, send: `${SPACE}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-react\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
       { when: /Path to your backend repo/, send: `${backend}\n` },
-      { when: /Set up Fingerprint for a specific use case\?/, send: 'y\n' },
-      { when: /Which use cases\?/, send: `${SPACE}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
       { when: SECOND_MENU, send: `${UP}\n` }, // → stop
     ],
@@ -296,13 +296,14 @@ test('a frontend-only repo is asked about use cases once it points at its backen
   await gw.close()
 
   assert.equal(res.status, 0, res.stderr)
-  // Not asked before the frontend install: the question comes with the backend.
-  assert.ok(res.stdout.indexOf('specific use case') > res.stdout.indexOf('Path to your backend repo'), res.stdout)
+  assert.match(res.stdout, /lands in the backend: after this step, choose server-side verification/)
+  // Asked once, before the install: the pick made up front stands when the backend comes.
+  assert.ok(res.stdout.lastIndexOf('specific use case') < res.stdout.indexOf('Path to your backend repo'), res.stdout)
   const useCaseLine = /setting up Fingerprint for: Account Takeover/
-  assert.ok(bodies.some((b) => /one step at a time/.test(b) && !useCaseLine.test(b)), 'the frontend install has no use case')
+  assert.ok(bodies.some((b) => /one step at a time/.test(b) && useCaseLine.test(b)), 'the frontend install names the use case')
   assert.ok(bodies.some((b) => /Quick start step 2/.test(b) && useCaseLine.test(b)), 'the backend step names the use case')
-  // The frontend landed before the use case was known, so the backend step is told where it is
-  // and to bring it in line.
+  // The frontend landed in an earlier run, so the backend step is told where it is and to bring
+  // it in line.
   assert.ok(
     bodies.some((b) => /Quick start step 2/.test(b) && b.includes(`The frontend is a separate repo at ${realpathSync(frontend)}`)),
     'the backend step is told about the frontend'
