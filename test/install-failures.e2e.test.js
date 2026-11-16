@@ -151,7 +151,7 @@ test('continuing the wizard does not reinstall packages already available to the
       respond: [
         { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
         { when: /What's next\?/, send: '\n' },
-        { when: /❯ (\x1b\[[0-9;]*m)*Protect against ad blockers/, send: '\x1b[B\n' },
+        { when: /❯ (\x1b\[[0-9;]*m)*Protect against ad blockers/, send: '\x1b[A\n' }, // wraps to "Stop here",
       ],
     })
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)

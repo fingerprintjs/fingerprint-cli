@@ -70,6 +70,15 @@ offers to resume the unfinished setup. To start or resume that step directly:
 npx fingerprint integrate --subdomain metrics.example.com
 ```
 
+## Connect your coding agent (MCP)
+
+From the `npx fingerprint integrate` menu, choose **Connect Fingerprint to your coding agent (MCP)**.
+The CLI adds Fingerprint's MCP server (`https://mcp.fpjs.io/mcp`) to Claude Code (`claude mcp add
+--scope user`) and Cursor (`~/.cursor/mcp.json`) on this machine, after asking. Your agent can then read your
+events and Smart Signals, manage keys and check your custom subdomain. It signs you in to Fingerprint
+in the browser the first time you use it. With neither agent installed, the CLI prints the command to
+add it yourself.
+
 ## Commands
 
 You rarely need these directly — `npx fingerprint` routes to the right one — but they're available:

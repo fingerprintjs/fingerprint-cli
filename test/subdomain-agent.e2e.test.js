@@ -10,6 +10,7 @@ import { makeHome, makeRepo, makeStaticRepo, makeSkillsDir, runCli, seedAuth } f
 const HOSTNAME = 'metrics.example.com'
 const ID = 'certv2_123'
 const DOWN = '\x1b[B'
+const UP = '\x1b[A'
 const APPLYING = /Setting up Fingerprint/g
 const FINISHED = /Agent finished applying the integration/g
 const DNS_MENU = /is waiting for its DNS records\. What's next\?/
@@ -17,6 +18,8 @@ const CREATING = /Setting up metrics\.example\.com/
 const CONFIGURING = /Updating your app to use metrics\.example\.com/
 const CONFIRM_CONFIGURE = /Update your app to use metrics\.example\.com\?/
 const LATER = `${DOWN}${DOWN}\n`
+// The select wraps, so UP from the first item lands on the last one, "Stop here".
+const STOP = `${UP}\n`
 const HOSTNAME_PROMPT = /What subdomain would you like to use/
 const pick = (object, ...keys) => Object.fromEntries(keys.filter((key) => key in object).map((key) => [key, object[key]]))
 
@@ -88,7 +91,7 @@ test('an active subdomain is configured as the endpoint and completes the step',
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       // Step done → the menu is [server-side verification, stop]; pick stop.
       { when: CONFIRM_CONFIGURE, send: 'y\n' },
-      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: STOP },
     ],
   })
 
@@ -161,7 +164,7 @@ test('checking DNS from the menu picks up activation and finishes the step in th
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: '\n' }, // check now
       { when: CONFIRM_CONFIGURE, send: 'y\n' },
-      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: STOP },
     ],
   })
 
@@ -197,7 +200,7 @@ test('when the DNS provider supports Domain Connect, the browser adds the record
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: /Your domain uses Cloudflare\. How would you like to add the DNS records\?/, send: '\n' }, // let Cloudflare add them
       { when: CONFIRM_CONFIGURE, send: 'y\n' },
-      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: STOP },
     ],
   })
 
@@ -361,7 +364,7 @@ test('a later run offers to resume the unfinished subdomain without auditing or 
     respond: [
       { when: /Resume the custom subdomain setup for metrics\.example\.com\?/, send: 'y\n' },
       { when: CONFIRM_CONFIGURE, send: 'y\n' },
-      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /Wrote VITE_FINGERPRINT_ENDPOINTS[\s\S]*What's next\?/, send: STOP },
     ],
   })
   assert.equal(third.status, 0, third.stderr)
@@ -538,7 +541,7 @@ for (const kind of ['empty directory', 'backend-only repo']) {
       respond: [
         { when: /Resume the custom subdomain setup/, send: 'y\n' },
         { when: DNS_MENU, send: '\n' },
-        { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${DOWN}\n` },
+        { when: /No supported frontend detected here[\s\S]*What's next\?/, send: STOP },
       ],
     })
     assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr)
@@ -573,7 +576,7 @@ test('subdomain setup from the backend wizard menu does not run a second agent',
       { when: /What's next\?/, send: `${DOWN}\n` },
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: '\n' },
-      { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /No supported frontend detected here[\s\S]*What's next\?/, send: STOP },
     ],
   })
   assert.equal(result.status, 0, result.stdout + result.stderr)
@@ -708,7 +711,7 @@ test('a declined app update resumes configuration without recreating the active 
     respond: [
       { when: /Resume the custom subdomain setup/, send: 'y\n' },
       { when: CONFIRM_CONFIGURE, send: 'y\n' },
-      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: /What's next\?/, send: STOP },
     ],
   })
 
@@ -1087,7 +1090,7 @@ test('an endpoint in the env file that the code references counts as step 3 done
     env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
-      { when: /What's next\?/, send: `${DOWN}\n` }, // [server-side verification, stop] → stop
+      { when: /What's next\?/, send: STOP }, // [server-side verification, MCP, stop] → stop
     ],
   })
 
@@ -1116,7 +1119,7 @@ test('an endpoint in the env file that no code references keeps the subdomain st
     env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
-      { when: /What's next\?/, send: `${DOWN}${DOWN}\n` }, // [server-side verification, custom subdomain, stop] → stop
+      { when: /What's next\?/, send: STOP }, // [server-side verification, custom subdomain, MCP, stop] → stop
     ],
   })
 

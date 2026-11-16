@@ -49,7 +49,8 @@ test('integrate installs the orchestrator with the framework skills and lets it 
 
 // Keys for the "What's next?" menu: Enter takes the first offered step; the last entry is "stop".
 const FIRST = '\n'
-const DOWN = '\x1b[B'
+// The select wraps, so UP from the first entry lands on the last one, "Stop here".
+const STOP = '\x1b[A\n'
 // The second menu, once it is on screen: the custom subdomain is its first entry, so it carries the
 // pointer (with the highlight's colour codes in between). The question text itself is no marker —
 // inquirer re-renders the answered first menu with "What's next?" too, and keys sent on that would
@@ -71,8 +72,8 @@ test('after a step the user picks the next one by name, and the agent is told to
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       // Step 1 landed; the first offer is server-side verification (the backend here has no SDK yet).
       { when: /What's next\?/, send: FIRST },
-      // Server done → the menu is [custom subdomain, stop]; pick stop.
-      { when: SECOND_MENU, send: `${DOWN}\n` },
+      // Server done → the menu is [custom subdomain, MCP, stop]; pick stop.
+      { when: SECOND_MENU, send: STOP },
     ],
   })
   const requests = gw.bodies().join('\n')
@@ -109,7 +110,7 @@ test('choosing server-side verification in a frontend-only repo asks where the b
       { when: /What's next\?/, send: FIRST }, // server-side verification
       { when: /Path to your backend repo/, send: `${backend}\n` },
       { when: /Integrate Fingerprint into this repo \(fingerprint-node\)/, send: 'y\n' },
-      { when: SECOND_MENU, send: `${DOWN}\n` }, // [custom subdomain, stop] → stop
+      { when: SECOND_MENU, send: STOP }, // [custom subdomain, MCP, stop] → stop
     ],
   })
   await gw.close()
@@ -134,7 +135,7 @@ test('continuing the remaining checklist uses a specific heading and does not an
       respond: [
         { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
         { when: /What's next\?/, send: '\n' },
-        { when: /Continuing the integration checklist[\s\S]*What's next\?/, send: `${DOWN}\n` },
+        { when: /Continuing the integration checklist[\s\S]*What's next\?/, send: STOP },
       ],
     })
     assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`)
@@ -177,7 +178,7 @@ for (const [file, source] of [
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST },
-      { when: SECOND_MENU, send: `${DOWN}\n` },
+      { when: SECOND_MENU, send: STOP },
     ],
   })
   const requests = gw.bodies().join('\n')
@@ -208,7 +209,7 @@ test('a python backend that imports the server SDK is not offered server-side ve
     env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
-      { when: SECOND_MENU, send: `${DOWN}\n` }, // [custom subdomain, stop] → stop
+      { when: SECOND_MENU, send: STOP }, // [custom subdomain, MCP, stop] → stop
     ],
   })
   await gw.close()
