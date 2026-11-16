@@ -27,6 +27,7 @@ function singleManifestRepo(dependencies) {
 // Keys for the "What's next?" menu (see get-started.e2e.test.js).
 const FIRST = '\n'
 const DOWN = '\x1b[B'
+const UP = '\x1b[A' // wraps to the last entry: "Stop here"
 const SECOND_MENU = /❯ (\x1b\[[0-9;]*m)*Protect against ad blockers/
 
 test('a single manifest with both halves resolves both skills and provisions both keys', async () => {
@@ -74,7 +75,7 @@ test('server-side verification in a single-manifest repo runs in place, without 
     respond: [
       { when: /Integrate Fingerprint into this repo \(fingerprint-react \+ fingerprint-node\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
-      { when: SECOND_MENU, send: `${DOWN}\n` }, // [custom subdomain, stop] → stop
+      { when: SECOND_MENU, send: `${UP}\n` }, // [custom subdomain, remaining steps, stop] → stop
     ],
   })
   const requests = gw.bodies().join('\n')
@@ -99,7 +100,7 @@ test('a Next.js app is its own backend, so the server step never asks where the 
     respond: [
       { when: /Integrate Fingerprint into this repo \(fingerprint-nextjs\)/, send: 'y\n' },
       { when: /What's next\?/, send: FIRST }, // server-side verification
-      { when: SECOND_MENU, send: `${DOWN}\n` },
+      { when: SECOND_MENU, send: `${UP}\n` }, // → stop
     ],
   })
   await gw.close()
@@ -130,8 +131,8 @@ for (const [shape, serverCode, offered] of [
       env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
       respond: [
         { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
-        // Down to "Stop here": past [server, proxy] or past [proxy].
-        { when: /What's next\?/, send: `${DOWN.repeat(offered ? 2 : 1)}\n` },
+        // Up wraps to "Stop here", whatever is offered before it.
+        { when: /What's next\?/, send: `${UP}\n` },
       ],
     })
     await gw.close()

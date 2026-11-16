@@ -10,6 +10,7 @@ import { makeHome, makeRepo, makeStaticRepo, makeSkillsDir, runCli, seedAuth } f
 const HOSTNAME = 'metrics.example.com'
 const ID = 'certv2_123'
 const DOWN = '\x1b[B'
+const UP = '\x1b[A' // wraps to the last entry: "Stop here"
 const APPLYING = /Setting up Fingerprint/g
 const FINISHED = /Agent finished applying the integration/g
 const DNS_MENU = /is waiting for its DNS records\. What's next\?/
@@ -538,7 +539,8 @@ for (const kind of ['empty directory', 'backend-only repo']) {
       respond: [
         { when: /Resume the custom subdomain setup/, send: 'y\n' },
         { when: DNS_MENU, send: '\n' },
-        { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${DOWN}\n` },
+        // A backend-only repo is offered its frontend first: wrap up to "stop".
+        { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${UP}\n` },
       ],
     })
     assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr)
@@ -570,10 +572,10 @@ test('subdomain setup from the backend wizard menu does not run a second agent',
     env: { FINGERPRINT_SKILLS_DIR: makeSkillsDir(), FINGERPRINT_GATEWAY_URL: gateway.url },
     respond: [
       { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
-      { when: /What's next\?/, send: `${DOWN}\n` },
+      { when: /What's next\?/, send: `${DOWN}${DOWN}\n` }, // [frontend, server-side verification, custom subdomain]
       { when: HOSTNAME_PROMPT, send: `${HOSTNAME}\n` },
       { when: DNS_MENU, send: '\n' },
-      { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${DOWN}\n` },
+      { when: /No supported frontend detected here[\s\S]*What's next\?/, send: `${UP}\n` }, // → stop
     ],
   })
   assert.equal(result.status, 0, result.stdout + result.stderr)

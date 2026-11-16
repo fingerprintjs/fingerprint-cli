@@ -11,6 +11,12 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.289
         version: 0.3.289(@anthropic-ai/sdk@0.106.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
+      '@inquirer/core':
+        specifier: ^11.1.9
+        version: 11.2.1(@types/node@24.13.2)
+      '@inquirer/figures':
+        specifier: ^2.0.5
+        version: 2.0.7
       '@inquirer/prompts':
         specifier: ^8.0.1
         version: 8.5.2(@types/node@24.13.2)

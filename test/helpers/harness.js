@@ -234,6 +234,15 @@ export function makeSkillsDir(packages = {}) {
   return dir
 }
 
+// Add a use-case pattern skill to a skills checkout. `useCases` are the business use cases it
+// covers, as the CLI's use-case menu lists them.
+export function addUseCaseSkill(dir, id, useCases) {
+  const s = join(dir, 'skills', id)
+  mkdirSync(s, { recursive: true })
+  writeFileSync(join(s, 'SKILL.md'), `# ${id}\nTest skill.\n`)
+  writeFileSync(join(s, 'skill.json'), JSON.stringify({ id, role: 'use-case', category: 'use-case', packages: [], useCases }))
+}
+
 // A React frontend + Express backend monorepo fixture.
 export function makeRepo() {
   const root = mkdtempSync(join(tmpdir(), 'fp-repo-'))
