@@ -17,6 +17,9 @@ interface EnvironmentUrls {
   // Public OAuth client id registered in WorkOS for the CLI (PKCE, loopback redirect). Per-environment
   // because WorkOS clients are per-environment. Overridable via FINGERPRINT_OAUTH_CLIENT_ID.
   oauthClientId: string
+  // Server API base per workspace region, read with the login bundle's Server API key (events
+  // search). Staging serves one region. Overridable via FINGERPRINT_SERVER_API_URL.
+  serverApiUrl: Record<Region, string>
 }
 
 // Each environment bundles the URLs that must move together. Defaults to production; set
@@ -28,12 +31,14 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
     gatewayUrl: 'https://llm-gateway.fpjs.io',
     oauthIssuer: 'https://mcpauth.fingerprint.com',
     oauthClientId: 'client_01KYHSG8DC4YHTJGWRADHBZ24D',
+    serverApiUrl: { us: 'https://api.fpjs.io/v4', eu: 'https://eu.api.fpjs.io/v4', ap: 'https://ap.api.fpjs.io/v4' },
   },
   staging: {
     managementApiUrl: 'https://public-mgmtapi.fpjs.sh',
     gatewayUrl: 'https://llm-gateway.fpjs.sh',
     oauthIssuer: 'https://scientific-cat-58-staging.authkit.app',
     oauthClientId: 'client_01KYHMB30PPDR66CWY8BKVTZRX',
+    serverApiUrl: { us: 'https://api.stage.fpjs.sh/v4', eu: 'https://api.stage.fpjs.sh/v4', ap: 'https://api.stage.fpjs.sh/v4' },
   },
   // Closed ports: the test suite reaches no real service by forgetting to point one at a fake.
   test: {
@@ -41,6 +46,7 @@ const ENVIRONMENTS: Record<Environment, EnvironmentUrls> = {
     gatewayUrl: 'http://127.0.0.1:1',
     oauthIssuer: 'http://127.0.0.1:1',
     oauthClientId: 'client_test',
+    serverApiUrl: { us: 'http://127.0.0.1:1', eu: 'http://127.0.0.1:1', ap: 'http://127.0.0.1:1' },
   },
 }
 
@@ -83,6 +89,12 @@ export function resolveConfig(region?: string): RuntimeConfig {
     oauthClientId: process.env.FINGERPRINT_OAUTH_CLIENT_ID ?? env.oauthClientId,
     region: resolvedRegion,
   }
+}
+
+// Server API base for a workspace region: per-URL env var > selected environment preset.
+export function serverApiUrl(region: string): string {
+  const env = ENVIRONMENTS[selectEnvironment()]
+  return process.env.FINGERPRINT_SERVER_API_URL ?? env.serverApiUrl[region as Region] ?? env.serverApiUrl.us
 }
 
 // Server region codes accepted by POST /subscriptions/start (mirrors the dashboard's REGIONS).

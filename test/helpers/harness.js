@@ -64,6 +64,38 @@ export function startManagementApi({ publicKeys = [{ id: 'key_pub', type: 'publi
   })
 }
 
+// A fake Server API: `GET /v4/events` paged at `limit`, with `pagination_key` while more remain.
+// `analyze` reads it with the Server API key from the login bundle; the test points
+// FINGERPRINT_SERVER_API_URL at this. Records each request so a test can assert on the query.
+export function startServerApi(events = []) {
+  const requests = []
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://x')
+    requests.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), authorization: req.headers.authorization })
+    if (url.pathname !== '/v4/events') {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ error: { code: 'not_found', message: `no route: ${url.pathname}` } }))
+    }
+    if (req.headers.authorization !== 'Bearer srv_1') {
+      res.writeHead(403, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ error: { code: 'token_not_found', message: 'secret key required' } }))
+    }
+    const limit = Number(url.searchParams.get('limit') ?? 10)
+    const from = Number(url.searchParams.get('pagination_key') ?? 0)
+    const page = events.slice(from, from + limit)
+    const body = { events: page }
+    if (from + limit < events.length) body.pagination_key = String(from + limit)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address()
+      resolve({ url: `http://127.0.0.1:${port}/v4`, requests: () => requests, close: () => new Promise((r) => server.close(r)) })
+    })
+  })
+}
+
 // Isolated $HOME so the CLI's auth state can't pick up a real `fingerprint login` on this machine.
 export function makeHome() {
   return mkdtempSync(join(tmpdir(), 'fp-home-'))
