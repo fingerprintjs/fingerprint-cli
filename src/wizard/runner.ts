@@ -312,9 +312,11 @@ async function askUseCases(): Promise<UseCase[]> {
   const all = useCases()
   if (!all.length) return []
   // One question: the basic installation first and ticked by default, the use cases under it.
-  // Ticking any use case is the answer; the basic entry is then ignored.
+  // The two are exclusive, and a checkbox cannot untick one entry for another, so the mix is refused.
   const picked = await checkbox<UseCase | null>({
     message: 'How should Fingerprint be set up in this repo? (space to tick, Enter to confirm)',
+    validate: (items) =>
+      items.length > 1 && items.some((i) => i.value === null) ? 'Untick Basic installation to set up use cases.' : true,
     choices: [
       { name: 'Basic installation', value: null, checked: true, description: 'Identification and server-side verification; use cases can be added later.' },
       ...[...new Set(all.map((u) => u.group))].flatMap((group) => [
