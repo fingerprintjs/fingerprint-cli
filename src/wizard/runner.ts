@@ -150,8 +150,14 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
       if (progress.installed) done.add('install')
       if (progress.server) done.add('server')
       if (progress.proxy) done.add('proxy')
-      outcome = 'completed'
-      audited = true
+      if (chosen.length) {
+        // The install is done, but not for this use case: the agent brings the parts this repo has
+        // in line with it before the menu. The tick is the go-ahead, like a menu pick.
+        outcome = await applyIntegration(root, { yes: true, step: USE_CASE_AUDIT_STEP, useCases: chosen })
+      } else {
+        outcome = 'completed'
+        audited = true
+      }
     } else {
       recordWizardStep('install')
       // A use case lives in the server check, so with a backend here both quick-start steps land
@@ -283,7 +289,13 @@ const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: strin
 const USE_CASE_FIRST_STEP =
   'Quick start steps 1 and 2 together — install Fingerprint in the frontend and verify the event server-side with the Server API, applying the use-case skill in both'
 
+// A repo that already has Fingerprint, set up before the use case was chosen: make what is there
+// serve it, in whichever halves this repo has.
+const USE_CASE_AUDIT_STEP =
+  'Apply the chosen use cases to the existing integration: in the frontend, the action each use case names identifies on submit with its linkedId and tag and sends the event_id to the backend; in the backend, the gate and the use case\'s pattern logic run on that route. Add or edit what is missing; the install and server-side verification are otherwise done'
+
 function stepActivity(step?: string): string {
+  if (step === USE_CASE_AUDIT_STEP) return 'Applying the use cases to the existing integration'
   return Object.values(NEXT_STEPS).find((next) => next.step === step)?.activity ?? 'Setting up Fingerprint'
 }
 

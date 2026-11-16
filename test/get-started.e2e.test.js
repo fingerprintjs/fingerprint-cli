@@ -372,6 +372,39 @@ test('Enter on the default, "Basic installation", is the basic integration', asy
   assert.doesNotMatch(requests, /setting up Fingerprint for/)
 })
 
+test('a repo that already has Fingerprint applies the chosen use case to what is there before the menu', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  writeFileSync(join(repo, 'web', 'app.jsx'), "import { useVisitorData } from '@fingerprint/react'\n")
+  const skillsDir = makeSkillsDir()
+  addUseCaseSkill(skillsDir, 'fingerprint-protect-action', [])
+  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
+
+  const res = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+    respond: [
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${SPACE}${DOWN}${SPACE}\n` },
+      { when: /What's next\?/, send: `${UP}\n` }, // → stop
+    ],
+  })
+  const bodies = gw.bodies()
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /Fingerprint is installed in web/)
+  assert.match(res.stdout, /Applying the use cases to the existing integration/)
+  assert.doesNotMatch(res.stdout, /Integrate Fingerprint into this repo/)
+  assert.ok(
+    bodies.some((b) => /Apply the chosen use cases to the existing integration/.test(b) && /setting up Fingerprint for: Account Takeover/.test(b)),
+    'the agent is told to apply the use case to what is there'
+  )
+  assert.ok(readdirSync(join(repo, '.claude', 'skills')).includes('fingerprint-device-account-binding'))
+})
+
 test('a scripted run never asks about use cases', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
