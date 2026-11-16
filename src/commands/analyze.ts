@@ -1,14 +1,18 @@
 import { resolve } from 'node:path'
 import { searchEvents } from '../api/events.js'
-import { summarizeTraffic, suggest, verifiesServerSide } from '../wizard/traffic.js'
+import { summarizeTraffic, suggest, verifiesServerSide, type Suggestion } from '../wizard/traffic.js'
+import { applyTrafficStep, SERVER_VERIFICATION_STEP } from '../wizard/runner.js'
+import { settleSession } from './integrate.js'
 import { log } from '../wizard/log.js'
 import { color } from '../utils/color.js'
+import { select } from '../utils/prompt.js'
 import { requireAuth } from '../utils/session.js'
-import { addRunProperties } from '../analytics/track.js'
+import { isCi } from '../utils/ci.js'
+import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 
 // `fingerprint analyze` — read the workspace's recent identification events, say what each page
-// saw (bots, VPN, replays, low confidence) and what to do about it. Read-only: nothing in the repo
-// or the workspace changes. Only aggregates are printed; never an event, visitor id or IP.
+// saw (bots, VPN, replays, low confidence) and what to do about it, then offer to let the
+// integrate agent apply a suggestion. Only aggregates are printed; never an event, visitor id or IP.
 export async function analyzeCommand(opts: { days?: number; path?: string; max?: number; json?: boolean } = {}) {
   const auth = requireAuth()
   if (!auth.serverApiKey) throw new Error('No Server API key found. Run `fingerprint login` again.')
@@ -20,11 +24,12 @@ export async function analyzeCommand(opts: { days?: number; path?: string; max?:
   const events = await searchEvents({ serverApiKey: auth.serverApiKey, region: auth.region, start, max })
   const summary = summarizeTraffic(events)
   const repo = { verifiesServerSide: verifiesServerSide(root) }
-  const suggestions = suggest(summary, repo)
+  const suggestions = suggest(summary, repo, { serverVerification: SERVER_VERIFICATION_STEP })
   addRunProperties({ analyze_events: summary.events, analyze_pages: summary.pages.length, analyze_suggestions: suggestions.length })
 
   if (opts.json) {
-    console.log(JSON.stringify({ workspace: auth.workspaceId, region: auth.region, days, ...summary, repo, suggestions }, null, 2))
+    const plain = suggestions.map(({ step: _step, activity: _activity, ...s }) => s)
+    console.log(JSON.stringify({ workspace: auth.workspaceId, region: auth.region, days, ...summary, repo, suggestions: plain }, null, 2))
     return
   }
 
@@ -61,4 +66,32 @@ export async function analyzeCommand(opts: { days?: number; path?: string; max?:
     log.info(`   ${color.dim(s.docs)}`)
   })
   log.end()
+
+  await offerToApply(root, suggestions)
+}
+
+// The suggestions the agent can act on, one at a time, until the user stops. Headless runs are a
+// report only: applying edits files and needs a live gateway session.
+async function offerToApply(root: string, suggestions: Suggestion[]): Promise<void> {
+  const pending = suggestions.filter((s) => s.step)
+  if (isCi() || !pending.length) return
+  let applied = 0
+  while (pending.length) {
+    const pick = await select<Suggestion | 'stop'>({
+      message: 'Apply a suggestion with the agent? (edits this repo)',
+      choices: [
+        ...pending.map((s) => ({ name: s.title, value: s })),
+        { name: applied ? 'Done for now' : 'Not now', value: 'stop' },
+      ],
+    })
+    if (pick === 'stop') break
+    recordWizardStep('analyze_apply')
+    // Checked at the first pick, not before the report: reading events never needs the gateway.
+    if (!applied && !(await settleSession())) break
+    const outcome = await applyTrafficStep(root, pick.step!, pick.activity ?? 'Applying the suggestion')
+    if (outcome === 'failed') break
+    pending.splice(pending.indexOf(pick), 1)
+    applied++
+  }
+  addRunProperties({ analyze_applied: applied })
 }

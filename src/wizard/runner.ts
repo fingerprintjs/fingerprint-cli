@@ -156,6 +156,19 @@ export async function integrateProject(root: string, opts: { yes?: boolean; subd
   return outcome
 }
 
+// One step the traffic report picked (`fingerprint analyze`), run the way the menu runs one:
+// provision env, then the agent does only that step. Every suggestion is server-side work, so a
+// frontend-only repo is asked where the backend lives, like the server step from the menu.
+export async function applyTrafficStep(root: string, step: string, activity: string): Promise<IntegrateOutcome> {
+  let target = root
+  if (!analyzeRepo(root).backend) {
+    const backend = await askBackendPath()
+    if (!backend) return 'skipped'
+    target = backend
+  }
+  return provisionAndApply(target, { yes: true, step, activity })
+}
+
 function applySubdomainStep(root: string, hostname: string): Promise<IntegrateOutcome> {
   return applyIntegration(root, { yes: true, step: NEXT_STEPS.proxy.step, subdomain: hostname })
 }
@@ -187,6 +200,8 @@ const NEXT_STEPS: Record<NextStep, { name: string; step: string; activity: strin
     step: 'the next unfinished checklist step (rules, tagging, request filtering)',
   },
 }
+
+export const SERVER_VERIFICATION_STEP = NEXT_STEPS.server.step
 
 function stepActivity(step?: string): string {
   return Object.values(NEXT_STEPS).find((next) => next.step === step)?.activity ?? 'Setting up Fingerprint'
@@ -267,7 +282,7 @@ function sourceFiles(dir: string): string[] {
 
 // Provision the repo's .env keys, then apply the integration. (Provisioning is host-side so the
 // secret never reaches the agent; see provision.ts.)
-async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string }): Promise<IntegrateOutcome> {
+async function provisionAndApply(root: string, opts: { yes?: boolean; step?: string; activity?: string }): Promise<IntegrateOutcome> {
   log.step('Set up environment variables')
   const { needsDotenv } = await provisionForRepo(root)
   if (needsDotenv.length) {
@@ -281,7 +296,7 @@ async function provisionAndApply(root: string, opts: { yes?: boolean; step?: str
 // `step` names one checklist step for the agent to do; without it the agent's audit picks.
 async function applyIntegration(
   root: string,
-  opts: { yes?: boolean; step?: string; subdomain?: string } = {}
+  opts: { yes?: boolean; step?: string; subdomain?: string; activity?: string } = {}
 ): Promise<IntegrateOutcome> {
   const analysis = analyzeRepo(root)
 
@@ -327,8 +342,8 @@ async function applyIntegration(
   // The subdomain step says what is happening to the subdomain; "applying" would suggest the
   // integration is being redone.
   if (opts.subdomain) log.step(`Updating your app to use ${opts.subdomain}`)
-  else log.step(stepActivity(opts.step))
-  return runAgent(analysis, opts.step, opts.subdomain, inline)
+  else log.step(opts.activity ?? stepActivity(opts.step))
+  return runAgent(analysis, opts.step, opts.subdomain, inline, opts.activity)
 }
 
 // The Get Started orchestrator skill. It audits the repo, reports the checklist, and dispatches to
@@ -340,7 +355,8 @@ export async function runAgent(
   analysis: RepoAnalysis,
   step?: string,
   subdomain?: string,
-  inline?: InlineValues
+  inline?: InlineValues,
+  activity?: string
 ): Promise<IntegrateOutcome> {
   if (!analysis.skills.length) throw new Error('No matching skill to apply.')
 
@@ -371,7 +387,7 @@ export async function runAgent(
     },
   })
 
-  const run = await runAgentTurn(response, subdomain ? 'Working on the custom subdomain' : stepActivity(step))
+  const run = await runAgentTurn(response, subdomain ? 'Working on the custom subdomain' : (activity ?? stepActivity(step)))
   if (!run.ok) {
     markFailure('agent_failed')
     process.exitCode = 1
