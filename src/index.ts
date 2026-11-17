@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import { login, signup, startAuth, logout, whoami } from './commands/auth.js'
 import { keysCommand } from './commands/keys.js'
 import { integrateCommand } from './commands/integrate.js'
+import { analyzeCommand } from './commands/analyze.js'
 import { registerSubdomainsCommands } from './commands/subdomains.js'
 import { getAuthState } from './auth/tokenStore.js'
 import { hasUsableSession } from './auth/refresh.js'
@@ -101,6 +102,15 @@ program
     return integrateCommand({ path: opts.path, analyze: opts.analyze, yes: opts.yes, subdomain: opts.subdomain })
   })
 
+program
+  .command('analyze')
+  .description('Read recent identification events and suggest what to protect')
+  .option('--days <n>', 'how far back to look (default: 7)', (v) => Number(v))
+  .option('--max <n>', 'newest events to read, up to 100 per request (default: 1000)', (v) => Number(v))
+  .option('--path <dir>', 'repo to check for server-side verification (default: current directory)')
+  .option('--json', 'print the summary and suggestions as JSON')
+  .action((opts) => analyzeCommand({ days: opts.days, max: opts.max, path: opts.path, json: opts.json }))
+
 registerSubdomainsCommands(program)
 
 // Default command: `fingerprint` with no subcommand. Route by where the user is so the whole
@@ -140,6 +150,7 @@ async function defaultCommand(unknownCommand?: string) {
   const commands: [string, string][] = [
     ['fingerprint', 'this guided setup, start to finish'],
     ['fingerprint integrate', 'add Fingerprint to the repo in this directory'],
+    ['fingerprint analyze', 'read recent traffic and suggest what to protect'],
     ['fingerprint keys', 'print a public or secret API key'],
     ['fingerprint subdomains', 'manage custom subdomains for this workspace'],
     ['fingerprint whoami', 'show the signed-in workspace'],

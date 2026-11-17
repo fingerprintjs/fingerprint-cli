@@ -87,6 +87,7 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 | --- | --- |
 | `fingerprint` | The guided setup, start to finish: sign in, then integrate |
 | `fingerprint integrate` | Add Fingerprint to the repo in the current directory |
+| `fingerprint analyze` | Count bad bots and high Suspect Scores over the last 7 days, sample the rest, and suggest what to protect (`--days`, `--max`, `--path`, `--json`) |
 | `fingerprint keys [public\|secret]` | Print an API key for your workspace (prompts if omitted) |
 | `fingerprint subdomains` | List custom subdomains and show the available commands |
 | `fingerprint subdomains create <hostname>` | Register a custom subdomain and print its DNS records |

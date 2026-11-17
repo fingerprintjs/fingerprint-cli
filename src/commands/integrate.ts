@@ -83,7 +83,7 @@ export async function integrateCommand(
 
 // Settle the session before anything provisions keys or edits files. Failures are printed here rather
 // than thrown, since the top-level handler prints a bare message with none of the recovery hints.
-async function settleSession(signIn = true): Promise<boolean> {
+export async function settleSession(signIn = true): Promise<boolean> {
   try {
     requireAuth()
     await verifyGatewayAccess(await getFreshAccessToken())
