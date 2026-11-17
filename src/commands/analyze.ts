@@ -1,6 +1,6 @@
 import { resolve } from 'node:path'
-import { searchEvents } from '../api/events.js'
-import { summarizeTraffic, suggest, verifiesServerSide, type Suggestion } from '../wizard/traffic.js'
+import { pullTraffic, HIGH_SUSPECT } from '../api/events.js'
+import { summarizeTraffic, suggest, verifiesServerSide, signals, type Suggestion } from '../wizard/traffic.js'
 import { applyTrafficStep, SERVER_VERIFICATION_STEP } from '../wizard/runner.js'
 import { settleSession } from './integrate.js'
 import { log } from '../wizard/log.js'
@@ -10,22 +10,30 @@ import { requireAuth } from '../utils/session.js'
 import { isCi } from '../utils/ci.js'
 import { addRunProperties, recordWizardStep } from '../analytics/track.js'
 
-// `fingerprint analyze` — read the workspace's recent identification events, say what each page
-// saw (bots, VPN, replays, low confidence) and what to do about it, then offer to let the
-// integrate agent apply a suggestion. Only aggregates are printed; never an event, visitor id or IP.
+// `fingerprint analyze` — count the workspace's suspicious identification events over the window
+// (bad bots, high Suspect Scores: filtered by the API, so the counts are whole), sample the rest
+// evenly across it for shares and replays, say which pages stand out and what to do about them,
+// then offer to let the integrate agent apply a suggestion. Only aggregates are printed; never an
+// event, visitor id or IP.
 export async function analyzeCommand(opts: { days?: number; path?: string; max?: number; json?: boolean } = {}) {
   const auth = requireAuth()
   if (!auth.serverApiKey) throw new Error('No Server API key found. Run `fingerprint login` again.')
   const days = opts.days ?? 7
   const max = opts.max ?? 1000
   const root = resolve(opts.path ?? process.cwd())
-  const start = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+  const end = new Date()
+  const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
 
-  const events = await searchEvents({ serverApiKey: auth.serverApiKey, region: auth.region, start, max })
-  const summary = summarizeTraffic(events)
+  const pull = await pullTraffic({ serverApiKey: auth.serverApiKey, region: auth.region, start, end, max })
+  const summary = summarizeTraffic(pull)
   const repo = { verifiesServerSide: verifiesServerSide(root) }
-  const suggestions = suggest(summary, repo, { serverVerification: SERVER_VERIFICATION_STEP })
-  addRunProperties({ analyze_events: summary.events, analyze_pages: summary.pages.length, analyze_suggestions: suggestions.length })
+  const suggestions = suggest(summary, repo, { steps: { serverVerification: SERVER_VERIFICATION_STEP }, days })
+  addRunProperties({
+    analyze_events: summary.sampled,
+    analyze_bad_bots: summary.badBots,
+    analyze_pages: summary.pages.length,
+    analyze_suggestions: suggestions.length,
+  })
 
   if (opts.json) {
     const plain = suggestions.map(({ step: _step, activity: _activity, ...s }) => s)
@@ -33,27 +41,43 @@ export async function analyzeCommand(opts: { days?: number; path?: string; max?:
     return
   }
 
+  const plus = (n: number, truncated: boolean) => (truncated ? `${n}+` : String(n))
   log.heading('analyze')
   log.step('Traffic')
   log.kv('Workspace', `${auth.workspaceId} ${color.dim(`(${auth.region})`)}`)
-  log.kv('Window', `last ${days} day${days === 1 ? '' : 's'}${summary.events >= max ? color.dim(` · newest ${max} events`) : ''}`)
-  log.kv('Events', `${summary.events} on ${summary.pages.length} page${summary.pages.length === 1 ? '' : 's'}`)
-  if (summary.events === 0) {
+  log.kv('Window', `last ${days} day${days === 1 ? '' : 's'}`)
+  log.kv(
+    'Events',
+    summary.sampleComplete
+      ? `${summary.sampled} on ${summary.pages.length} page${summary.pages.length === 1 ? '' : 's'}`
+      : `${summary.sampled} sampled evenly across the window ${color.dim(`(pass --max for more)`)}`
+  )
+  if (summary.sampled === 0 && summary.badBots === 0) {
     log.line()
     log.info(color.dim('No identification events yet. Open a page with the agent installed, then run this again.'))
     log.end()
     return
   }
+  log.kv(
+    'Suspicious',
+    `${plus(summary.badBots, summary.badBotsTruncated)} bad bots, ${plus(summary.highSuspect, summary.highSuspectTruncated)} with Suspect Score ${HIGH_SUSPECT}+ ${color.dim('(whole window)')}`
+  )
 
+  const flagged = summary.pages.filter((p) => signals(p) > 0)
   log.line()
-  const width = Math.max(...summary.pages.map((p) => p.path.length), 4)
-  log.info(color.dim(`${'page'.padEnd(width)}  ${'events'.padStart(7)}  ${'bad bots'.padStart(8)}  ${'vpn'.padStart(5)}  ${'replayed'.padStart(8)}  visitors`))
-  for (const p of summary.pages.slice(0, 15)) {
-    const pct = (n: number) => `${Math.round((100 * n) / p.events)}%`.padStart(5)
-    const bots = p.badBots ? color.yellow(`${p.badBots} ${pct(p.badBots)}`.padStart(8)) : `${p.badBots} ${pct(p.badBots)}`.padStart(8)
-    log.info(`${p.path.padEnd(width)}  ${String(p.events).padStart(7)}  ${bots}  ${pct(p.vpn)}  ${String(p.replayed).padStart(8)}  ${p.visitors}`)
+  if (!flagged.length) {
+    log.info(color.dim('No page had bad bots, high Suspect Scores or replayed events.'))
+  } else {
+    const width = Math.max(...flagged.map((p) => p.path.length), 4)
+    log.info(color.dim(`${'page'.padEnd(width)}  ${'bad bots'.padStart(8)}  ${'suspect'.padStart(7)}  ${'replayed'.padStart(8)}  ${'sampled'.padStart(7)}  bot share`))
+    for (const p of flagged.slice(0, 15)) {
+      const share = p.sampled >= 10 ? `${Math.round((100 * p.sampledBadBots) / p.sampled)}%` : color.dim('—')
+      const bots = p.badBots ? color.yellow(String(p.badBots).padStart(8)) : String(p.badBots).padStart(8)
+      log.info(`${p.path.padEnd(width)}  ${bots}  ${String(p.highSuspect).padStart(7)}  ${String(p.replayed).padStart(8)}  ${String(p.sampled).padStart(7)}  ${share}`)
+    }
+    if (flagged.length > 15) log.info(color.dim(`… ${flagged.length - 15} more pages with signals`))
+    if (!summary.sampleComplete) log.info(color.dim('bad bots and suspect are whole-window counts; replayed and bot share come from the sample'))
   }
-  if (summary.pages.length > 15) log.info(color.dim(`… ${summary.pages.length - 15} more`))
   log.line()
   log.kv('Server-side', repo.verifiesServerSide ? color.green('this repo verifies events with the Server API') : color.yellow('this repo does not read events from the Server API'))
 

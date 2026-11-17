@@ -80,11 +80,22 @@ export function startServerApi(events = []) {
       res.writeHead(403, { 'content-type': 'application/json' })
       return res.end(JSON.stringify({ error: { code: 'token_not_found', message: 'secret key required' } }))
     }
+    // The filters `fingerprint analyze` uses: a time window, bad bots, and a Suspect Score floor.
+    // Newest first, like the real API.
+    const start = url.searchParams.has('start') ? Date.parse(url.searchParams.get('start')) : -Infinity
+    const end = url.searchParams.has('end') ? Date.parse(url.searchParams.get('end')) : Infinity
+    const bot = url.searchParams.get('bot')
+    const minSuspect = url.searchParams.has('min_suspect_score') ? Number(url.searchParams.get('min_suspect_score')) : undefined
+    const matching = events
+      .filter((e) => e.timestamp >= start && e.timestamp <= end)
+      .filter((e) => !bot || e.bot === bot)
+      .filter((e) => minSuspect === undefined || (typeof e.suspect_score === 'number' && e.suspect_score >= minSuspect))
+      .sort((a, b) => b.timestamp - a.timestamp)
     const limit = Number(url.searchParams.get('limit') ?? 10)
     const from = Number(url.searchParams.get('pagination_key') ?? 0)
-    const page = events.slice(from, from + limit)
+    const page = matching.slice(from, from + limit)
     const body = { events: page }
-    if (from + limit < events.length) body.pagination_key = String(from + limit)
+    if (from + limit < matching.length) body.pagination_key = String(from + limit)
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
   })
