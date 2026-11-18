@@ -45,6 +45,11 @@ export const setupPrompt = createPrompt(<T,>(config: Config<T>, done: (value: T[
     } else if (isSpaceKey(key)) {
       const current = items[active]
       if (!current || !isChoice(current)) return
+      if (current.value === null) {
+        // Ticking basic is the way back: every use case is cleared.
+        setItems(items.map((item) => (isChoice(item) ? { ...item, checked: item.value === null } : item)))
+        return
+      }
       const toggled = items.map((item, i) => (i === active && isChoice(item) ? { ...item, checked: !item.checked } : item))
       const anyUseCase = toggled.some((item) => isChoice(item) && item.value !== null && item.checked)
       // Basic is a reflection of the use cases: ticked exactly when none is.

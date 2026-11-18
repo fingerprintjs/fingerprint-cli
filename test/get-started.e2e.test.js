@@ -347,6 +347,34 @@ test('a backend-only repo is offered its frontend first, so the backend gets an 
   assert.ok(readdirSync(join(frontend, '.claude', 'skills')).includes('fingerprint-device-account-binding'))
 })
 
+test('ticking "Basic installation" after a use case clears it: the basic integration runs', async () => {
+  const home = makeHome()
+  seedAuth(home, api.url)
+  const repo = makeRepo()
+  const skillsDir = makeSkillsDir()
+  addUseCaseSkill(skillsDir, ATO.id, ATO.useCases)
+  const gw = await startGateway(join(repo, 'web', 'fingerprint.js'), '// integration\n')
+
+  const res = await runCli(['integrate'], {
+    home,
+    cwd: repo,
+    env: { FINGERPRINT_SKILLS_DIR: skillsDir, FINGERPRINT_GATEWAY_URL: gw.url },
+    respond: [
+      // Tick Account Takeover, go back up to Basic installation and tick it.
+      { when: /How should Fingerprint be set up in this repo\?/, send: `${DOWN}${SPACE}${UP}${SPACE}\n` },
+      { when: /Integrate Fingerprint into this repo/, send: 'y\n' },
+      { when: /What's next\?/, send: `${UP}\n` }, // → stop
+    ],
+  })
+  const requests = gw.bodies().join('\n')
+  await gw.close()
+
+  assert.equal(res.status, 0, res.stderr)
+  const installed = readdirSync(join(repo, '.claude', 'skills')).sort()
+  assert.deepEqual(installed, ['fingerprint-get-started', 'fingerprint-node', 'fingerprint-react'])
+  assert.doesNotMatch(requests, /setting up Fingerprint for/)
+})
+
 test('Enter on the default, "Basic installation", is the basic integration', async () => {
   const home = makeHome()
   seedAuth(home, api.url)
