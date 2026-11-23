@@ -40,7 +40,7 @@ export function registerSubdomainsCommands(program: Command): void {
         this.outputHelp()
       }
     })
-    .addHelpText('after', '\nExample:\n  fingerprint subdomains verify metrics.example.com')
+    .addHelpText('after', '\nExample:\n  fingerprint subdomains verify metrics.yourdomain.com')
 
   subdomains
     .command('create')
