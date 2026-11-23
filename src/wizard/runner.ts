@@ -339,7 +339,7 @@ async function askUseCases(): Promise<UseCase[]> {
   // One question: the basic installation first and ticked by default, the use cases under it;
   // ticking a use case unticks it (see setupPrompt).
   const chosen = await setupPrompt<UseCase>({
-    message: 'How should Fingerprint be set up in this repo? (space to tick, Enter to confirm)',
+    message: 'How should Fingerprint be set up in this repo? (space to tick one or more, Enter to confirm)',
     basic: { name: 'Basic installation', value: null, description: 'Identification and server-side verification; use cases can be added later.' },
     choices: [...new Set(all.map((u) => u.group))].flatMap((group) => [
       new Separator(`── ${group} ──`),
@@ -680,8 +680,9 @@ function buildGetStartedPrompt(
           'defaults; do not enable signals or enforcement beyond what they recommend.',
           'In the backend, add the use case\'s code even when no route uses it yet: the bot + Suspect Score',
           'gate and the pattern logic (device binding, velocity limit, ...) as modules, wired into the',
-          'matching route if the app has one; otherwise show the call in a comment and name the route',
-          'that is missing. Never scaffold that route.',
+          'matching route if the app has one; otherwise show the call in a comment, with its import',
+          'commented out too so nothing unused is imported, and name the route that is missing. Never',
+          'scaffold that route.',
         ]
       : []),
     // The frontend was installed in an earlier run, before this step and its use case were known.

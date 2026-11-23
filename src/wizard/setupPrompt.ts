@@ -26,10 +26,11 @@ export const setupPrompt = createPrompt(<T,>(config: Config<T>, done: (value: T[
   const [status, setStatus] = useState<'idle' | 'done'>('idle')
   const prefix = usePrefix({ status, theme })
   const [items, setItems] = useState<Item<T>[]>([
+    new Separator('── Start here ──'),
     { ...config.basic, checked: true },
     ...config.choices.map((c) => (Separator.isSeparator(c) ? c : { ...c, checked: false })),
   ])
-  const [active, setActive] = useState(0)
+  const [active, setActive] = useState(1)
   const isChoice = (item: Item<T>): item is Exclude<Item<T>, Separator> => !Separator.isSeparator(item)
 
   useKeypress((key) => {
@@ -39,9 +40,9 @@ export const setupPrompt = createPrompt(<T,>(config: Config<T>, done: (value: T[
     } else if (isUpKey(key) || isDownKey(key)) {
       const offset = isUpKey(key) ? -1 : 1
       let next = active
-      do next = (next + offset + items.length) % items.length
-      while (!isChoice(items[next]!))
-      setActive(next)
+      do next += offset
+      while (next >= 0 && next < items.length && !isChoice(items[next]!))
+      if (next >= 0 && next < items.length) setActive(next)
     } else if (isSpaceKey(key)) {
       const current = items[active]
       if (!current || !isChoice(current)) return
@@ -68,7 +69,7 @@ export const setupPrompt = createPrompt(<T,>(config: Config<T>, done: (value: T[
     items,
     active,
     pageSize: 12,
-    loop: true,
+    loop: false,
     renderItem({ item, isActive }) {
       if (Separator.isSeparator(item)) return ` ${item.separator}`
       if (isActive) description = item.description
@@ -78,5 +79,5 @@ export const setupPrompt = createPrompt(<T,>(config: Config<T>, done: (value: T[
     },
   })
   const help = theme.style.help('↑↓ navigate • space select • ⏎ submit')
-  return [`${prefix} ${message}`, page, ' ', description ? styleText('cyan', description) : '', help].filter(Boolean).join('\n')
+  return [`${prefix} ${message}`, page, ' ', description ? styleText('yellow', description) : '', help].filter(Boolean).join('\n')
 })
