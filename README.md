@@ -49,7 +49,7 @@ editing your files. If it can't find an app it recognizes, it tells you rather t
 ## Custom subdomains
 
 From `npx fingerprint integrate`, choose **Protect against ad blockers with a custom subdomain**.
-Use an unused subdomain of a domain you own, such as `metrics.example.com`, and make sure you have
+Use an unused subdomain of a domain you own, such as `metrics.yourdomain.com`, and make sure you have
 access to its DNS provider. Creating and verifying the subdomain does not require a frontend or a skill.
 
 The CLI creates the subdomain and offers Domain Connect when available: authorize the DNS changes
@@ -67,7 +67,7 @@ You can finish later. Running `npx fingerprint integrate` again in the same proj
 offers to resume the unfinished setup. To start or resume that step directly:
 
 ```bash
-npx fingerprint integrate --subdomain metrics.example.com
+npx fingerprint integrate --subdomain metrics.yourdomain.com
 ```
 
 ## Connect your coding agent (MCP)
@@ -101,9 +101,9 @@ You rarely need these directly — `npx fingerprint` routes to the right one —
 
 The standalone `subdomains` commands do not need an application repository and do not update your
 application code. After creating a subdomain, add the returned DNS records at your DNS provider, then run
-`fingerprint subdomains verify metrics.example.com`. Use your subdomain's hostname or its
+`fingerprint subdomains verify metrics.yourdomain.com`. Use your subdomain's hostname or its
 `certv2_...` ID with `get`, `verify`, `connect`, and `delete`. Hostnames are resolved within the signed-in workspace.
-If all DNS records are validated but setup is still pending, use `fingerprint subdomains get metrics.example.com`
+If all DNS records are validated but setup is still pending, use `fingerprint subdomains get metrics.yourdomain.com`
 later to check for activation. Only configure your integration to use the subdomain once it is `active`.
 
 ### Options
