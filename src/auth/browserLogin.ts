@@ -232,7 +232,18 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
     log.info('If you’re already signed in on your browser, you’ll be asked to log into that workspace.')
     log.info('Otherwise, check your inbox and click the confirmation link, then finish setup in the browser.')
   }
+  if (intent === 'login') {
+    log.info('Creating an account instead? Press Ctrl+C and run `fingerprint signup`: it waits for the confirmation email.')
+  }
   log.info('\nWaiting for you to finish in the browser. Please return here when you’re done...')
+  // A line a minute, so a long wait reads as waiting rather than frozen, and says how to start over.
+  const minutes = Math.round(timeoutMs / 60000)
+  let waited = 0
+  const heartbeat = setInterval(() => {
+    waited += 1
+    log.info(color.dim(`Still waiting (${waited} of ${minutes} min). Ctrl+C and run \`fingerprint ${intent}\` to start over.`))
+  }, 60_000)
+  heartbeat.unref?.()
 
   try {
     const code = await waitForCode.catch((e: Error) => {
@@ -320,6 +331,7 @@ export async function loginWithBrowser(opts: { intent?: 'login' | 'signup' } = {
     })
     return { serverApiKey, managementApiKey, workspaceId, region }
   } finally {
+    clearInterval(heartbeat)
     close()
   }
 }
